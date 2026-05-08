@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Batch-run validate_and_upload_from_hf.py (Harbor smoke-test stage only) over
-# every HF dataset URL listed in an input markdown file. For each dataset:
+# every HF dataset listed in an input markdown file. Each line in the file may
+# be either a huggingface.co/datasets/<org>/<name> URL or a bare <org>/<name>
+# (one repo per line, optionally prefixed with `- `/`* `/`+ `). For each dataset:
 #   - take a random sample of N tasks (default 500)
 #   - run the Harbor smoke test
 #   - skip the HF upload
@@ -65,17 +67,30 @@ elif [[ "$(head -1 "$SUMMARY")" != "$EXPECTED_HEADER" ]]; then
     echo "Rotated stale-schema summary.tsv → ${SUMMARY%.tsv}.stale_$(date +%Y%m%d_%H%M%S).tsv"
 fi
 
+# Extract HF dataset repos from $INPUT_MD. Two branches feed into a dedup pass:
+#   1. huggingface.co/datasets/<org>/<name> URLs — sed strips the prefix.
+#   2. bare <org>/<name> lines, optionally prefixed with a markdown list bullet
+#      "- ", "* ", or "+ ". Anything containing "://", spaces, or extra "/"s
+#      is excluded so file paths and URLs do not leak in.
+# Each branch is `|| true`-wrapped: under `set -euo pipefail`, a grep with no
+# matches exits 1 and would otherwise abort the whole extraction.
+extract_repos() {
+    {
+        { grep -oE 'huggingface\.co/datasets/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+' "$INPUT_MD" \
+            | sed 's|huggingface\.co/datasets/||'; } || true
+        { sed -E 's/^[[:space:]]*[-*+]?[[:space:]]*//; s/[[:space:]]*$//' "$INPUT_MD" \
+            | grep -E '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'; } || true
+    } | awk '!seen[$0]++'
+}
+
 REPOS=()
 while IFS= read -r line; do
     [[ -n "$line" ]] && REPOS+=("$line")
-done < <(
-    grep -oE 'huggingface\.co/datasets/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+' "$INPUT_MD" \
-        | sed 's|huggingface\.co/datasets/||' \
-        | awk '!seen[$0]++'
-)
+done < <(extract_repos)
 
 if [[ ${#REPOS[@]} -eq 0 ]]; then
-    echo "No HF dataset URLs found in $INPUT_MD" >&2
+    echo "No HF dataset repos found in $INPUT_MD" >&2
+    echo "Accepted formats per line: a huggingface.co/datasets/<org>/<name> URL, or a bare <org>/<name>." >&2
     exit 1
 fi
 
@@ -118,7 +133,7 @@ for REPO in "${REPOS[@]}"; do
     # Sync Harbor's per-trial trace dir (agent/trajectory.json, verifier/, result.json, …)
     # into <DEST>/traces/. The validate.py prints the path on its `[harbor]` retention line;
     # we extract from the ANSI-stripped clean.log.
-    HARBOR_DIR=$(grep -oE '/(var/folders|tmp)/[^[:space:]]+/harbor_jobs_[A-Za-z0-9]+/harbor-validate-[0-9-]+' "$CLEAN" 2>/dev/null | tail -1 || true)
+    HARBOR_DIR=$(grep -oE '/(var/folders|tmp)/[^[:space:]]+/harbor_jobs_[A-Za-z0-9_]+/harbor-validate-[0-9-]+' "$CLEAN" 2>/dev/null | tail -1 || true)
     if [[ -n "$HARBOR_DIR" && -d "$HARBOR_DIR" ]]; then
         mkdir -p "$DEST/traces"
         # rsync is fast and handles large per-trial dirs well; --remove-source-files frees
