@@ -1,5 +1,3 @@
-# 24GPU shaped rewards + entropy regularization (coef=0.003) — ALCC variant
-# Identical to 24GPU_shaped.yaml except use_entropy_loss=true.
 entrypoint: examples.terminal_bench.entrypoints.main_tbench
 
 # Hydra config groups (+ prefix in CLI)
@@ -67,31 +65,8 @@ terminal_bench:
     # Logging settings
     log_level: INFO
 
-    # ==========================================================================
-    # Reward shaping: composite (verifier + trajectory signals)
-    # ==========================================================================
-    enable_reward_shaping: true
-    reward_parser: null            # Auto-detect (pytest, unittest, generic)
-    reward_shaper: composite
-    reward_shaping_fallback: true  # Fall back to original reward if parsing fails
-    composite_components:
-      # NOTE: verifier=1.0 + others=0 to remove the shape-gaming attack surface.
-      # The previous 0.4/0.2/0.2/0.2 split let the policy concentrate on
-      # gameable proxies (thinking_length/format/command_quality) at the
-      # expense of true task completion (52699691: verifier reward crashed
-      # 0.50 → 0.119 in 6 steps while entropy stayed at 0.10 — classic
-      # reward-shape gaming). With verifier=1.0 the composite collapses
-      # back to pure verifier reward; entropy_loss_coef=0.02 still provides
-      # exploration pressure but without the proxy divergence.
-      verifier: 1.0
-      thinking_length: 0.0
-      format_quality: 0.0
-      command_quality: 0.0
-    composite_verifier_shaper: pass_ratio
-    thinking_target_tokens: 750
-    thinking_sigma_tokens: 250
-    thinking_min_turns_ratio: 0.5
-    command_quality_min_turns: 2
+    # Reward shaping (disabled - binary rewards)
+    enable_reward_shaping: false
 
     # RLOO-N error classification
     enable_error_classification: true
@@ -131,10 +106,19 @@ trainer:
     advantage_estimator: rloo_n
     use_kl_loss: false
     kl_loss_coef: 0.0
-    use_entropy_loss: true
-    entropy_loss_coef: 0.02
     eps_clip_low: 0.2
-    eps_clip_high: 0.2
+    # NOTE: eps_clip_high tightened from 0.2 to 0.1 (asymmetric) so the PPO
+    # surrogate clip engages SOONER on upward ratio drift (πnew/πold > 1.1
+    # instead of > 1.2). Rationale: prior runs with eps_clip_high=0.2 +
+    # lr=8e-6 + update_epochs=1 had ppo_clip_ratio ≈ 5e-5, i.e. clip never
+    # bit, so trust-region had no enforcement. Pre-collapse runs (gn09,
+    # shaped_entropy_maxgn09) all showed gradient direction stay coherent
+    # for 4-6 consecutive steps before reward degraded — exactly the
+    # regime where a biting clip would have stopped the drift. Lowering
+    # only the high side keeps the asymmetric assumption that downward
+    # ratios (πnew/πold < 0.8) are usually less catastrophic than runaway
+    # increases (the policy doubling down on a bad mode).
+    eps_clip_high: 0.1
     loss_reduction: token_mean
 
   # Training loop settings
@@ -181,7 +165,7 @@ trainer:
   export_path: null
 
   # Policy optimizer
-  # NOTE: max_grad_norm set to 0.9 (vs null in 24GPU_shaped_entropy.yaml).
+  # NOTE: max_grad_norm set to 0.9 (vs null in 24GPU_base.yaml).
   # Rationale: in healthy phases of recent runs on this dataset+base, ‖g‖
   # peaked at 0.81 (mean ≈ 0.32, std ≈ 0.24). 0.9 is just above the natural
   # healthy peak. Above this is correlation-mode-collapse territory:
