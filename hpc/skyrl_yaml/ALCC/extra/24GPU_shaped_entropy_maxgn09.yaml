@@ -134,7 +134,14 @@ trainer:
     use_entropy_loss: true
     entropy_loss_coef: 0.02
     eps_clip_low: 0.2
-    eps_clip_high: 0.2
+    # NOTE: eps_clip_high tightened from 0.2 to 0.1 (asymmetric) to add the
+    # trust-region enforcement that base_maxgn09_tightclip showed is needed.
+    # 52760057 (this config's prior run with verifier=1.0 + entropy=0.02)
+    # still showed late-stage decline (peak 0.62 → 0.38) and grad_norm cross
+    # 1.0 by step 13, suggesting the underlying correlation drift remained.
+    # Combining all three levers (verifier=1.0, entropy_loss_coef=0.02,
+    # eps_clip_high=0.1) is the multi-defense ablation.
+    eps_clip_high: 0.1
     loss_reduction: token_mean
 
   # Training loop settings
