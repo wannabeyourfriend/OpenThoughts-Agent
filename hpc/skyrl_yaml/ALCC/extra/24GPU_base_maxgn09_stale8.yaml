@@ -203,7 +203,7 @@ trainer:
   # gap by 2× without sacrificing the throughput benefits of fully-async.
   fully_async:
     max_staleness_steps: 8
-    num_parallel_generation_workers: 768
+    num_parallel_generation_workers: 96
 
 # Generator configuration
 generator:
