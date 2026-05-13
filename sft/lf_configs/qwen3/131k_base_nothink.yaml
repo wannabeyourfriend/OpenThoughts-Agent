@@ -10,7 +10,7 @@ per_device_train_batch_size: 1
 ### model
 model_name_or_path: Qwen/Qwen3-8B
 trust_remote_code: true
-attn: fa2
+attn: fa3
 enable_liger_kernel: true
 optim: adamw_torch_fused
 # YaRN rope scaling: extends 32k native context to 131k

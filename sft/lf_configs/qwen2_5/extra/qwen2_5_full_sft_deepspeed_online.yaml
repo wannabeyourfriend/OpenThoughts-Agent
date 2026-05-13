@@ -10,7 +10,7 @@
 ### model
 model_name_or_path: Qwen/Qwen2.5-7B-Instruct
 trust_remote_code: true
-attn: fa2
+attn: fa3
 enable_liger_kernel: true
 
 ### method

@@ -8,7 +8,7 @@ finetuning_type: full
 deepspeed: sft/zero3.json  # choices: [ds_z0_config.json, ds_z2_config.json, ds_z3_config.json]
 enable_liger_kernel: true
 
-attn: fa2
+attn: fa3
 
 ### dataset
 template: qwen #used to be qwen25
