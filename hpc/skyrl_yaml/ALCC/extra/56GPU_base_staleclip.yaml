@@ -60,17 +60,8 @@ terminal_bench:
       - VerifierOutputParseError
       - VerifierRuntimeError
 
-    prm:
-      name: teacher_hint
-      engine_type: openai
-      engine_kwargs:
-        model: gpt-5.5-2026-04-23
-        max_tokens: 16384
-      check_interval: 8
-      min_turns: 4
-      k: 8
-
-    n_concurrent_trials: 300
+    # 3x base (300 → 900): triple Daytona concurrency for higher throughput.
+    n_concurrent_trials: 900
 
     # Logging settings
     log_level: INFO
@@ -117,10 +108,17 @@ trainer:
     use_kl_loss: false
     kl_loss_coef: 0.0
     eps_clip_low: 0.2
-    # eps_clip_high=0.05: midpoint between 0.2 default and 0.01 tight.
-    # Engages on collapse-onset ratios without over-clamping healthy updates.
+    # eps_clip_high=0.05 mirrors 24GPU_base — midpoint between 0.2 default and
+    # 0.01 tight. Engages on collapse-onset ratios without over-clamping
+    # healthy updates. Asymmetric — only tightening upper bound.
     eps_clip_high: 0.05
     loss_reduction: token_mean
+
+    # StaleClip ablation: predictive LR damping when stale_min > 0 AND
+    # rolling entropy is concentrated. All other params use the defaults
+    # from ppo_base_config.yaml.
+    stale_clip:
+      enabled: true
 
   # Training loop settings
   epochs: 2
@@ -166,15 +164,9 @@ trainer:
   export_path: null
 
   # Policy optimizer
-  # NOTE: max_grad_norm set to 0.9 (vs null in 24GPU_base.yaml).
-  # Rationale: in healthy phases of recent runs on this dataset+base, ‖g‖
-  # peaked at 0.81 (mean ≈ 0.32, std ≈ 0.24). 0.9 is just above the natural
-  # healthy peak. Above this is correlation-mode-collapse territory:
-  # 52435048 (r2egym): grad_norm 0.81 → 1.96 (step 17, first pathological)
-  #                  → 8.70 (step 22, peak of collapse).
-  # 52435057 (GLM-4.7-swesm): grad_norm 0.63 → 1.41 → 3.39 (collapse).
-  # This bound prefers longer convergence over instability — accepts that
-  # max-advantage rollouts on long sequences may also be clipped.
+  # max_grad_norm=0.9 mirrors 24GPU_base — guardrail against grad-norm spikes
+  # entering correlation-mode-collapse territory (>1.0). 0.9 is just above the
+  # natural healthy peak observed on this dataset+base (‖g‖ peak ~0.81).
   policy:
     optimizer_config:
       lr: 8e-6
@@ -203,7 +195,10 @@ trainer:
   # Fully async generation (settings from v2_maxconcurrent)
   fully_async:
     max_staleness_steps: 16
-    num_parallel_generation_workers: 768
+    # 3x base (768 → 2304): triple SkyRL workers to keep Harbor's 900 cap saturated.
+    # With actual_global_step patch (Harbor pickup-time capture), the cohort
+    # plateau is no longer a function of worker count, so going bigger is safe.
+    num_parallel_generation_workers: 2304
 
 # Generator configuration
 generator:
@@ -212,7 +207,10 @@ generator:
   model_dtype: bfloat16
 
   inference_engine_tensor_parallel_size: 1
-  num_inference_engines: 16
+  # 3x base (16 → 48): triple vLLM engines to lift gen throughput above training rate.
+  # Goal: build a real surplus of completed groups so the trainer never waits on gen.
+  # Layout: 48 engines × TP=1 + 8 GPUs for policy/ref = 56 GPUs total = 14 nodes.
+  num_inference_engines: 48
 
   n_samples_per_prompt: 8
   eval_n_samples_per_prompt: 8
