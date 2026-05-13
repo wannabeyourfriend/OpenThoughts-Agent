@@ -13,7 +13,7 @@
 #   batch_validate_from_md.sh [INPUT_MD] [SECRETS_ENV] [TARGET_DIR]
 #
 # Defaults:
-#   INPUT_MD     /Users/benjaminfeuer/Documents/notes/task_repos/rl_to_check.md
+#   INPUT_MD     /Users/benjaminfeuer/Documents/notes/ot-agent/task_repos/rl_to_check.md
 #   SECRETS_ENV  /Users/benjaminfeuer/Documents/secrets.env
 #   TARGET_DIR   /Users/benjaminfeuer/Documents/agent-traces-analysis
 #
@@ -33,7 +33,7 @@
 
 set -euo pipefail
 
-INPUT_MD="${1:-/Users/benjaminfeuer/Documents/notes/task_repos/rl_to_check.md}"
+INPUT_MD="${1:-/Users/benjaminfeuer/Documents/notes/ot-agent/task_repos/rl_to_check.md}"
 SECRETS_ENV="${2:-/Users/benjaminfeuer/Documents/secrets.env}"
 TARGET_DIR="${3:-/Users/benjaminfeuer/Documents/agent-traces-analysis}"
 

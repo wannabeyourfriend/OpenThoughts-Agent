@@ -107,7 +107,13 @@ trainer:
     use_kl_loss: false
     kl_loss_coef: 0.0
     eps_clip_low: 0.2
-    eps_clip_high: 0.2
+    # eps_clip_high=0.05 is a midpoint between 0.2 default and 0.01 tight.
+    # History: 0.2 → 0.1 (52760067, collapsed step ~19) → 0.01 (24GPU runs
+    # 52863466/82 stable). 0.05 keeps real trust-region enforcement during
+    # direction drift (engages ~10% on collapse-onset ratios) without the
+    # over-aggressive clamping of 0.01. Asymmetric — only the upper bound is
+    # tightened (runaway upward ratios are the dangerous mode).
+    eps_clip_high: 0.05
     loss_reduction: token_mean
 
   # Training loop settings
@@ -154,12 +160,20 @@ trainer:
   export_path: null
 
   # Policy optimizer
+  # max_grad_norm=0.9: in healthy phases of recent runs on this dataset+base,
+  # ‖g‖ peaked at 0.81 (mean ≈ 0.32, std ≈ 0.24). 0.9 is just above the
+  # natural healthy peak. Above this is correlation-mode-collapse territory:
+  # 52435048 (r2egym): grad_norm 0.81 → 1.96 (step 17, first pathological)
+  #                  → 8.70 (step 22, peak of collapse).
+  # 52435057 (GLM-4.7-swesm): grad_norm 0.63 → 1.41 → 3.39 (collapse).
+  # This bound prefers longer convergence over instability — accepts that
+  # max-advantage rollouts on long sequences may also be clipped.
   policy:
     optimizer_config:
       lr: 8e-6
       weight_decay: 0.0
       adam_betas: [0.9, 0.999]
-      max_grad_norm: null
+      max_grad_norm: 0.9
     fsdp_config:
       cpu_offload: true
       reshard_after_forward: true
@@ -182,7 +196,7 @@ trainer:
   # Fully async generation (settings from v2_maxconcurrent)
   fully_async:
     max_staleness_steps: 16
-    num_parallel_generation_workers: 768
+    num_parallel_generation_workers: 96
 
 # Generator configuration
 generator:

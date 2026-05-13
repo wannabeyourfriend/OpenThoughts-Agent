@@ -72,7 +72,7 @@ terminal_bench:
       - RewardFileEmptyError
       - VerifierOutputParseError
 
-    n_concurrent_trials: 280
+    n_concurrent_trials: 300
 
     # Logging settings
     log_level: INFO
@@ -121,7 +121,7 @@ trainer:
     use_kl_loss: false
     kl_loss_coef: 0.0
     eps_clip_low: 0.2
-    eps_clip_high: 0.2
+    eps_clip_high: 0.05
     loss_reduction: token_mean
 
   # YARN RoPE scaling: extend 32k native context to 131k
@@ -178,7 +178,7 @@ trainer:
       lr: 8e-6
       weight_decay: 0.0
       adam_betas: [0.9, 0.999]
-      max_grad_norm: 10.0
+      max_grad_norm: 0.9
     fsdp_config:
       cpu_offload: false
       reshard_after_forward: true
@@ -198,7 +198,7 @@ trainer:
 
   fully_async:
     max_staleness_steps: 16
-    num_parallel_generation_workers: 768
+    num_parallel_generation_workers: 96
 
 generator:
   backend: vllm
