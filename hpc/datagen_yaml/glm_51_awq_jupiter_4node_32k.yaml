@@ -4,10 +4,13 @@
 # 32K context variant, Jupiter GH200 multi-node
 #
 # Hardware: 4 nodes × 4x GH200 96GB = 16 GPUs (~1.5TB VRAM total)
-#   - AWQ 4-bit weights (~300GB) → TP=4 within node (~75GB/GPU)
-#   - 96GB - 75GB ≈ 21GB per GPU for KV cache + activations
-#   - fp8 KV cache halves KV footprint to fit the tight headroom
-#   - DP=4 (one replica per node)
+#   - AWQ 4-bit weights (~300GB) → TP=16 cross-node (~19GB/GPU)
+#   - 96GB - 19GB ≈ 77GB per GPU for KV cache + activations (very roomy)
+#   - DP=1 single replica (the new vLLM wheel's V1 engine has a multi-node
+#     DP regression: vllm/v1/engine/utils.py:get_device_indices crashes
+#     with IndexError when trying to enumerate cross-node DP replica GPU
+#     indices). Until vLLM fixes this, we use TP=16/DP=1 — single replica
+#     spanning all 4 nodes via NCCL TP over IB.
 
 engine:
   type: vllm_local
@@ -27,9 +30,9 @@ backend:
 vllm_server:
   model_path: QuantTrio/GLM-5.1-AWQ
   num_replicas: 1
-  tensor_parallel_size: 4
+  tensor_parallel_size: 16
   pipeline_parallel_size: 1
-  data_parallel_size: 4
+  data_parallel_size: 1
   time_limit: '11:59:00'
   max_model_len: 32768
   max_num_seqs: 32
