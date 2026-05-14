@@ -69,9 +69,18 @@ vllm_server:
   # - --speculative-config
   # - '{"method":"mtp","num_speculative_tokens":1}'
   # Prefill / caching optimizations
-  - --enable-chunked-prefill
-  - --max-num-partial-prefills
-  - '1'
+  # NOTE: --enable-chunked-prefill REMOVED for 449086 follow-up.
+  # On 449086 (FlashInfer sampler disabled), _topk_topp_kernel no longer
+  # JIT'd, but _build_prefill_chunk_metadata_kernel (the chunked-prefill
+  # scheduler kernel) still JIT-compiled mid-inference at 22:52:22 and
+  # produced the identical cross-node NCCL coordination hang we saw on
+  # 448882. Disabling chunked prefill eliminates this kernel entirely.
+  # Trade-off: prefill on prompts > max-num-batched-tokens (16384) becomes
+  # single-shot rather than chunked, which is fine for stackexchange-tezos
+  # since most prompts are well under 16k.
+  # - --enable-chunked-prefill
+  # - --max-num-partial-prefills
+  # - '1'
   - --enable-prefix-caching
   - --max-num-batched-tokens
   - '16384'
