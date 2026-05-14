@@ -1258,7 +1258,9 @@ After an 8B SFT job completes on a no-internet cluster (Jupiter, Leonardo), foll
      relaunch and let chain restarts auto-resume from the latest checkpoint.
 
    ```bash
-   # On the login node (has direct internet on Jupiter; use proxychains on Leonardo)
+   # On the login node (works on Jupiter — login has direct internet).
+   # On LEONARDO, this WILL be SIGKILLed at ~100s — use the sbatch template in
+   # "Leonardo HF Upload — Use sbatch, NOT the Login Node" below.
    source ~/secrets.env
    huggingface-cli upload-large-folder \
      <hub_model_id> \
@@ -1338,6 +1340,9 @@ change.
      `laion/<job_name>-<step>-32B`.
 
    ```bash
+   # Works on Jupiter from the login node. On LEONARDO this WILL be SIGKILLed
+   # at ~100s — use the sbatch template in "Leonardo HF Upload — Use sbatch,
+   # NOT the Login Node" below. Verified 131GB → ~4 min via that path.
    source ~/secrets.env
    huggingface-cli upload-large-folder \
      <hub_model_id> \
@@ -1370,6 +1375,95 @@ ls $CHECKPOINTS_DIR/<job_name>/ | grep -E 'safetensors|global_step'
 - `model-*.safetensors` at root → 8B path (or Qwen3.5 — no consolidate needed)
 - `global_stepN/` + `zero_to_fp32.py` at root, no safetensors → 32B path
   (this checklist)
+
+## Leonardo HF Upload — Use sbatch, NOT the Login Node
+
+Leonardo's login nodes SIGKILL any long-running user process after ~100 seconds,
+regardless of how it's detached. We've verified this kills:
+- `nohup huggingface-cli ... &` (~80s)
+- `tmux new-session -d -s ... "huggingface-cli ..."` (~2 min)
+- `systemd-run --user --unit=... huggingface-cli ...` (also SIGKILLed at ~100s)
+
+The login node DOES have direct internet (no proxychains needed there) — the
+problem is purely the process killer, not network.
+
+**The reliable path is an sbatch job on a compute node with an SSH tunnel back
+to the login node.** Compute nodes have no direct internet, but the existing
+`eval/leonardo/start_proxy_tunnel.sh` opens a SOCKS5 forward from the compute
+node to login05 and prints a `proxychains4 -q -f <config>` command prefix
+that wraps any HF-bound command.
+
+### Pre-flight (from your local Mac)
+
+The intra-cluster SSH cert expires every ~12h. Refresh if stale:
+```bash
+step ssh certificate 'bfeuer00' --provisioner cineca-hpc \
+  ~/.ssh/leonardo_daytona --no-password --insecure
+ssh-keygen -R login.leonardo.cineca.it && \
+rsync -avz -e 'ssh -i ~/.ssh/leonardo_daytona -o IdentitiesOnly=yes -o StrictHostKeyChecking=no' \
+  ~/.ssh/leonardo_daytona ~/.ssh/leonardo_daytona.pub ~/.ssh/leonardo_daytona-cert.pub \
+  bfeuer00@login.leonardo.cineca.it:~/.ssh/
+```
+
+Verify with `ssh-keygen -L -f ~/.ssh/leonardo_daytona-cert.pub | grep Valid`.
+
+### sbatch template for HF upload
+
+```bash
+cat > /leonardo_work/AIFAC_5C0_290/bfeuer00/upload_<job_name>.sbatch <<'EOF'
+#!/bin/bash
+#SBATCH --job-name=hf_upload_<short>
+#SBATCH --output=<workdir>/upload_logs/upload_sbatch.log
+#SBATCH --time=00:30:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=32G
+#SBATCH --partition=boost_usr_prod
+#SBATCH --account=AIFAC_5C0_290
+#SBATCH --gres=gpu:1
+#SBATCH --qos=boost_qos_dbg
+
+set -e
+source /leonardo_work/AIFAC_5C0_290/bfeuer00/miniforge3/etc/profile.d/conda.sh
+conda activate otagent
+source ~/secrets.env
+
+WD=<workdir>
+DCFT=/leonardo_work/AIFAC_5C0_290/bfeuer00/code/OpenThoughts-Agent
+
+unset LD_PRELOAD
+export PATH="/leonardo_work/AIFAC_5C0_290/bfeuer00/proxychains/bin:${PATH}"
+CMD_PREFIX=$(bash "$DCFT/eval/leonardo/start_proxy_tunnel.sh")
+
+cd $WD/final_repo   # or $CHECKPOINTS_DIR/<job_name> for 8B path
+$CMD_PREFIX /leonardo_work/AIFAC_5C0_290/bfeuer00/miniforge3/envs/otagent/bin/huggingface-cli \
+    upload-large-folder <hub_model_id> . \
+    --repo-type=model --num-workers 4
+EOF
+cd /leonardo_work/AIFAC_5C0_290/bfeuer00
+sbatch upload_<job_name>.sbatch
+```
+
+Then `squeue -j <jobid>` and `tail -f <workdir>/upload_logs/upload_sbatch.log`.
+
+### Numbers / sizing
+
+- 131GB consolidated 32B → ~4 min wall through the tunnel at `--num-workers 4`
+- 30 min wall fits `boost_qos_dbg` (debug QOS); longer jobs need a different QOS
+- `--num-workers 4` is conservative (default goes up to many dozens); higher
+  worker counts may help throughput but the upload-large-folder is usually
+  network-bound, not CPU/memory-bound at this stage
+- Resume is automatic — `.cache/huggingface/upload/` persists state; if the
+  job is requeued, it picks up where it left off
+
+### Why this matters for the SFT checklists
+
+Both the 8B (step 2) and 32B (step 3) cleanup checklists invoke
+`huggingface-cli upload-large-folder`. On Jupiter that works straight from
+the login node (login has direct internet, no kill policy). On Leonardo
+the same one-liner WILL die at ~100s and leave a partial upload — use the
+sbatch template above instead.
 
 ## NYU Torch Access
 
