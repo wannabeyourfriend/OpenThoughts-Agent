@@ -273,15 +273,16 @@ class VLLMServer:
         env = os.environ.copy()
         env["VLLM_MODEL_PATH"] = self.config.model_path
         env["PYTHONUNBUFFERED"] = "1"  # Ensure real-time log output
-        # NOTE: VLLM_USE_V2_MODEL_RUNNER=1 is the intended setting for this
-        # wheel BUT V2's Ray executor (vllm/v1/.../ray_executor_v2.py) has a
-        # cross-session ActorHandle bug — at TP=16/DP=1 cross-node init it
-        # internally calls ray.shutdown() then ray.init(), and the cached
-        # actor handles from the prior session crash with
-        #   ray.exceptions.ActorHandleNotFoundError: ActorHandle objects are
-        #   not valid across Ray sessions. (job 03000000 → 04000000)
-        # See job 447741 logs. Leaving V2 unset (defaults to V1 model runner
-        # inside the V1 engine framework) until vLLM fixes that path.
+        # Opt into the new V2 model runner — intended setting for this wheel.
+        # NOTE: the multi-node datagen launch path is currently blocked by a
+        # separate, NOT-V2-gated bug in vllm/v1/executor/ray_executor_v2.py
+        # (cross-session ActorHandle: job 03000000 → job 04000000 after an
+        # internal ray.shutdown()/ray.init()). That bug reproduces with
+        # VLLM_USE_V2_MODEL_RUNNER both set AND unset (see Jupiter 447712,
+        # 447741, 447750), so there's no reason to leave V2 off on its
+        # account. Awaiting a vLLM patch to ray_executor_v2 before relaunching
+        # cross-node datagen.
+        env["VLLM_USE_V2_MODEL_RUNNER"] = "1"
         # Set VLLM_HOST_IP so vLLM's internal get_ip() returns the real node IP.
         # This is used for Ray placement group node constraints and NCCL communication,
         # NOT for the API server bind address (that's --host above).
