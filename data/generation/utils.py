@@ -80,7 +80,13 @@ class VLLMServerConfig:
     endpoint_json_path: Optional[str] = None
     time_limit: str = "48:00:00"
     hf_overrides: Optional[str] = None
-    use_deep_gemm: bool = False
+    # use_deep_gemm + FlashInfer flags use Optional[bool] = None so YAMLs
+    # that omit the key leave the env var unset → vLLM picks its own default
+    # (DEEP_GEMM=True, SAMPLER=True, MOE_FP16=False per vllm/envs.py).
+    # Explicit true/false in YAML forces the env var to 1/0.
+    use_deep_gemm: Optional[bool] = None
+    use_flashinfer_sampler: Optional[bool] = None
+    use_flashinfer_moe_fp16: Optional[bool] = None
     max_num_seqs: Optional[int] = None
     gpu_memory_utilization: Optional[float] = None
     enable_expert_parallel: bool = False
