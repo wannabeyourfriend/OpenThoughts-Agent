@@ -273,15 +273,15 @@ class VLLMServer:
         env = os.environ.copy()
         env["VLLM_MODEL_PATH"] = self.config.model_path
         env["PYTHONUNBUFFERED"] = "1"  # Ensure real-time log output
-        # Opt into the new V2 model runner (default for our latest vLLM wheel).
-        # Note: the V1 engine FRAMEWORK is the wheel default and is independent
-        # of this flag — V2_MODEL_RUNNER controls per-rank model execution
-        # inside that engine. The cross-node DP-coordinator bug we hit earlier
-        # (Error setting CUDA_VISIBLE_DEVICES in vllm/v1/engine/utils.py) was
-        # NOT caused by this flag — it reproduced with the flag unset too.
-        # The fix is the TP=16/DP=1 datagen layout that avoids the
-        # DP-coordinator path entirely.
-        env["VLLM_USE_V2_MODEL_RUNNER"] = "1"
+        # NOTE: VLLM_USE_V2_MODEL_RUNNER=1 is the intended setting for this
+        # wheel BUT V2's Ray executor (vllm/v1/.../ray_executor_v2.py) has a
+        # cross-session ActorHandle bug — at TP=16/DP=1 cross-node init it
+        # internally calls ray.shutdown() then ray.init(), and the cached
+        # actor handles from the prior session crash with
+        #   ray.exceptions.ActorHandleNotFoundError: ActorHandle objects are
+        #   not valid across Ray sessions. (job 03000000 → 04000000)
+        # See job 447741 logs. Leaving V2 unset (defaults to V1 model runner
+        # inside the V1 engine framework) until vLLM fixes that path.
         # Set VLLM_HOST_IP so vLLM's internal get_ip() returns the real node IP.
         # This is used for Ray placement group node constraints and NCCL communication,
         # NOT for the API server bind address (that's --host above).
