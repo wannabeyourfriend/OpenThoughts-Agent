@@ -794,6 +794,15 @@ jupiter = HPC(
         # Promote async NCCL errors (e.g. failed allreduce on one rank) to a
         # raised exception instead of a silent hang, so we get a real traceback.
         "TORCH_NCCL_ASYNC_ERROR_HANDLING": "1",
+        # Extend the NCCL watchdog timeout from the 10-min default to 30 min.
+        # 12-node FA3 SFT 445090 died at 2h44m with WorkNCCL reduce_scatter
+        # hanging 600.077s before the watchdog SIGABRT'd. Training was healthy
+        # right up to the hang (loss 0.35, grad 0.13) — at 48-rank scale on
+        # Jupiter IB, one rank occasionally straggles past 10 min on a single
+        # collective. 30 min lets the run survive transient stragglers without
+        # masking permanent hangs (those still die, just 20 min later).
+        "TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC": "1800",
+        "TORCH_NCCL_BLOCKING_WAIT_TIMEOUT_MS": "1800000",
     },
     # NOTE: Do NOT use master_addr_suffix="i" - the "i" suffixed hostname is not DNS-resolvable
     # InfiniBand routing is handled by NCCL_SOCKET_IFNAME=ib0 instead
