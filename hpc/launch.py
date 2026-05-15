@@ -1,5 +1,6 @@
 import os
 import re
+import sys
 import json
 import yaml
 import dataclasses
@@ -487,9 +488,19 @@ def display_args(exp_args, name):
 def main():
     # Lazy import to avoid torch dependency at module load time
     from database.unified_db.utils import load_supabase_keys
+    from hpc.resume_manager import ResumeBail
     load_supabase_keys()
     # this is where defaults are stored for experiments_dir and deepspeed
     cli_args = parse_args()
+
+    try:
+        return _main_dispatch(cli_args)
+    except ResumeBail as exc:
+        print(exc.message, file=sys.stderr)
+        sys.exit(2)
+
+
+def _main_dispatch(cli_args):
 
     # Apply job-type-specific argument remapping
     job_type_raw = cli_args.get("job_type", "").lower()

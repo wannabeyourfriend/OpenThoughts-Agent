@@ -350,6 +350,22 @@ class LaunchArgs:
             "Defaults to ./experiments/<job_name> when not specified."
         },
     )
+    force_mutate: bool = field(
+        default=False,
+        metadata={
+            "help": "[datagen/eval] Allow the resume manager to patch an existing job dir "
+            "to reconcile mutable config drift (synthetic vLLM IDs, api_base, timeout "
+            "multipliers, retry settings). Ignored for SFT / RL / consolidate."
+        },
+    )
+    allow_overwrite: bool = field(
+        default=False,
+        metadata={
+            "help": "[datagen/eval] When resume mutation is not possible (fatal drift "
+            "or --force_mutate off), wipe the existing job dir and start fresh instead "
+            "of bailing. Ignored for SFT / RL / consolidate."
+        },
+    )
     image: Optional[str] = field(
         default=None, metadata={"help": "Container image to use"}
     )

@@ -569,6 +569,58 @@ def merge_agent_kwargs(
     return agent_kwargs, passthrough
 
 
+def merge_harbor_config(
+    harbor_config_data: dict,
+    *,
+    agent_name: Optional[str],
+    model_name: str,
+    n_concurrent: int,
+    endpoint_meta: Optional[dict],
+    agent_kwarg_overrides: List[str],
+    extra_agent_kwargs: Optional[Dict[str, Any]] = None,
+) -> dict:
+    """Materialize the merged Harbor config dict without writing files.
+
+    This is the side-effect-free core of ``build_harbor_command``: it
+    applies the same precedence rules (YAML base → endpoint values →
+    extra kwargs → CLI overrides) and returns a fresh dict ready to be
+    serialized as YAML or compared against a prior run's
+    ``config.json`` / ``merged_harbor_config.yaml``.
+
+    Used by ``build_harbor_command`` for the actual sbatch path and by
+    ``hpc.resume_manager`` for the resume-policy materialization step.
+
+    The result mirrors the legacy nested-orchestrator shape; callers that
+    need the unified flat shape can read top-level fields directly (they
+    are normalized by Harbor's own ``_migrate_orchestrator_config``
+    validator on load).
+    """
+    agent_kwargs, _ = merge_agent_kwargs(
+        harbor_config_data=harbor_config_data,
+        agent_name=agent_name,
+        endpoint_meta=endpoint_meta,
+        extra_kwargs=extra_agent_kwargs,
+        cli_overrides=agent_kwarg_overrides,
+    )
+
+    modified_config = copy.deepcopy(harbor_config_data)
+
+    if "orchestrator" not in modified_config:
+        modified_config["orchestrator"] = {}
+    modified_config["orchestrator"]["n_concurrent_trials"] = n_concurrent
+
+    agents = modified_config.get("agents", [])
+    for agent in agents:
+        if agent_name:
+            agent["name"] = agent_name
+        agent["model_name"] = model_name
+        existing_kwargs = agent.get("kwargs", {})
+        existing_kwargs.update(agent_kwargs)
+        agent["kwargs"] = existing_kwargs
+
+    return modified_config
+
+
 def build_harbor_command(
     harbor_binary: str,
     harbor_config_path: str,
@@ -617,8 +669,9 @@ def build_harbor_command(
     Returns:
         Complete harbor command as list of strings
     """
-    # Merge agent kwargs using consolidated helper
-    agent_kwargs, passthrough = merge_agent_kwargs(
+    # Compute passthrough for CLI flags; the merged-config path goes through
+    # the side-effect-free merge_harbor_config helper.
+    _, passthrough = merge_agent_kwargs(
         harbor_config_data=harbor_config_data,
         agent_name=agent_name,
         endpoint_meta=endpoint_meta,
@@ -626,29 +679,15 @@ def build_harbor_command(
         cli_overrides=agent_kwarg_overrides,
     )
 
-    # Create a modified config with model_name and kwargs merged directly.
-    # This avoids using --agent/--model CLI flags which would cause Harbor to
-    # create a fresh AgentConfig and lose settings like override_setup_timeout_sec.
-    modified_config = copy.deepcopy(harbor_config_data)
-
-    # Sync orchestrator.n_concurrent_trials with the resolved value so the
-    # merged config is an accurate record of what was actually used.
-    if "orchestrator" not in modified_config:
-        modified_config["orchestrator"] = {}
-    modified_config["orchestrator"]["n_concurrent_trials"] = n_concurrent
-
-    # Update all agents in the config with model_name and merged kwargs.
-    # If agent_name is specified, also override the agent name (e.g., "oracle").
-    agents = modified_config.get("agents", [])
-    for agent in agents:
-        if agent_name:
-            agent["name"] = agent_name
-        # Set model_name directly in config
-        agent["model_name"] = model_name
-        # Merge kwargs into the agent's existing kwargs
-        existing_kwargs = agent.get("kwargs", {})
-        existing_kwargs.update(agent_kwargs)
-        agent["kwargs"] = existing_kwargs
+    modified_config = merge_harbor_config(
+        harbor_config_data,
+        agent_name=agent_name,
+        model_name=model_name,
+        n_concurrent=n_concurrent,
+        endpoint_meta=endpoint_meta,
+        agent_kwarg_overrides=agent_kwarg_overrides,
+        extra_agent_kwargs=extra_agent_kwargs,
+    )
 
     # Write the modified config to the experiment directory (jobs_dir).
     # This keeps the merged config alongside the experiment outputs for reproducibility.
@@ -864,5 +903,6 @@ __all__ = [
     "default_job_name",
     # Command building and execution
     "build_harbor_command",
+    "merge_harbor_config",
     "run_harbor_cli",
 ]
