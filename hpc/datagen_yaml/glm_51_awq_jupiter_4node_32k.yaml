@@ -95,5 +95,8 @@ vllm_server:
   # - --max-num-partial-prefills
   # - '1'
   # - --enable-prefix-caching
+  # With chunked prefill OFF (now the OT-Agent launcher default), vLLM requires
+  # max_num_batched_tokens >= max_model_len. Was 16384, raised to 32768 to
+  # match max_model_len so prompts fit in a single forward pass.
   - --max-num-batched-tokens
-  - '16384'
+  - '32768'

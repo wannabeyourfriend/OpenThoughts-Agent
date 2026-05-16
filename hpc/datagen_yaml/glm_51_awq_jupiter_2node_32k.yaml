@@ -87,5 +87,11 @@ vllm_server:
   # (Bug C iter 4-8). To re-enable for this YAML, add the flag back here OR set
   # `enable_chunked_prefill: true` / `enable_prefix_caching: true` at the top
   # level — both opt-in paths suppress the auto-injected `--no-...`.
+  # With chunked prefill OFF (now the OT-Agent launcher default), vLLM requires
+  # max_num_batched_tokens >= max_model_len — otherwise the prompt can't fit
+  # in a single forward pass and the engine refuses to start with a Pydantic
+  # SchedulerConfig validation error. Was 16384, raised to 32768 = max_model_len
+  # (jupiter datagen 458718 died on this validation 2026-05-16 after the
+  # default-off patch landed).
   - --max-num-batched-tokens
-  - '16384'
+  - '32768'
