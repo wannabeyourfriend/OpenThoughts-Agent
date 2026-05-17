@@ -59,10 +59,16 @@ vllm_server:
   - bfloat16
   - --kv-cache-dtype
   - fp8
-  # AWQ quantization is auto-detected from the model config but pass
-  # explicitly to match the existing 8-node Qwen3.5-AWQ recipe.
+  # Use awq_marlin (NOT awq). The vanilla `awq` kernel only supports
+  # torch.float16; bfloat16 — which the GLM-5.1 recipe uses and which
+  # we keep here for consistency with the rest of the GH200 stack —
+  # raises:
+  #   ValidationError: torch.bfloat16 is not supported for quantization
+  #   method awq. Supported dtypes: [torch.float16]
+  # awq_marlin is the modern AWQ kernel: supports bfloat16 + is faster
+  # (vLLM even prints a hint suggesting the switch when you pass `awq`).
   - --quantization
-  - awq
+  - awq_marlin
   # Disables CUDA graphs + Inductor; Triton kernels still JIT but in eager
   # dispatch, avoiding the cross-rank deadlock.
   - --enforce-eager
