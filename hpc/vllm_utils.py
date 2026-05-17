@@ -405,19 +405,32 @@ class VLLMServer:
         return self.endpoint
 
     def _warmup_serving(self) -> None:
-        """Drive 8 sequential warmup chat-completion requests at production
-        sampling params (top_k=20, top_p=0.95) and varying prompt lengths to
-        pre-JIT the vLLM-native Triton kernels:
+        """Pre-JIT the vLLM-native Triton kernels that are most likely to
+        deadlock the engine on first production traffic (Bug C: cross-rank
+        ``shm_broadcast`` RPC timeout while one worker is stuck mid-JIT).
 
-          - _topk_topp_kernel (vllm/v1/sample/ops/topk_topp_triton.py)
-              specialized per (top_k, top_p, vocab, dtype) tuple
-          - _build_prefill_chunk_metadata_kernel
-              specialized per chunk-shape distribution
+        Runs two phases:
 
-        FlashInfer autotune covers FlashInfer-side kernels but neither of
-        these. Each warmup request stays small (max_tokens=32) so the total
-        warmup wall time is modest (~30-60s at cross-node TP=16, vs. the
-        ~5+ min JIT-then-die cycle we hit at first real serving request).
+          1. **Sequential, short, varied-prompt** — 8 requests, max_tokens=32,
+             one at a time. Fires per-prompt-shape JIT for:
+               - ``_topk_topp_kernel`` (vllm/v1/sample/ops/topk_topp_triton.py),
+                 specialized per (top_k, top_p, vocab, dtype) tuple
+               - ``_build_prefill_chunk_metadata_kernel`` (only relevant if
+                 chunked prefill is ON; with the OT-Agent launcher's
+                 default-OFF this is moot but still cheap to cover)
+
+          2. **Concurrent, batched, longer-decode** — `concurrent_n` requests
+             fired in parallel, max_tokens=512, one of them a long-ish prompt
+             (~2k tokens). This drives the *batched* sampling kernel — Triton
+             specializes on batch dimension, so a single-request warmup
+             only JITs the batch=1 variant. Production traffic (Harbor at
+             ``trace_n_concurrent>=16``) immediately hits the batch=N
+             specialization, which then JITs mid-inference and stalls
+             cross-rank coordination → ``EngineDeadError`` (the residual
+             failure observed in iter 8 + iter 9).
+
+        Total wall budget: ~1-3 min on cross-node TP=16, much less than the
+        ~5+ min JIT-then-die cycle we hit at first real serving request.
 
         Failures bubble up to the caller wrapped in try/except — a partial
         warmup is acceptable; we still JIT what we can.
@@ -425,6 +438,7 @@ class VLLMServer:
         import urllib.request
         import urllib.error
         import json as _json
+        from concurrent.futures import ThreadPoolExecutor, as_completed
 
         # First, fetch the served model name (auto-generated when
         # custom_model_name is None).
@@ -437,10 +451,40 @@ class VLLMServer:
             print(f"  [warmup] could not fetch /v1/models ({e!r}); skipping")
             return
 
+        # ---- shared helper: drive one /v1/chat/completions request ----
+        def _fire(prompt: str, max_tokens: int, label: str) -> tuple[str, float, bool, str]:
+            body = _json.dumps({
+                "model": model_name,
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": max_tokens,
+                # Sampling params chosen to match the most common production
+                # config (Harbor terminus-2 + Qwen3/GLM-family). If your
+                # serving uses different params, JIT for THOSE specializations
+                # will still happen on the first real request — but the
+                # most-common path is what matters here.
+                "top_k": 20,
+                "top_p": 0.95,
+                "temperature": 0.7,
+            }).encode()
+            req = urllib.request.Request(
+                f"{self.base_url}/v1/chat/completions",
+                data=body,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            t0 = time.time()
+            try:
+                with urllib.request.urlopen(req, timeout=300) as r:
+                    _ = r.read()
+                return (label, time.time() - t0, True, "")
+            except Exception as e:
+                return (label, time.time() - t0, False, repr(e))
+
+        # ---- phase 1: sequential, short, varied-prompt ----
         # Varied prompt lengths so the prefill-chunk metadata kernel sees
         # several distinct chunk patterns. Short-ish prompts only — we
         # don't want warmup to eat real GPU time.
-        prompts = [
+        seq_prompts = [
             "Hello world.",
             "Write a short Python function that adds two numbers.",
             "Once upon a time, in a faraway land, there lived a curious cat. "
@@ -451,41 +495,61 @@ class VLLMServer:
             "Compute the integral of x dx from 0 to 1.",
             "List 10 random English words: " + " ".join(f"word{i}" for i in range(48)),
         ]
-
-        print(f"  [warmup] driving {len(prompts)} sequential requests against {model_name}...")
-        ok = 0
-        for i, prompt in enumerate(prompts, 1):
-            body = _json.dumps({
-                "model": model_name,
-                "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": 32,
-                # Sampling params chosen to match the most common production
-                # config (Harbor terminus-2 + Qwen3/GLM-family). If your
-                # serving uses different params, JIT for THOSE specializations
-                # will still happen on the first real request — but at least
-                # the most common path is covered.
-                "top_k": 20,
-                "top_p": 0.95,
-                "temperature": 0.7,
-            }).encode()
-            try:
-                req = urllib.request.Request(
-                    f"{self.base_url}/v1/chat/completions",
-                    data=body,
-                    headers={"Content-Type": "application/json"},
-                    method="POST",
-                )
-                t0 = time.time()
-                with urllib.request.urlopen(req, timeout=180) as r:
-                    _ = r.read()
-                dt = time.time() - t0
-                ok += 1
-                print(f"  [warmup] {i}/{len(prompts)} OK ({dt:.1f}s, {len(prompt.split())} words)")
-            except Exception as e:
+        print(f"  [warmup] phase 1: {len(seq_prompts)} sequential requests "
+              f"against {model_name} (max_tokens=32, JITs single-request "
+              "sampling kernel)...")
+        seq_ok = 0
+        for i, prompt in enumerate(seq_prompts, 1):
+            label = f"seq {i}/{len(seq_prompts)}"
+            _, dt, success, err = _fire(prompt, max_tokens=32, label=label)
+            if success:
+                seq_ok += 1
+                print(f"  [warmup] {label} OK ({dt:.1f}s, {len(prompt.split())} words)")
+            else:
                 # Don't bail — partial warmup still helps. JIT errors here
                 # are the load-bearing thing we WANT to pay during warmup.
-                print(f"  [warmup] {i}/{len(prompts)} FAILED: {e!r}")
-        print(f"  [warmup] complete ({ok}/{len(prompts)} succeeded)")
+                print(f"  [warmup] {label} FAILED: {err}")
+
+        # ---- phase 2: concurrent, batched, longer-decode ----
+        # Critical for Bug C iter 8/9 residual stall: Triton's
+        # ``_topk_topp_kernel`` specializes on batch dimension. Phase 1
+        # only JITs the batch=1 variant; first real Harbor traffic hits
+        # batch=16 or 32 which then JITs mid-inference and stalls
+        # cross-rank coordination. Drive a batch=concurrent_n forward
+        # pass here so the batched variant is JIT'd before traffic.
+        concurrent_n = 16
+        long_prompt = (
+            "You are an experienced software engineer. Consider the following "
+            "context carefully and respond with a short summary at the end. "
+            + ("Context line: a thoughtful description of a non-trivial "
+               "engineering tradeoff. " * 80)
+        )
+        batch_prompts = list(seq_prompts) + [long_prompt]
+        # Cycle batch_prompts up to concurrent_n entries
+        batch_n_prompts = [
+            batch_prompts[i % len(batch_prompts)] for i in range(concurrent_n)
+        ]
+        print(f"  [warmup] phase 2: {concurrent_n} concurrent requests "
+              "(max_tokens=512, one ~2k-token prompt; JITs batched sampling "
+              "kernel at production batch size)...")
+        batch_ok = 0
+        t_batch = time.time()
+        with ThreadPoolExecutor(max_workers=concurrent_n) as ex:
+            futures = [
+                ex.submit(_fire, p, 512, f"par {i + 1}/{concurrent_n}")
+                for i, p in enumerate(batch_n_prompts)
+            ]
+            for f in as_completed(futures):
+                label, dt, success, err = f.result()
+                if success:
+                    batch_ok += 1
+                    print(f"  [warmup] {label} OK ({dt:.1f}s)")
+                else:
+                    print(f"  [warmup] {label} FAILED: {err}")
+        print(f"  [warmup] phase 2 wall: {time.time() - t_batch:.1f}s "
+              f"({batch_ok}/{concurrent_n} succeeded)")
+        print(f"  [warmup] complete (phase 1: {seq_ok}/{len(seq_prompts)}, "
+              f"phase 2: {batch_ok}/{concurrent_n})")
 
     def stop(self) -> None:
         """Stop the vLLM server."""
