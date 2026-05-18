@@ -336,6 +336,15 @@ def _diff_dicts(
                     )
                 )
             else:
+                # Special case: planned config explicitly omitted (None) a
+                # field that on-disk has set. The on-disk value is preserved
+                # at runtime (Harbor reads its own config), so this is a
+                # no-op semantically — emitting it as fatal blocks resumes
+                # whose YAMLs simply don't constrain every Pydantic-defaulted
+                # field. Only suppress when planned-is-None — None on disk
+                # vs a planned non-None is still a real drift.
+                if sub_new is None and sub_old is not None:
+                    continue
                 drifts.extend(_diff_dicts(sub_old, sub_new, path + (key,)))
         return drifts
     if isinstance(old, list):
@@ -1183,12 +1192,14 @@ def _materialize_planned_config(exp_args: Dict[str, Any]) -> Optional[Dict[str, 
     if base_job_name and planned.get("job_name") in (None, "", "default-trace-job"):
         planned["job_name"] = f"{base_job_name}_traces"
     # jobs_dir is computed by the launcher as <experiments_dir>/trace_jobs.
+    # Resolve to an absolute path so the comparison against the on-disk
+    # absolute path doesn't trip on absolute-vs-relative shape alone.
+    from hpc.launch_utils import resolve_workspace_path
     experiments_dir = exp_args.get("experiments_dir")
     if planned.get("jobs_dir") in (None, "", "trace_jobs"):
         if experiments_dir:
-            planned["jobs_dir"] = str(Path(str(experiments_dir)) / "trace_jobs")
+            planned["jobs_dir"] = str(resolve_workspace_path(str(experiments_dir)) / "trace_jobs")
         elif base_job_name:
-            from hpc.launch_utils import resolve_workspace_path
             planned["jobs_dir"] = str(
                 resolve_workspace_path(f"experiments/{base_job_name}") / "trace_jobs"
             )
