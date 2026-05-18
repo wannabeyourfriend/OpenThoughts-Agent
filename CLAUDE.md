@@ -975,7 +975,7 @@ python /e/scratch/jureap59/feuer1/code/axolotl/convert_axolotl_checkpoint.py "$I
 grep -rIE '(sk-[a-zA-Z0-9]{20,}|AKIA[0-9A-Z]{16}|ghp_[a-zA-Z0-9]{36}|hf_[a-zA-Z0-9]{34})' "$OUT"
 
 # 3. Upload to HF (axolotl's `hub_strategy: end` is disabled per above)
-huggingface-cli upload-large-folder laion/<hub_model_id> "$OUT" --repo-type=model
+hf upload laion/<hub_model_id> "$OUT" . --repo-type=model
 
 # 4. Register in Supabase
 python scripts/database/manual_db_push.py \
@@ -1095,6 +1095,100 @@ A run is at meaningful collapse risk when ≥2 of the following fire in the same
 
 A single metric crossing a threshold is suggestive but not actionable; two-of-the-above firing simultaneously is the threshold for cancel + salvage per the RL Job Cleanup Checklist below.
 
+### Inspecting spike-mitigation engagement (StaleClip / ZClip)
+
+`parse_skyrl_metrics.py` covers the broad reward/grad/entropy view, but it
+doesn't tell you whether the **experimental knob** (StaleClip's predictive LR
+damp, or ZClip's adaptive grad-norm clip) actually engaged on this run. When
+running a spike-mitigation ablation — especially when wandb is unavailable
+(Jupiter) and the only signal source is the `.out` log — also run:
+
+```bash
+python scripts/analysis/parse_spike_mitigation.py \
+  experiments/<job_name>
+
+# or, when chain-restarts ran in a dedup'd "_2" / "-0" dir alongside the
+# primary, point at the parent so it picks up all .out logs:
+python scripts/analysis/parse_spike_mitigation.py \
+  experiments/  # matches all rl__*/logs/*.out
+```
+
+The script:
+1. Auto-detects whether `stale_clip` or `z_clip` is in play from the WANDB_MIRROR
+   payloads (looks for `policy/stale_clip/triggered` vs `policy/z_clip/triggered`).
+2. Aggregates per-step metrics across **every** `.out` in the experiment dir,
+   deduplicating by step number with later writes winning — so a chain
+   that ran across 5 SLURM submissions reads as one trajectory.
+3. Prints a side-by-side trajectory table (reward, grad, entropy, log-ratio
+   stats, and the spike-mitigation engagement columns).
+4. Reports a one-paragraph engagement summary: how many steps triggered,
+   the distribution of `scale` (StaleClip) / `warmup_remaining` (ZClip),
+   the first step the mechanism actually fired.
+5. Re-runs the CLAUDE.md collapse-signal scan (grad>1.0 ×2, log_ratio_max>0.5,
+   n_tokens_dp_gt_50pct>50) and lists which steps had ≥2 firing
+   simultaneously. Empty list = healthy run.
+
+When wandb access lands, this script becomes the second-pass companion to
+`parse_skyrl_metrics.py` in the RL Cleanup Checklist (step 9). Reading
+`stale_clip/triggered` and `stale_clip/scale` from the wandb UI directly is
+fine; the script is mainly for the no-wandb path and for grepping cross-job
+trajectories without clicking through panels.
+
+## HF Uploads + Long-Running Login-Node Commands
+
+Two cross-cluster rules apply to any cleanup-step upload (RL, 8B SFT, 32B SFT, datagen, eval) and to anything else that detaches from your shell on a login node.
+
+### Always `hf upload`, never `hf upload-large-folder`
+
+`hf upload-large-folder` looks like the right tool on paper (parallel pre-upload workers, resumable cache, no-bars mode), but in practice it does not play nicely with our clusters' network paths or with HF Hub's LFS rate-limiting. Observed failure mode on Jupiter for a 131 GB 32B model:
+
+- 42/42 files hashed locally in ~15 min ✓
+- 0/28 pre-uploaded after 8h 17m of elapsed wall time
+- Stuck in a `HTTP 429 → "Rate limited. Waiting 286.0s before retry [Retry 1/5]"` loop on `.git/info/lfs/objects/batch`. 28 pre-upload workers all hit 429 in parallel; the per-file retry budget cycles forever without ever committing a single LFS object.
+
+`hf upload` (sequential, 3-arg form) does commit. Use it for every upload step:
+
+```bash
+# Folder-to-repo-root upload pattern (replaces `huggingface-cli upload-large-folder`)
+hf upload <repo> <local-folder> . --repo-type=model
+
+# Single-file pattern
+hf upload <repo> <local-file> <path-in-repo> --repo-type=model
+```
+
+The old `huggingface-cli upload-large-folder` is now a deprecation stub on
+recent huggingface_hub — it prints a hint and exits without uploading. Mentally
+translate `huggingface-cli upload-large-folder REPO DIR --repo-type=model` →
+`hf upload REPO DIR . --repo-type=model` everywhere in the checklists below.
+
+### Always `tmux`, never `nohup` / `disown`
+
+For any long-running command launched on a login node (HF uploads, eval listeners, datagen pipelines that run on the login node before sbatch submit, anything that needs to outlive an SSH session), wrap it in a detached `tmux` session — not `nohup ... &` / `disown`.
+
+`tmux` advantages over `nohup`:
+- Survives SSH disconnects more robustly (Leonardo's login-node killer takes down `nohup`/`disown` processes at ~100 s; tmux survives much longer).
+- You can `tmux attach -t <session>` later to see live state.
+- Output preserved in tmux scrollback even if you don't redirect to a log.
+- Restartable from a single named anchor (`tmux kill-session -t <name>`; `tmux new-session -d -s <name> "<cmd>"`).
+
+Pattern:
+
+```bash
+# Detached, named, output mirrored to a log via tee
+tmux new-session -d -s <session_name> \
+    "source ~/secrets.env && <command> 2>&1 | tee -a <log_path>"
+
+# Inspect live:
+ssh <cluster>
+tmux attach -t <session_name>     # Ctrl-b d to detach
+tmux ls | grep <session_name>     # liveness check
+
+# Kill:
+tmux kill-session -t <session_name>
+```
+
+On **Leonardo** the login-node killer makes `tmux` strictly required; on **Jupiter / Perlmutter / NYU Torch** the killer is more lenient but `tmux` is still preferred because the inspectability and restart story is cleaner.
+
 ## RL Job Cleanup Checklist
 
 After an RL job terminates (early or completed), follow these steps to preserve and publish the checkpoint:
@@ -1140,9 +1234,10 @@ After an RL job terminates (early or completed), follow these steps to preserve 
    ```
    If any secrets are found, remove or redact them before proceeding.
 
-6. **Upload to HuggingFace**: Use `huggingface-cli upload-large-folder` to push to `laion/<job_name>-<step>-<size>` (append the global step AND the base-model size suffix, e.g. `-20-32B` for step 20 of a 32B model, `-20-8B` for an 8B model). The size suffix is required:
+6. **Upload to HuggingFace**: Use `hf upload` (folder-to-root form; see "HF Uploads + Long-Running Login-Node Commands" above for why not `hf upload-large-folder`) to push to `laion/<job_name>-<step>-<size>` (append the global step AND the base-model size suffix, e.g. `-20-32B` for step 20 of a 32B model, `-20-8B` for an 8B model). The size suffix is required:
    ```bash
-   huggingface-cli upload-large-folder laion/<job_name>-<step>-<size> $UPLOAD_DIR
+   # Wrap in tmux for long uploads — see the general HF-upload section above.
+   hf upload laion/<job_name>-<step>-<size> $UPLOAD_DIR . --repo-type=model
    ```
    **Naming convention:** the SkyRL trainer auto-pushes intermediates to a
    *canonical* repo `laion/<job_name>` with the wrong layout (weights nested
@@ -1209,12 +1304,12 @@ After an RL job terminates (early or completed), follow these steps to preserve 
    cp $EXPERIMENTS_DIR/<job_name>/<job_name>/trainer_log.jsonl $UPLOAD_DIR/training_logs/
    cp $EXPERIMENTS_DIR/<job_name>/logs/<job_name>_*.out $UPLOAD_DIR/training_logs/
 
-   # Re-upload the model folder (now includes training_logs/)
-   huggingface-cli upload-large-folder laion/<job_name>-<step>-<size> $UPLOAD_DIR
+   # Re-upload the model folder (now includes training_logs/). Use `hf upload` (NOT `hf upload-large-folder`).
+   hf upload laion/<job_name>-<step>-<size> $UPLOAD_DIR . --repo-type=model
    ```
    This produces: `metrics.csv`, `vllm_metrics.csv`, `trial_stats.csv`, `report.md`, `reward_plot.png` in `training_logs/`.
 
-   **WARNING**: Do NOT use `huggingface_hub.upload_folder()` Python API to add files to an existing repo without setting `delete_patterns=[]`. By default it deletes files not present in the local folder, which will clobber existing model weights. Always use `huggingface-cli upload-large-folder` (which is additive) or pass `delete_patterns=[]` explicitly.
+   **WARNING**: Do NOT use `huggingface_hub.upload_folder()` Python API to add files to an existing repo without setting `delete_patterns=[]`. By default it deletes files not present in the local folder, which will clobber existing model weights. Always use `hf upload` (which is additive — does not delete missing files) or pass `delete_patterns=[]` explicitly.
 
 10. **Clean up experiments dir**: Only after all above steps succeed, remove the local job directory to free disk space.
 
@@ -1261,11 +1356,17 @@ After an 8B SFT job completes on a no-internet cluster (Jupiter, Leonardo), foll
    # On the login node (works on Jupiter — login has direct internet).
    # On LEONARDO, this WILL be SIGKILLed at ~100s — use the sbatch template in
    # "Leonardo HF Upload — Use sbatch, NOT the Login Node" below.
+   #
+   # Wrap in tmux for any non-trivial upload (see "HF Uploads + Long-Running
+   # Login-Node Commands" above for why tmux > nohup and `hf upload` > `hf upload-large-folder`).
    source ~/secrets.env
-   huggingface-cli upload-large-folder \
-     <hub_model_id> \
-     $CHECKPOINTS_DIR/<job_name> \
-     --repo-type=model
+   tmux new-session -d -s hf_upload_<short> \
+       "source ~/secrets.env && hf upload \
+            <hub_model_id> \
+            $CHECKPOINTS_DIR/<job_name> \
+            . \
+            --repo-type=model 2>&1 | tee $CHECKPOINTS_DIR/<job_name>/upload.log"
+   # Inspect: tmux attach -t hf_upload_<short>  (Ctrl-b d to detach)
    ```
    Wait for the upload to finish and verify the repo exists on HF Hub.
 
@@ -1343,11 +1444,18 @@ change.
    # Works on Jupiter from the login node. On LEONARDO this WILL be SIGKILLed
    # at ~100s — use the sbatch template in "Leonardo HF Upload — Use sbatch,
    # NOT the Login Node" below. Verified 131GB → ~4 min via that path.
+   #
+   # Wrap in tmux for the duration of the upload; use `hf upload` (NOT
+   # `hf upload-large-folder` — see "HF Uploads + Long-Running Login-Node
+   # Commands" above for why).
    source ~/secrets.env
-   huggingface-cli upload-large-folder \
-     <hub_model_id> \
-     <consolidate_workdir>/<job_name>/final_repo \
-     --repo-type=model
+   tmux new-session -d -s hf_upload_<short> \
+       "source ~/secrets.env && hf upload \
+            <hub_model_id> \
+            <consolidate_workdir>/<job_name>/final_repo \
+            . \
+            --repo-type=model 2>&1 | tee <consolidate_workdir>/<job_name>/upload.log"
+   # Inspect: tmux attach -t hf_upload_<short>  (Ctrl-b d to detach)
    ```
 
 4. **Register in the unified DB** (same flow as 8B; SFT is the default
@@ -1380,9 +1488,12 @@ ls $CHECKPOINTS_DIR/<job_name>/ | grep -E 'safetensors|global_step'
 
 Leonardo's login nodes SIGKILL any long-running user process after ~100 seconds,
 regardless of how it's detached. We've verified this kills:
-- `nohup huggingface-cli ... &` (~80s)
-- `tmux new-session -d -s ... "huggingface-cli ..."` (~2 min)
-- `systemd-run --user --unit=... huggingface-cli ...` (also SIGKILLed at ~100s)
+- `nohup hf upload ... &` / `nohup huggingface-cli ... &` (~80s)
+- `tmux new-session -d -s ... "hf upload ..."` (~2 min)
+- `systemd-run --user --unit=... hf upload ...` (also SIGKILLed at ~100s)
+
+(Tested with both the legacy `huggingface-cli` and the current `hf` CLI;
+the killer is process-agnostic, not command-specific.)
 
 The login node DOES have direct internet (no proxychains needed there) — the
 problem is purely the process killer, not network.
@@ -1437,9 +1548,9 @@ export PATH="/leonardo_work/AIFAC_5C0_290/bfeuer00/proxychains/bin:${PATH}"
 CMD_PREFIX=$(bash "$DCFT/eval/leonardo/start_proxy_tunnel.sh")
 
 cd $WD/final_repo   # or $CHECKPOINTS_DIR/<job_name> for 8B path
-$CMD_PREFIX /leonardo_work/AIFAC_5C0_290/bfeuer00/miniforge3/envs/otagent/bin/huggingface-cli \
-    upload-large-folder <hub_model_id> . \
-    --repo-type=model --num-workers 4
+$CMD_PREFIX /leonardo_work/AIFAC_5C0_290/bfeuer00/miniforge3/envs/otagent/bin/hf upload \
+    <hub_model_id> . . \
+    --repo-type=model
 EOF
 cd /leonardo_work/AIFAC_5C0_290/bfeuer00
 sbatch upload_<job_name>.sbatch
@@ -1449,21 +1560,23 @@ Then `squeue -j <jobid>` and `tail -f <workdir>/upload_logs/upload_sbatch.log`.
 
 ### Numbers / sizing
 
-- 131GB consolidated 32B → ~4 min wall through the tunnel at `--num-workers 4`
+- 131GB consolidated 32B → ~4 min wall through the tunnel (sbatch + tunnel pattern)
 - 30 min wall fits `boost_qos_dbg` (debug QOS); longer jobs need a different QOS
-- `--num-workers 4` is conservative (default goes up to many dozens); higher
-  worker counts may help throughput but the upload-large-folder is usually
-  network-bound, not CPU/memory-bound at this stage
-- Resume is automatic — `.cache/huggingface/upload/` persists state; if the
-  job is requeued, it picks up where it left off
+- `hf upload` is sequential (no `--num-workers` knob) — slower than the legacy
+  `huggingface-cli upload-large-folder` looked on paper, but the latter is now
+  a deprecation stub AND deadlocks against HF Hub LFS rate limits in practice.
+  See "HF Uploads + Long-Running Login-Node Commands" near the RL Cleanup
+  section for the full story.
+- Resume is automatic — `.cache/huggingface/` persists state; if the job is
+  requeued, `hf upload` picks up where it left off
 
 ### Why this matters for the SFT checklists
 
-Both the 8B (step 2) and 32B (step 3) cleanup checklists invoke
-`huggingface-cli upload-large-folder`. On Jupiter that works straight from
-the login node (login has direct internet, no kill policy). On Leonardo
-the same one-liner WILL die at ~100s and leave a partial upload — use the
-sbatch template above instead.
+Both the 8B (step 2) and 32B (step 3) cleanup checklists invoke `hf upload`
+(in a `tmux` session). On Jupiter / Perlmutter / NYU Torch that works
+straight from the login node (login has direct internet, no kill policy).
+On Leonardo the same one-liner WILL die at ~100 s and leave a partial
+upload — use the sbatch template above instead.
 
 ## NYU Torch Access
 
