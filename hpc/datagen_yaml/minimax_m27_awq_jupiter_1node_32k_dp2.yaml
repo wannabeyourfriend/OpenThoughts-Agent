@@ -71,3 +71,20 @@ vllm_server:
   - string
   - --max-num-batched-tokens
   - '32768'
+  # DP coordinator must use Ray (not the default `mp` torch.distributed
+  # TCP-store path). Without this, vLLM's DPLBAsyncMPClient hits
+  # `socket.cpp:764: [c10d] The client socket cannot be initialized to
+  # connect to [localhost]:N (errno: 97 - Address family not supported
+  # by protocol)` — torch's c10d resolves "localhost" to IPv6 ::1 even
+  # though GLOO_USE_IPV6=0 + NCCL_SOCKET_FAMILY=AF_INET are exported on
+  # the node. Routing DP through Ray actors sidesteps the c10d socket
+  # entirely; Ray is already up (start_vllm_ray_controller.py started
+  # it) so this is a zero-cost re-route.
+  - --data-parallel-backend
+  - ray
+  # Belt-and-suspenders: force the DP coordinator to bind on the node's
+  # explicit IPv4 even when `mp` backend is somehow re-enabled. Bound
+  # at controller-spawn time so $VLLM_HOST_IP env var (set by vLLM
+  # controller per hpc/vllm_utils.py:362) is in scope.
+  - --data-parallel-address
+  - 127.0.0.1
