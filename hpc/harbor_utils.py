@@ -871,15 +871,27 @@ def _sync_runtime_fields_into_config_json(
 ) -> None:
     """Patch on-disk config.json so it matches the YAML+CLI effective state.
 
-    Only touches the fields known to be runtime-derived (and therefore
-    guaranteed to drift across launches against a static on-disk JSON):
+    Only touches fields known to be runtime-derived (and therefore guaranteed
+    to drift across launches against a static on-disk JSON):
       - agents[*].kwargs.{api_base, api_key, base_url, metrics_endpoint}
-      - orchestrator.n_concurrent_trials  (from CLI)
-      - orchestrator.retry.include_exceptions  (from --filter-error-type)
-      - n_attempts  (from CLI)
+      - agents[*].model_name (defensive — should already be the deterministic
+        ``hosted_vllm/<id>`` alias from a prior resume_manager mutation, but
+        we keep the on-disk value in lockstep with the YAML to handle
+        chain-restart edge cases)
+      - orchestrator.n_concurrent_trials (from CLI ``--n-concurrent``)
+      - n_attempts (from CLI ``--n-attempts``)
 
-    Other fields are preserved as-is so trial-level matching logic (which
-    keys off agent.name etc.) is unaffected.
+    Notably **NOT** touched:
+      - orchestrator.retry.include_exceptions. The harbor CLI's
+        ``--filter-error-type`` flag is the ``auto_resume_filter_error_types``
+        option (separate semantics — error types to remove from prior trial
+        results on resume), NOT a JobConfig override for retry.include_exceptions.
+        The retry.include_exceptions field comes from the YAML only (unless
+        ``--retry-include`` is passed, which our launcher does not pass).
+        Earlier versions of this sync wrote the ``--filter-error-type`` values
+        into retry.include_exceptions, which caused Harbor's auto-resume
+        equality check to fail because the on-disk JSON had {3 items} while
+        Harbor's self.config (from YAML + no override) had {2 items}.
     """
     cj = json.loads(config_json_path.read_text())
 
@@ -900,21 +912,25 @@ def _sync_runtime_fields_into_config_json(
         if "model_name" in yaml_agent:
             cj_agent["model_name"] = yaml_agent["model_name"]
 
-    # CLI-derived --filter-error-type → retry.include_exceptions
-    filters: List[str] = []
-    i = 0
-    while i < len(extra_args):
-        if extra_args[i] == "--filter-error-type" and i + 1 < len(extra_args):
-            filters.append(extra_args[i + 1])
-            i += 2
-        else:
-            i += 1
     orchestrator = cj.setdefault("orchestrator", {})
-    if filters:
-        retry = orchestrator.setdefault("retry", {})
-        retry["include_exceptions"] = filters
     orchestrator["n_concurrent_trials"] = n_concurrent
     cj["n_attempts"] = n_attempts
+
+    # Mirror the YAML's retry block (or n_concurrent_trials if top-level)
+    # into config.json. This is defensive: if the YAML was updated between
+    # the prior resume_manager mutation and now (e.g. exception lists in
+    # the harbor_config.yaml were tweaked), the on-disk JSON must follow
+    # so Harbor's self.config (which is just YAML+CLI overrides) matches.
+    yaml_orchestrator = modified_config.get("orchestrator") or {}
+    yaml_retry = yaml_orchestrator.get("retry") if isinstance(yaml_orchestrator, dict) else None
+    if isinstance(yaml_retry, dict):
+        cj_retry = orchestrator.setdefault("retry", {})
+        # Only sync the include/exclude exception lists — other retry fields
+        # (max_retries, wait_multiplier, etc.) are not runtime-derived and
+        # don't need re-syncing.
+        for k in ("include_exceptions", "exclude_exceptions", "mask_exceptions", "passthrough_exceptions"):
+            if k in yaml_retry:
+                cj_retry[k] = yaml_retry[k]
 
     config_json_path.write_text(json.dumps(cj, indent=2))
 
