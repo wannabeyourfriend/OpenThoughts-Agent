@@ -82,9 +82,9 @@ vllm_server:
   # it) so this is a zero-cost re-route.
   - --data-parallel-backend
   - ray
-  # Belt-and-suspenders: force the DP coordinator to bind on the node's
-  # explicit IPv4 even when `mp` backend is somehow re-enabled. Bound
-  # at controller-spawn time so $VLLM_HOST_IP env var (set by vLLM
-  # controller per hpc/vllm_utils.py:362) is in scope.
-  - --data-parallel-address
-  - 127.0.0.1
+  # NOTE: do NOT hardcode `--data-parallel-address` here. The Ray DP
+  # backend's create_dp_placement_groups asserts the master IP is a key
+  # in Ray's known-nodes dict, which contains the head node's real IPv4
+  # (set via `--node-ip-address` in ray_utils.py) — not localhost /
+  # 127.0.0.1. vllm_utils.VLLMServer.start() now auto-injects the head
+  # IP when data_parallel_size > 1, so we just leave the flag off.

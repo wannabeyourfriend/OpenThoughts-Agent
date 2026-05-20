@@ -320,6 +320,17 @@ class VLLMServer:
             if extra_cli_args:
                 print(f"  Extra vLLM args: {' '.join(extra_cli_args[:10])}{'...' if len(extra_cli_args) > 10 else ''}")
 
+        # When DP>1 with the Ray backend, vLLM's create_dp_placement_groups
+        # asserts the dp_master_ip is a key in Ray's known-nodes dict. Ray
+        # registers the head node under its real IPv4 (set via
+        # `--node-ip-address=<head_ip>` in ray_utils.py), NOT under
+        # "localhost" / "127.0.0.1" — so a misset --data-parallel-address
+        # fails with "AssertionError: The DP master node (ip: 127.0.0.1)
+        # is missing or dead". Inject head_ip here unless the caller
+        # explicitly overrode it via extra_args.
+        if self.config.data_parallel_size > 1 and "--data-parallel-address" not in cmd:
+            cmd.extend(["--data-parallel-address", self.ray_cluster.head_ip])
+
         # Set environment
         env = os.environ.copy()
         env["VLLM_MODEL_PATH"] = self.config.model_path
