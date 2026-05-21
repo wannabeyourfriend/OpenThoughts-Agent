@@ -262,6 +262,11 @@ class IrisLauncher:
                        help="Force scheduling on non-preemptible workers.")
         g.add_argument("--no-wait", dest="no_wait", action="store_true", default=False,
                        help="Submit and detach instead of streaming logs.")
+        g.add_argument("--extras", action="append", default=None,
+                       help="OpenThoughts-Agent extras to install in the iris worker's "
+                            "/app/.venv via `uv sync --extra <name>`. Repeatable. "
+                            "Default: ['datagen-tpu'] (matches the :tpu task image's "
+                            "intended dep set). Pass --extras '' to install no extras.")
 
         og = parser.add_argument_group("outputs")
         og.add_argument("--output-mode", "--output_mode",
@@ -350,6 +355,37 @@ class IrisLauncher:
         command = self.build_task_command(args, remote_output_dir)
         env_vars = self.build_env(args)
 
+        # Default extras = ["datagen-tpu"]; allow override via repeated --extras
+        # or --extras '' (single empty) to install nothing extra.
+        if args.extras is None:
+            extras = ["datagen-tpu"]
+        else:
+            extras = [e for e in args.extras if e]
+
+        # OT-Agent's build_support.py syncs the sft/llamafactory git submodule
+        # at every setuptools.build_meta call (i.e. every editable install),
+        # even when no sft-* extra is being installed. Inside the iris worker
+        # container there's no git remote configured for that submodule, so
+        # the sync errors out with exit 128. The build_support helper already
+        # supports an escape hatch — opt in when no sft-* extra is requested.
+        if not any(e.startswith("sft-") for e in extras):
+            env_vars.setdefault("OT_AGENT_SKIP_SFT_SYNC", "1")
+
+        # OT-Agent uses setuptools with [tool.setuptools.packages.find]
+        # listing multiple top-level dirs (hpc, eval, data, ...) rather than
+        # a single src-layout package. uv sync's editable install for this
+        # layout doesn't reliably expose those top-level dirs on sys.path
+        # inside the iris worker (the PEP 660 finder file isn't generated,
+        # and the legacy `.pth` file's path isn't picked up when the user
+        # runs `python eval/local/run_eval.py` — sys.path[0] becomes
+        # /app/eval/local, not /app). Force the workspace root onto
+        # PYTHONPATH so all top-level packages are importable regardless
+        # of which file is the entry point.
+        existing_pythonpath = env_vars.get("PYTHONPATH", "")
+        env_vars["PYTHONPATH"] = (
+            f"/app:{existing_pythonpath}" if existing_pythonpath else "/app"
+        )
+
         vm_count = parse_tpu_vm_count(args.tpu)
 
         print(f"[iris] Job:        /{user}/{job_name}", flush=True)
@@ -357,6 +393,7 @@ class IrisLauncher:
         print(f"[iris] Image:      {args.task_image}", flush=True)
         print(f"[iris] TPU:        {args.tpu}  (vm_count={vm_count})", flush=True)
         print(f"[iris] Priority:   {args.priority}", flush=True)
+        print(f"[iris] Extras:     {extras or '(none)'}", flush=True)
         print(f"[iris] Output:     mode={args.output_mode} dest={remote_output_dir}", flush=True)
         if args.output_mode == "rsync":
             print(f"[iris] Local sync: {args.local_sync_dir}/{job_name}/  (every {args.sync_interval}s)", flush=True)
@@ -379,7 +416,7 @@ class IrisLauncher:
         from iris.cluster.config import IrisConfig
         from iris.cluster.types import EnvironmentSpec, Entrypoint
         from iris.cli.job import build_resources, build_job_constraints, resolve_multinode_defaults, build_tpu_alternatives
-        from iris.proto import job_pb2
+        from iris.rpc import job_pb2
 
         # Tunnel to the controller via the documented IrisConfig pattern
         # (see lib/iris/.../cluster/config.py:IrisConfig docstring).
@@ -427,7 +464,7 @@ class IrisLauncher:
                 entrypoint=entrypoint,
                 name=job_name,
                 resources=resources,
-                environment=EnvironmentSpec(env_vars=env_vars),
+                environment=EnvironmentSpec(env_vars=env_vars, extras=extras),
                 constraints=constraints,
                 coscheduling=coscheduling,
                 replicas=replicas,
@@ -443,7 +480,7 @@ class IrisLauncher:
             sync_threads: List[PeriodicWorkerSync] = []
             if args.output_mode == "rsync" and not args.no_wait:
                 sync_threads = self._start_rsync_threads(
-                    args, job_name, user, vm_count, client, full_job_id,
+                    args, job_name, user, vm_count, client, job, full_job_id,
                 )
 
             if args.no_wait:
@@ -474,6 +511,7 @@ class IrisLauncher:
         user: str,
         vm_count: int,
         client,  # IrisClient
+        job,     # iris.client.Job
         full_job_id: str,
     ) -> List[PeriodicWorkerSync]:
         """Resolve worker VMs for each replica and spawn one rsync thread each.
@@ -500,7 +538,7 @@ class IrisLauncher:
             local_dir = str(local_root / f"worker-{task_index}")
 
             try:
-                worker = self._resolve_worker_handle(client, full_job_id, task_index)
+                worker = self._resolve_worker_handle(client, job, task_index)
             except Exception as e:
                 print(
                     f"[iris-sync] Could not resolve worker {task_index} yet "
@@ -531,7 +569,7 @@ class IrisLauncher:
     def _resolve_worker_handle(
         self,
         client,  # IrisClient
-        full_job_id: str,
+        job,     # iris.client.Job
         task_index: int,
     ) -> WorkerHandle:
         """Look up which GCP VM is hosting a specific task replica.
@@ -539,28 +577,26 @@ class IrisLauncher:
         Polls iris briefly until the task is assigned. Pulls VM metadata
         (name, zone, project) from the iris worker registry.
         """
-        from iris.cluster.types import JobName
-
-        job_name = JobName.from_string(full_job_id)
         deadline = time.time() + 120
         last_err: Optional[Exception] = None
         while time.time() < deadline:
             try:
-                tasks = client.list_tasks(job_name)
+                tasks = job.tasks()
             except Exception as e:
                 last_err = e
                 time.sleep(2)
                 continue
 
             for t in tasks:
-                if t.task_id.endswith(f"/{task_index}"):
-                    worker_id = getattr(t, "worker_id", "") or ""
+                if t.task_index == task_index:
+                    status = t.status()
+                    worker_id = getattr(status, "worker_id", "") or ""
                     if not worker_id:
                         break  # assignment not done yet
                     return self._worker_id_to_handle(client, worker_id, task_index)
             time.sleep(2)
         raise TimeoutError(
-            f"Worker for task {task_index} of {full_job_id} not assigned within 120s "
+            f"Worker for task {task_index} of {job.job_id} not assigned within 120s "
             f"(last error: {last_err})"
         )
 
@@ -569,9 +605,10 @@ class IrisLauncher:
 
         Workers register with the controller along with metadata that
         includes their GCP zone and instance name. We pull that off the
-        worker health list.
+        worker health list. `list_workers` lives on the lower-level
+        cluster client; reach through `IrisClient._cluster`.
         """
-        workers = client.list_workers()
+        workers = client._cluster_client.list_workers()
         for w in workers:
             if w.worker_id == worker_id:
                 # iris worker metadata uses these keys (see
