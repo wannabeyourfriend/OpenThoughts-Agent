@@ -6,8 +6,52 @@ from typing import Any, Iterable
 import yaml
 
 from harbor.models.job.config import JobConfig
+from harbor.models.metric.type import MetricType
 
 from scripts.harbor._harbor_compat import LocalDatasetConfig, is_local_dataset
+
+
+# Metric types that legacy OT-Agent harbor YAMLs commonly declare but which
+# the pinned harbor (``penfever/otagent-latest``) doesn't ship a built-in
+# Pydantic enum entry or factory for. We drop these silently at load time
+# rather than rewriting every harbor_yaml/* file — the eval still completes
+# without them (harbor falls back to its default Mean metric internally), and
+# downstream postprocessing recomputes drop-EI from raw rewards anyway.
+_UNSUPPORTED_METRIC_TYPES = frozenset({"mean-drop-ei", "accuracy-drop-ei"})
+
+
+def _filter_supported_metrics(raw: Any) -> Any:
+    """Drop metrics with types that the pinned harbor schema can't validate.
+
+    Returns the input unchanged if it isn't a JobConfig-shaped mapping.
+    """
+    if not isinstance(raw, dict):
+        return raw
+    metrics = raw.get("metrics")
+    if not isinstance(metrics, list):
+        return raw
+    allowed = {mt.value for mt in MetricType}
+    filtered = []
+    dropped = []
+    for entry in metrics:
+        if isinstance(entry, dict):
+            mtype = entry.get("type")
+            if mtype in _UNSUPPORTED_METRIC_TYPES or (mtype is not None and mtype not in allowed):
+                dropped.append(mtype)
+                continue
+        filtered.append(entry)
+    if dropped:
+        # Use print rather than logging because callers run in CLI contexts
+        # without configured loggers.
+        print(
+            f"[load_job_config] Dropped unsupported harbor metrics: {dropped}. "
+            "These metrics are computed post-hoc by OT-Agent's analysis tooling, "
+            "not by harbor's MetricFactory.",
+            flush=True,
+        )
+    raw = dict(raw)
+    raw["metrics"] = filtered
+    return raw
 
 
 def load_job_config(config_path: Path | str) -> JobConfig:
@@ -19,9 +63,12 @@ def load_job_config(config_path: Path | str) -> JobConfig:
 
     suffix = path.suffix.lower()
     if suffix in {".yaml", ".yml"}:
-        config = JobConfig.model_validate(yaml.safe_load(path.read_text()))
+        raw = _filter_supported_metrics(yaml.safe_load(path.read_text()))
+        config = JobConfig.model_validate(raw)
     elif suffix == ".json":
-        config = JobConfig.model_validate_json(path.read_text())
+        import json as _json
+        raw = _filter_supported_metrics(_json.loads(path.read_text()))
+        config = JobConfig.model_validate(raw)
     else:
         raise ValueError(
             f"Unsupported Harbor job config format '{path.suffix}'. "
