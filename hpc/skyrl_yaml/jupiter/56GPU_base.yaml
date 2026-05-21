@@ -140,7 +140,7 @@ trainer:
   eval_interval: 999999
   eval_before_train: false
   # Resumable checkpointing
-  ckpt_interval: 3
+  ckpt_interval: 2
   resume_mode: latest
   # HF upload-ready checkpoints
   hf_save_interval: 5
@@ -196,10 +196,8 @@ trainer:
   # Fully async generation (settings from v2_maxconcurrent)
   fully_async:
     max_staleness_steps: 16
-    # 3x base (768 → 2304): triple SkyRL workers to keep Harbor's 900 cap saturated.
-    # With actual_global_step patch (Harbor pickup-time capture), the cohort
-    # plateau is no longer a function of worker count, so going bigger is safe.
-    num_parallel_generation_workers: 2304
+    # Setting conservatively to 1 / 2 of total concurrency
+    num_parallel_generation_workers: 450
 
 # Generator configuration
 generator:
@@ -243,8 +241,7 @@ generator:
   max_turns: 999999
 
   sampling_params:
-    # Jupiter-specific 8192 (vs ALCC's 4096). Same as jupiter/24GPU_base.
-    max_generate_length: 8192
+    max_generate_length: 4096
     temperature: 0.7
     top_p: 0.95
     top_k: 20
@@ -258,4 +255,4 @@ generator:
 # Data paths
 data:
   train_data: []
-  val_data: ["open-thoughts/OpenThoughts-TB-dev"]
+  val_data: []

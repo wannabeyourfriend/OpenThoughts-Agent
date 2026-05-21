@@ -139,7 +139,7 @@ trainer:
   eval_interval: 999999
   eval_before_train: false
   # Resumable checkpointing
-  ckpt_interval: 3
+  ckpt_interval: 2
   resume_mode: latest
   # HF upload-ready checkpoints
   hf_save_interval: 5
@@ -230,7 +230,7 @@ generator:
   max_turns: 999999
 
   sampling_params:
-    max_generate_length: 8192
+    max_generate_length: 4096
     temperature: 0.7
     top_p: 0.95
     top_k: 20
@@ -243,4 +243,4 @@ generator:
 
 data:
   train_data: []
-  val_data: ["open-thoughts/OpenThoughts-TB-dev"]
+  val_data: []
