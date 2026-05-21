@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "OpenThoughts-Agent"
 version = "0.1.0"
 description = "OT-Agent HPC launch and data tooling"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 dependencies = [
     # Core HPC + data infrastructure deps
     "pydantic>=2.0.0,<3.0.0",
@@ -48,25 +48,19 @@ datagen = [
     "accelerate==1.12.0",
     "trufflehog>=2.2.0",
 ]
-# ROCm/AMD GPU variant for datagen (e.g., OLCF Frontier with MI250X)
-# Install with:
-#   uv pip install -e ".[datagen-rocm]" \
-#     --extra-index-url https://wheels.vllm.ai/rocm/0.14.0/rocm700 \
-#     --prerelease=allow
-datagen-rocm = [
-    "ray[default]>=2.50.0",
-    "torch-c-dlpack-ext==0.1.4",
-    "google-cloud-aiplatform>=1.67.0",
-    "google-genai>=0.1.0",
-    "transformers==4.57.3",
-    # PyTorch ROCm 6.4 - must install with --index-url https://download.pytorch.org/whl/rocm6.4
-    "torch==2.8.0",
-    "torchvision==0.23.0",
-    "torchaudio==2.8.0",
-    # vLLM ROCm wheel (requires --extra-index-url https://wheels.vllm.ai/rocm/0.14.0/rocm700 --prerelease=allow)
-    "vllm==0.14.0+rocm700",
-    # Note: flash-attn is CUDA-only; PyTorch native attention used instead
-]
+# ROCm/AMD GPU variant for datagen (OLCF Frontier MI250X) — REMOVED as a
+# real extra 2026-05-21. The rocm wheel server pins drifted away from
+# what this extra was pinning (torch 2.8 vs 2.8+rocm6.4, torchvision 0.23
+# vs 0.24.1+d801a34, etc.) and uv's universal resolver blocked iris's
+# worker-side `uv sync`. Re-introduce as a real extra only after pinning
+# every dep to versions that actually match `wheels.vllm.ai/rocm/...` AND
+# `download.pytorch.org/whl/rocm6.4`.
+#
+# ROCm users: don't pip install -e ".[datagen-rocm]". Use the install
+# script:
+#   ./hpc/setup_rl_env.sh --rocm
+# which does the right pip install --index-url + --prerelease=allow
+# combination directly, bypassing pyproject extras.
 datagen-swesmith = [
     "swesmith",
 ]
@@ -156,16 +150,9 @@ rl = [
 # ROCm/AMD GPU variant for RL (e.g., OLCF Frontier with MI250X)
 # Install with: uv pip install -e ".[rl-rocm]" --index-url https://download.pytorch.org/whl/rocm6.4
 # Or use: ./hpc/setup_rl_env.sh --rocm
-rl-rocm = [
-    # SkyRL without vllm extra (vLLM ROCm support is experimental)
-    "skyrl @ git+https://github.com/mlfoundations/skyrl.git",
-    "Jinja2",  # For chat templates
-    # PyTorch ROCm 6.4 - must install with --index-url https://download.pytorch.org/whl/rocm6.4
-    "torch==2.8.0",
-    "torchvision==0.23.0",
-    "torchaudio==2.8.0",
-    # Note: flash-attn is CUDA-only; PyTorch native attention used instead
-]
+# rl-rocm — REMOVED as a real extra 2026-05-21 for the same reason as
+# datagen-rocm (rocm wheel pins drift away from PyPI-side pins). ROCm RL
+# users: ./hpc/setup_rl_env.sh --rocm.
 # IMPORTANT: RL and datagen extras are INCOMPATIBLE due to version conflicts:
 #   - RL (SkyRL): torch==2.8.0, vllm==0.11.0, Python 3.12 required
 #   - datagen:    torch==2.9.0, vllm==0.11.2, Python 3.10+
@@ -191,10 +178,12 @@ sft-qwen35 = [
     "liger-kernel>=0.5.0",
     "trufflehog>=2.2.0",
 ]
+# curator extra removed 2026-05-21 — bespokelabs-curator pinned
+# datasets<4.0.0 which became incompatible with harbor==0.7.0 (datasets>=4.4.1).
+# Not used by >99% of workloads. Re-add if a newer bespokelabs-curator
+# release relaxes the datasets cap.
+
 # Harbor environment backends
-curator = [
-    "bespokelabs-curator>=0.1.0",
-]
 harbor-docker = [
     "docker>=7.0.0",
 ]
@@ -205,11 +194,11 @@ harbor-all = [
     "docker>=7.0.0",
     "modal>=0.60.0",
 ]
-# Beam cluster setup (self-hosted Beta9 on GKE)
-beam = [
-    "requests>=2.31.0",
-    "beta9>=0.1.0",
-]
+# Beam cluster setup (self-hosted Beta9 on GKE) — REMOVED 2026-05-21.
+# beta9>=0.1.0 pinned rich<13.7 and uvicorn<0.29 which became incompatible
+# with harbor==0.7.0's rich>=14.1.0 / uvicorn>=0.38.0 (base dep). Re-add
+# when a newer beta9 release relaxes those caps. Beam/Beta9 workflows were
+# shelved at the time of removal.
 
 [tool.setuptools.packages.find]
 where = ["."]
@@ -244,8 +233,32 @@ exclude = [
 #   uv pip install ... --index-url https://download.pytorch.org/whl/rocm6.4
 extra-index-url = ["https://download.pytorch.org/whl/cu128"]
 
+[dependency-groups]
+# Empty `dev` group declared so `uv sync --no-group dev` (e.g. iris worker
+# entrypoint) doesn't error with "Group `dev` is not defined". Add dev-only
+# tooling here if/when needed.
+dev = []
+
 [tool.uv]
 index-strategy = "unsafe-best-match"
+
+# Declare mutually exclusive extras so uv's universal resolver doesn't try to
+# satisfy all variants in one solution. Without this, `uv sync` (e.g. iris's
+# worker-side install) fails with "your project requires datagen and
+# datagen-rocm" even when no extras are explicitly selected — the variants
+# have incompatible torch pins by design.
+conflicts = [
+    # The accelerator-flavored extras pin mutually incompatible torch / vllm
+    # versions (CUDA cu128, ROCm 6.4, TPU/XLA CPU). You only ever install one
+    # at a time — declaring the whole set as mutually exclusive lets uv do
+    # per-extra resolves instead of trying to find one solution for all.
+    [
+        { extra = "datagen" },
+        { extra = "datagen-tpu" },
+        { extra = "rl" },
+        { extra = "sft-qwen35" },
+    ],
+]
 
 # Named PyTorch index for the TPU extra. `explicit = true` means it is ONLY
 # consulted when something is mapped to it in [tool.uv.sources], so the global
@@ -255,9 +268,10 @@ name = "pytorch-cpu"
 url = "https://download.pytorch.org/whl/cpu"
 explicit = true
 
-# Route torch + torchvision to the CPU index when resolving the datagen-tpu
-# extra (vllm-tpu uses the torch_xla path, not CUDA torch). Other extras keep
-# pulling from the cu128 index via the global extra-index-url.
+# Per-extra package source routing. Each entry says "when this extra is being
+# resolved, pull this package from this named index" — so the universal
+# resolver doesn't try to find a PyTorch build that satisfies all variants
+# simultaneously (CUDA cu128 vs CPU+XLA).
 [tool.uv.sources]
 torch = [
     { index = "pytorch-cpu", extra = "datagen-tpu" },
