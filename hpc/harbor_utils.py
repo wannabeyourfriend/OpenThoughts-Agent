@@ -699,6 +699,23 @@ def build_harbor_command(
         # Fallback to current directory if no jobs_dir specified
         merged_config_path = Path(f"merged_harbor_config_{job_name}.yaml")
 
+    # Strip OT-Agent-only metrics (e.g. ``mean-drop-ei``, ``accuracy-drop-ei``)
+    # that the pinned harbor (0.7.0) rejects with a Pydantic enum
+    # ValidationError when it parses --config on its own. The same filter
+    # already runs at scripts/harbor/job_config_utils.py load time, but the
+    # merge-and-write path here takes the raw YAML dict and never goes
+    # through that loader, so the unsupported types survive into the file
+    # harbor reads back. Apply the filter here too — see commit 1ba6a4a7.
+    try:
+        from scripts.harbor.job_config_utils import _filter_supported_metrics
+        modified_config = _filter_supported_metrics(modified_config)
+    except ImportError:
+        # _filter_supported_metrics lives under scripts.harbor; if we're
+        # somehow invoked from an install layout where scripts/ isn't a
+        # package (older path), skip silently — harbor will surface its
+        # own ValidationError downstream and we'll see it in the log.
+        pass
+
     with open(merged_config_path, "w") as f:
         yaml.safe_dump(modified_config, f)
     temp_config_path = str(merged_config_path)
