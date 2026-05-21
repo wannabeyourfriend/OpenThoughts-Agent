@@ -277,8 +277,36 @@ def main() -> None:
     print("  " + " ".join(cmd))
     if extra_args:
         print(f"  (pass-through args: {' '.join(extra_args)})")
+    # Flush before Popen so the launch line lands in iris logs even if the
+    # child segfaults during startup (e.g. libtpu / XLA C++ aborts before
+    # Python has a chance to write a traceback).
+    sys.stdout.flush()
+    sys.stderr.flush()
 
-    process = subprocess.Popen(cmd, env=env)
+    # Capture stderr to a pipe so quick startup failures get surfaced even
+    # when the parent's stdout is buffered. We tee both streams to the
+    # parent in a background thread; if Popen survives, the thread keeps
+    # streaming until the child exits.
+    process = subprocess.Popen(
+        cmd,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        bufsize=1,
+        text=True,
+    )
+
+    def _tee_child_output():
+        assert process.stdout is not None
+        try:
+            for line in process.stdout:
+                sys.stdout.write(line)
+                sys.stdout.flush()
+        except Exception as exc:  # pragma: no cover
+            print(f"[start_vllm_ray_controller] tee error: {exc}", file=sys.stderr, flush=True)
+
+    tee_thread = threading.Thread(target=_tee_child_output, daemon=True)
+    tee_thread.start()
 
     def _flush_loop():
         try:
