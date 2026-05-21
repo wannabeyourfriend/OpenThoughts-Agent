@@ -769,6 +769,15 @@ jupiter = HPC(
         # Force GLOO and NCCL to use IPv4 (IPv6 doesn't work on Jupiter compute nodes)
         "GLOO_USE_IPV6": "0",
         "NCCL_SOCKET_FAMILY": "AF_INET",
+        # Force vLLM's process-wide socket.getaddrinfo to return AF_INET only.
+        # GLOO_USE_IPV6/NCCL_SOCKET_FAMILY above only gate Gloo+NCCL; the
+        # c10d TCPStore bootstrap (used by vLLM's mp DP backend) consults
+        # getaddrinfo directly and tries the IPv6 entry first, hitting
+        # `errno 97 - Address family not supported by protocol` on Jupiter
+        # compute nodes (their hostnames have both A and AAAA records,
+        # but IPv6 transport is dead). Job 479619 / Bug F. The monkey
+        # patch lives in vllm/env_override.py and is gated on this var.
+        "VLLM_FORCE_IPV4": "1",
         # NOTE: Do NOT set GLOO_SOCKET_IFNAME=ib0 - it causes Gloo to use the IB hostname
         # which resolves to IPv6. Let Gloo auto-detect the interface.
         # GH200 NUMA affinity: bind each GPU worker to its local CPU NUMA node
