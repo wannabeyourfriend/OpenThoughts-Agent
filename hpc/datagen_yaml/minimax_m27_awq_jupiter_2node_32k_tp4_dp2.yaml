@@ -76,23 +76,34 @@ vllm_server:
   - string
   - --max-num-batched-tokens
   - '32768'
-  # NOTE on DP backend: we leave `--data-parallel-backend` unset, so
-  # vLLM picks its default (`mp` / torch.distributed coordinator).
-  # The Ray DP backend hit Bug E (DPMoEEngineCoreActor placed on
-  # CPU-only control bundle → empty get_accelerator_ids() → fail);
-  # patched in our local vLLM via the control-bundle fallback +
-  # combined loud-fail raise. The mp coordinator path hit Bug F
-  # (c10d resolves Jupiter hostnames to IPv6); not yet fully fixed
-  # — the Python getaddrinfo monkey-patch in vllm/env_override.py
-  # gated on VLLM_FORCE_IPV4=1 doesn't reach libtorch's libc-level
-  # DNS calls. If 482064-style c10d errors recur on this config,
-  # try (in this order):
-  #   1. NCCL_SOCKET_IFNAME=ib0 (already set in jupiter env_vars)
-  #   2. GLOO_SOCKET_IFNAME=ib0 (NOT currently set — comment in
-  #      hpc/hpc.py:772 warns that ib0 resolves to IPv6, but on a
-  #      2-node config the cross-node TCPStore may need it)
-  #   3. LD_PRELOAD shim that filters AF_INET6 at libc level
+  # ----- DP backend selection (2026-05-21) -----
+  # Use the Ray actor data-parallel backend. The default (`mp`) path
+  # spawns ALL `data_parallel_size` engine procs locally on the API-server
+  # node (vllm/v1/engine/utils.py: CoreEngineProcManager + set_device_control_env_var)
+  # and then calls get_device_indices(local_dp_rank=1, world_size=4) →
+  # slices CUDA_VISIBLE_DEVICES="0,1,2,3" at [4:8) → IndexError. That's
+  # the job-482406 failure mode for 2-node DP=2 TP=4. The Ray actor
+  # backend instead uses CoreEngineActorManager + placement groups so
+  # each engine actor lands on its own node, with `local_dp_rank` reset
+  # to 0 per node (verified in create_dp_placement_groups: local_dp_ranks
+  # is built from range(dp_size_to_allocate) per node, not globally).
+  #
+  # `--data-parallel-size-local 1` is required because the default
+  # (data_parallel_size_local = data_parallel_size = 2) would still try
+  # to fit two DP ranks on one node = 8 GPUs > 4 per node.
+  #
+  # Bug E (DPMoEEngineCoreActor placed on the CPU-only control bundle →
+  # empty get_accelerator_ids() → previously fail-loud) is patched in
+  # our local vLLM at vllm/v1/engine/core.py:_set_visible_devices:
+  # the empty-gpu_ids path now falls back to the legacy
+  # _set_cuda_visible_devices slice. With local_dp_rank=0 per node and
+  # world_size=4, that slice is [0,4) = "0,1,2,3" = the per-node GPU
+  # set. ✓
+  - --data-parallel-backend
+  - ray
+  - --data-parallel-size-local
+  - '1'
   # vllm_utils.VLLMServer.start() auto-injects
   # `--data-parallel-address <ray_cluster.head_ip>` when
-  # data_parallel_size > 1, so the DP master URL is always an
-  # IPv4 literal (avoids the localhost → IPv6 bind error).
+  # data_parallel_size > 1, so the DP master URL is always an IPv4
+  # literal.
