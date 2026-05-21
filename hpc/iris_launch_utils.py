@@ -434,6 +434,36 @@ class IrisLauncher:
         # load-bearing — vLLM does its own ray.init internally.
         env_vars.setdefault("VLLM_SKIP_RAY_PROBE", "1")
 
+        # Forward sandbox-backend / external-API credentials from the
+        # launcher's shell env into the iris worker. Iris auto-injects
+        # HF_TOKEN, WANDB_API_KEY, HF_DATASETS_TRUST_REMOTE_CODE, and
+        # TOKENIZERS_PARALLELISM but nothing else, so harbor's Daytona
+        # client and other API-key-driven integrations need explicit
+        # passthrough. The user typically loads these via
+        # `source ~/Documents/secrets.env` before invoking the launcher.
+        # Missing-from-env entries are skipped silently — harbor will
+        # surface its own "DAYTONA_API_KEY not set" error if it actually
+        # needs one. setdefault keeps any explicit -e overrides above.
+        _LAUNCHER_ENV_PASSTHROUGH = (
+            "DAYTONA_API_KEY",
+            "DAYTONA_JWT_TOKEN",
+            "DAYTONA_ORGANIZATION_ID",
+            "DAYTONA_API_URL",
+            "OPENAI_API_KEY",
+            "ANTHROPIC_API_KEY",
+            "GOOGLE_API_KEY",
+            "GEMINI_API_KEY",
+            "TOGETHER_API_KEY",
+            "FIREWORKS_API_KEY",
+            "SUPABASE_URL",
+            "SUPABASE_KEY",
+            "SUPABASE_SERVICE_ROLE_KEY",
+        )
+        for _k in _LAUNCHER_ENV_PASSTHROUGH:
+            _v = os.environ.get(_k)
+            if _v:
+                env_vars.setdefault(_k, _v)
+
         vm_count = parse_tpu_vm_count(args.tpu)
 
         print(f"[iris] Job:        /{user}/{job_name}", flush=True)
