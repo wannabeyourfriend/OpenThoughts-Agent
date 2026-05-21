@@ -412,6 +412,14 @@ class IrisLauncher:
         # symlink to /root/.cache/uv/archive-v0/BYLjs1LAJOgakDOL/... which
         # didn't exist at runtime.
         env_vars.setdefault("UV_LINK_MODE", "copy")
+        # Forward Ray/vLLM subprocess stdout/stderr to the parent process so
+        # they appear in ``iris job logs``. Without this, vLLM controller
+        # crashes during init (e.g. before ``write_endpoint_json`` runs) leave
+        # no diagnostic trail in iris — the workload exits with the generic
+        # "vLLM controller exited before writing the endpoint JSON" symptom
+        # and the actual stacktrace is only in the per-task workdir
+        # ``logs/vllm_controller.log``, which rsync hasn't picked up yet.
+        env_vars.setdefault("OT_AGENT_INHERIT_SUBPROC_LOGS", "1")
 
         vm_count = parse_tpu_vm_count(args.tpu)
 

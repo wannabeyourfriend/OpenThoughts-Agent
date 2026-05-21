@@ -212,9 +212,18 @@ class FileDescriptorMonitor:
 def _open_log_file(log_path: Optional[Path]) -> tuple:
     """Open a log file with line buffering for real-time tail access.
 
+    When ``OT_AGENT_INHERIT_SUBPROC_LOGS=1`` (set automatically by the iris
+    launcher), subprocess stdout/stderr are forwarded to the parent process
+    instead of a file. This makes Ray/vLLM logs visible in ``iris job logs``
+    when the per-task workdir hasn't been rsynced yet (e.g. when a job dies
+    in the first 60s before any sync runs). The log_path argument is then
+    ignored.
+
     Returns:
         Tuple of (stdout_dest, stderr_dest, log_file_handle)
     """
+    if os.environ.get("OT_AGENT_INHERIT_SUBPROC_LOGS") == "1":
+        return None, None, None
     if log_path:
         log_file = open(log_path, "w", encoding="utf-8", buffering=1)
         return log_file, log_file, log_file
