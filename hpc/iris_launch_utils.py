@@ -486,25 +486,56 @@ class IrisLauncher:
 
             client = IrisClient.remote(controller_url, workspace=self.repo_root)
 
-            # Wrap the user command in a python -c bootstrap that appends
-            # /app to sys.path. See block above for why we can't just set
-            # PYTHONPATH=/app. The first command arg is the entrypoint
-            # script (e.g. eval/local/run_eval.py); the rest are passed
-            # through as argv[1:]. `python -c '<bootstrap>' <script> args...`
-            # makes sys.argv = ['-c', <script>, *args], so the bootstrap
-            # rewrites sys.argv to drop the '-c' and run the script via
+            # Wrap the user command in a bash bootstrap that:
+            #   (1) re-syncs deps with --link-mode=copy to materialize wheel
+            #       contents into /app/.venv, replacing the broken symlinks
+            #       iris's build phase left behind (iris hardcodes
+            #       --link-mode symlink at lib/iris/.../runtime/entrypoint.py
+            #       and its DockerRuntime runs setup in a build container, so
+            #       the symlinked /root/.cache/uv/archive-v0/... targets do
+            #       not exist in the run container — every `import pydantic`
+            #       resolves to a namespace package and `from pydantic import
+            #       BaseModel` raises "unknown location"). Confirmed via
+            #       eval/local/_iris_diag.py.
+            #   (2) runs the original user command via a python -c
+            #       bootstrap that appends /app to sys.path. See block
+            #       above for why we can't just set PYTHONPATH=/app.
+            # The first command arg is the entrypoint script (e.g.
+            # eval/local/run_eval.py); the rest are passed through as
+            # argv[1:]. `python -c '<bootstrap>' <script> args...` makes
+            # sys.argv = ['-c', <script>, *args], so the bootstrap rewrites
+            # sys.argv to drop the '-c' and run the script via
             # runpy.run_path with __name__ == '__main__'.
             if command and command[0] == "python" and len(command) >= 2:
                 script_path = command[1]
                 script_argv = command[2:]
-                bootstrap = (
+                py_bootstrap = (
                     "import sys; "
                     "sys.path.append('/app'); "
                     "sys.argv = sys.argv[1:]; "
                     "import runpy; "
                     "runpy.run_path(sys.argv[0], run_name='__main__')"
                 )
-                wrapped = ["python", "-c", bootstrap, script_path, *script_argv]
+                # Build the uv sync flags to mirror what iris runs, but with
+                # --link-mode=copy. --all-packages + --extra entries are the
+                # only project-shape flags that matter here; everything else
+                # (python version, frozen) iris's build already validated.
+                extras_flags = " ".join(
+                    f"--extra {shlex.quote(e.split(':', 1)[-1])}" for e in extras
+                )
+                resync_cmd = (
+                    "cd /app && "
+                    "uv sync --quiet --frozen --link-mode=copy --all-packages "
+                    f"--no-group dev {extras_flags}".rstrip()
+                )
+                # Quote the python -c body and script argv for the bash -c
+                # invocation. We use a single shlex.join for the python
+                # invocation so spaces/quotes in argv survive.
+                py_invoke = shlex.join(
+                    ["python", "-c", py_bootstrap, script_path, *script_argv]
+                )
+                bash_cmd = f"set -e; {resync_cmd}; exec {py_invoke}"
+                wrapped = ["bash", "-c", bash_cmd]
                 entrypoint = Entrypoint.from_command(*wrapped)
             else:
                 entrypoint = Entrypoint.from_command(*command)
