@@ -285,6 +285,16 @@ class IrisLauncher:
         og.add_argument("--sync-interval", "--sync_interval", type=int,
                         default=DEFAULT_SYNC_INTERVAL_SECONDS,
                         help="Seconds between rsync polls (default 60).")
+
+        sg = parser.add_argument_group("secrets")
+        sg.add_argument("--secrets-env", "--secrets_env", default=None,
+                        help="Path to a KEY=VALUE env file (~/Documents/secrets.env style). "
+                             "Every entry is loaded into the iris task's env_vars at submit "
+                             "time. Pairs with the hardcoded launcher passthrough list "
+                             "(DAYTONA_API_KEY, OPENAI_API_KEY, etc.) — file values win on "
+                             "conflict, explicit `-e` iris-CLI flags can't override since we "
+                             "use IrisClient.submit() directly. Lines starting with '#' and "
+                             "blank lines are ignored; leading 'export ' is stripped.")
         # NOTE: --dry-run / --dry_run is provided by hpc.arg_groups.add_model_compute_args
         # which subclass launchers call from add_task_specific_args. We don't redeclare
         # it here to avoid argparse conflicts.
@@ -463,6 +473,40 @@ class IrisLauncher:
             _v = os.environ.get(_k)
             if _v:
                 env_vars.setdefault(_k, _v)
+
+        # --secrets-env loader. SkyPilot mounted this file into the container
+        # and sourced it remotely; iris has no file_mounts so we parse it
+        # client-side and copy KEY=VALUE pairs into env_vars. File entries
+        # override the os.environ passthrough above (an explicit file is more
+        # intentional than an inherited shell env).
+        if getattr(args, "secrets_env", None):
+            secrets_path = Path(args.secrets_env).expanduser().resolve()
+            if not secrets_path.exists():
+                raise FileNotFoundError(f"--secrets-env file not found: {secrets_path}")
+            loaded: list[str] = []
+            for line_no, raw_line in enumerate(secrets_path.read_text().splitlines(), 1):
+                line = raw_line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if line.startswith("export "):
+                    line = line[len("export "):].lstrip()
+                if "=" not in line:
+                    continue  # malformed; skip
+                k, _, v = line.partition("=")
+                k = k.strip()
+                v = v.strip()
+                # Strip matching surrounding quotes if present.
+                if len(v) >= 2 and v[0] == v[-1] and v[0] in ("'", '"'):
+                    v = v[1:-1]
+                if not k:
+                    continue
+                env_vars[k] = v  # file values override passthrough
+                loaded.append(k)
+            print(
+                f"[iris] Secrets:    loaded {len(loaded)} entries from "
+                f"{secrets_path}: {', '.join(sorted(loaded))}",
+                flush=True,
+            )
 
         vm_count = parse_tpu_vm_count(args.tpu)
 
