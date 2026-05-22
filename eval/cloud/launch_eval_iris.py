@@ -177,7 +177,12 @@ class EvalIrisLauncher(IrisLauncher):
         for kwarg in args.agent_kwarg:
             cmd.extend(["--agent_kwarg", kwarg])
         for extra in args.harbor_extra_arg:
-            cmd.extend(["--harbor_extra_arg", extra])
+            # Use the `=` form so argparse on the worker side accepts values
+            # that start with `-` (e.g. --harbor_extra_arg=--n-tasks). The
+            # space form `--harbor_extra_arg --n-tasks` trips argparse's
+            # "looks like an option" heuristic and gets rejected with
+            # "argument --harbor_extra_arg: expected one argument".
+            cmd.append(f"--harbor_extra_arg={extra}")
 
         if args.upload_to_database:
             cmd.append("--upload_to_database")

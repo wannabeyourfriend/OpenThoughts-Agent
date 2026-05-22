@@ -119,7 +119,9 @@ class TracegenIrisLauncher(IrisLauncher):
         for kwarg in args.agent_kwarg:
             cmd.extend(["--agent_kwarg", kwarg])
         for extra in args.harbor_extra_arg:
-            cmd.extend(["--harbor_extra_arg", extra])
+            # `=` form for argparse accept of `-`-prefixed values; see
+            # the same comment in eval/cloud/launch_eval_iris.py.
+            cmd.append(f"--harbor_extra_arg={extra}")
 
         if args.upload_hf_repo:
             cmd.extend(["--upload_hf_repo", args.upload_hf_repo])
