@@ -15,16 +15,22 @@ vllm_server:
   pipeline_parallel_size: 1
   data_parallel_size: 1
   time_limit: '48:00:00'
-  # Bumped to 4096 2026-05-21: 1024 caused harbor's terminus-2 agent to
-  # immediately fail every trial with
-  #   VLLMValidationError: This model's maximum context length is 1024
-  #   tokens. However, ... your prompt contains at least 1025 input tokens
-  # because the agent's multi-step instruction + tool-call prompt already
-  # exceeds 1K on turn 1. 4096 is the smallest power-of-two that fits real
-  # terminus-2 prompts while still respecting the TPU HBM envelope on a
-  # 4-chip v6e slice (gpu_memory_utilization=0.7, max_num_seqs=2). Bump
-  # further if downstream eval logs show prompts hitting the new cap.
-  max_model_len: 4096
+  # 1024 → 4096 → 16384 bumps on 2026-05-21. The harbor eval_ctx32k.yaml
+  # harness sends terminus-2 prompts that grow with the conversation; even
+  # 4096 was insufficient on the first agent turn for openthoughts-tblite
+  # tasks. 16384 accepts the prompts we've observed so far.
+  #
+  # Important: vllm-tpu sizes the KV cache from available HBM (~21 GB/chip
+  # at gpu_memory_utilization=0.7 on a v6e-4), NOT from max_model_len, so
+  # bumping max_model_len here doesn't add KV pressure — it only raises the
+  # per-request prompt-length cap. The KV stays sized for ~64k attn tokens
+  # across all sequences regardless of this value.
+  #
+  # If long-context evals (eval_ctx131k.yaml) bump prompts above 16k,
+  # raise this further. For prompts above ~24k a v6e-8 (2-host) slice is
+  # probably needed — single-host v6e-4 program-graph activations grow
+  # quadratically in seq_len during XLA compile.
+  max_model_len: 16384
   max_num_seqs: 2
   # vllm-tpu honors this for KV-cache sizing (confirmed via Stage-C smoke,
   # despite earlier launcher comments claiming otherwise). 0.70 leaves
