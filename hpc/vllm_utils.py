@@ -355,21 +355,29 @@ class VLLMServer:
         # cross-node weight quantization). Bump to 600s (10min) so the
         # logs stay legible without losing the warning entirely.
         env.setdefault("VLLM_RINGBUFFER_WARNING_INTERVAL", "600")
-        # V2 model runner DISABLED (2026-05-22): RayExecutorV2 (new in
-        # 2026-05-13 vLLM bump from upstream/main) inherits from
-        # MultiprocExecutor and uses shm_broadcast for inter-rank
-        # communication — shared memory is single-host by definition, so
-        # cross-node DP hits Gloo TCP fallback timeouts
-        # (gloo/transport/tcp/unbound_buffer.cc Timed out 1800000ms).
-        # Evidence: job 487456 (dp=2 MiniMax-M2.7 with EP off) STILL hung
-        # at shm_broadcast/sample_tokens with this env=1; the v0.16.0
-        # known-good vllm branch (penfever/debug-layer-split-v0.16.0,
-        # 2026-04-03) doesn't have RayExecutorV2 at all and uses pure-Ray
-        # ray_executor.py which handles cross-node natively via Ray RPC.
-        # Flipping to 0 forces fallback to ray_executor.py on this wheel
-        # to validate the hypothesis. Single-node dp=1 paths were known
-        # working with V2=1, so single-node may need V2=1 restored if
-        # this regresses them; for now, test cross-node DP recovery.
+        # V2 model runner DISABLED — chosen default until vLLM patches
+        # the multi-node DP path in RayExecutorV2.
+        #
+        # Why: RayExecutorV2 (introduced in vLLM 2026-05-13 upstream bump
+        # via PR #36836) inherits from MultiprocExecutor and uses
+        # shm_broadcast for inter-rank communication. Shared memory is
+        # single-host by definition, so cross-node DP falls back to Gloo
+        # TCP, which times out
+        # (gloo/transport/tcp/unbound_buffer.cc Timed out 1800000ms) on
+        # Jupiter's interconnect. Job 487456 (dp=2 MiniMax-M2.7) hit
+        # this consistently even with EP disabled.
+        #
+        # Validation: job 490175 (dp=2 same yaml + this env=0) ran clean
+        # with ZERO shm_broadcast warnings, sample_tokens timeouts, or
+        # Gloo unbound_buffer timeouts. The v0.16.0 known-good branch
+        # (penfever/debug-layer-split-v0.16.0, 2026-04-03) doesn't have
+        # RayExecutorV2 at all — it uses ray_executor.py which routes
+        # everything through Ray RPC (cross-node native).
+        #
+        # Throughput note: V1 (ray_executor.py) is somewhat slower per
+        # request than V2 was designed to be. Single-node dp=1 paths
+        # tested fine on V1 too. Revisit if a vLLM patch lands that
+        # fixes RayExecutorV2's multi-node DP coordination.
         env["VLLM_USE_V2_MODEL_RUNNER"] = "0"
         # Set VLLM_HOST_IP so vLLM's internal get_ip() returns the real node IP.
         # This is used for Ray placement group node constraints and NCCL communication,
