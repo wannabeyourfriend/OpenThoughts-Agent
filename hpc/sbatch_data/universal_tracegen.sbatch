@@ -151,6 +151,47 @@ trap cleanup_ray_logs EXIT
 source "$WORKDIR/hpc/shell_utils/container_runtime.sh"
 setup_container_runtime "{harbor_env}" "$WORKDIR" || exit $?
 
+# --- Node health probe sidecar (every 5 min, per node) ---
+# Logs /dev/shm usage + free RAM + top shm consumers to
+# {experiments_dir}/logs/node_health_<NODE>.log
+#
+# Motivation: Jupiter docs note /dev/shm is tmpfs backed by node RAM and
+# "can contribute to Out-of-Memory errors." We've observed datagen jobs hit
+# shm_broadcast.py:698 watchdogs after ~55-80 min of sustained serving
+# (GLM-4.7 job 493343, MiniMax job 493421). If /dev/shm or RAM is growing
+# toward its ceiling over the serving window, that's a strong contributing
+# signal. Flat usage rules out the tmpfs angle and points the diagnosis at
+# vLLM-internal cross-node coordination.
+#
+# Cheap: 1 process per node, sleeping 300s between samples; logs are
+# ~150 bytes/sample, ~10 KB/job at 2h × per-node. srun --overlap shares
+# the allocation without contending for the main job step's tasks.
+NODE_HEALTH_DIR="{experiments_dir}/logs"
+mkdir -p "$NODE_HEALTH_DIR"
+srun --overlap --ntasks-per-node=1 --nodes="$SLURM_JOB_NUM_NODES" \
+     --kill-on-bad-exit=0 \
+     bash -c '
+NODE=$(hostname -s)
+LOG="'"$NODE_HEALTH_DIR"'/node_health_$NODE.log"
+echo "[probe] started on $NODE at $(date -Is) pid=$$" >> "$LOG"
+while true; do
+    TS=$(date -Is)
+    # /dev/shm capacity (Linux tmpfs: used / total / use%)
+    SHM=$(df -B1 /dev/shm 2>/dev/null | tail -1 \
+          | awk "{printf \"used=%s total=%s pct=%s\", \$3, \$2, \$5}")
+    # RAM (used / total / free / available)
+    MEM=$(awk "/^Mem:/ {printf \"mem_used=%s mem_total=%s mem_free=%s mem_avail=%s\", \$3, \$2, \$4, \$7}" \
+          <(free -b 2>/dev/null))
+    # Top 5 /dev/shm consumers (size-sorted)
+    SHM_TOP=$(du -sb /dev/shm/* 2>/dev/null | sort -rn | head -5 \
+              | awk "{printf \"%s:%s \", \$2, \$1}")
+    echo "$TS $SHM $MEM top_shm=[$SHM_TOP]" >> "$LOG"
+    sleep 300
+done
+' >/dev/null 2>&1 &
+NODE_HEALTH_PID=$!
+echo "[node-health] sidecar started PID=$NODE_HEALTH_PID — logs at $NODE_HEALTH_DIR/node_health_<NODE>.log"
+
 # --- Run the trace generation job via Python runner ---
 echo "=== Universal Trace Generation Runner ==="
 echo "Config: {config_path}"
