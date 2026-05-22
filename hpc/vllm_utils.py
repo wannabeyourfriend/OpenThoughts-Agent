@@ -414,16 +414,34 @@ class VLLMServer:
         # tested fine on V1 too. Revisit if a vLLM patch lands that
         # fixes RayExecutorV2's multi-node DP coordination.
         env["VLLM_USE_V2_MODEL_RUNNER"] = "0"
-        # VLLM_RAY_DP_PACK_STRATEGY=span enables automatic cross-node
-        # placement of DP ranks (one rank per node, spanning the whole
-        # Ray cluster) when --data-parallel-backend=ray is set. Without
-        # this, vLLM's default packing tries to fit all DP ranks on the
-        # head node and re-trips the CUDA_VISIBLE_DEVICES local-range
-        # assertion. Required complement to the --data-parallel-size-local
-        # + --data-parallel-backend=ray flags added above. Companion to
-        # the documented multi-node DP recipe.
+        # VLLM_RAY_DP_PACK_STRATEGY controls how the Ray DP backend places
+        # ranks on the cluster. Three options, defined in
+        # vllm/v1/engine/utils.py:create_dp_placement_groups:
+        #
+        #   strict — 1 DP rank per node, no oversubscription. Required for
+        #            DeepEP kernels (EP ranks must co-reside on a node).
+        #   fill   — greedy pack: fit as many DP ranks per node as possible.
+        #   span   — a SINGLE DP rank spans multiple nodes (requires
+        #            world_size = TP*PP > gpus_per_node, i.e. cross-node TP).
+        #
+        # If we pick the wrong one, vLLM asserts at engine init with
+        #   AssertionError: World size N is smaller than the maximum number
+        #     of devices per node M. Make sure to set
+        #     `VLLM_RAY_DP_PACK_STRATEGY` to `strict` or `fill`
+        # (observed on Jupiter 491789 + Perlmutter 53302207 when we tried
+        # span with TP=4 on 4-GPU nodes — span is for the opposite case).
+        #
+        # Heuristic: if a single DP rank fits in one node (TP*PP <=
+        # gpus_per_node), use strict. Otherwise use span. We never
+        # auto-select fill — strict is the safer default for MoE (DeepEP
+        # compatibility) and behaves identically to fill for the
+        # single-DP-per-node case we hit in practice.
         if self.config.data_parallel_size > 1:
-            env.setdefault("VLLM_RAY_DP_PACK_STRATEGY", "span")
+            tp_pp = self.config.tensor_parallel_size * self.config.pipeline_parallel_size
+            if tp_pp > self.ray_cluster.config.gpus_per_node:
+                env.setdefault("VLLM_RAY_DP_PACK_STRATEGY", "span")
+            else:
+                env.setdefault("VLLM_RAY_DP_PACK_STRATEGY", "strict")
         # Set VLLM_HOST_IP so vLLM's internal get_ip() returns the real node IP.
         # This is used for Ray placement group node constraints and NCCL communication,
         # NOT for the API server bind address (that's --host above).
