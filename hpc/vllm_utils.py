@@ -108,6 +108,14 @@ _ENV_VAR_FIELDS = {
     "use_flashinfer_moe_fp16": "VLLM_USE_FLASHINFER_MOE_FP16",
 }
 
+# Numeric env var fields. Same idea as _ENV_VAR_FIELDS but the value
+# is written through unchanged (e.g. an integer seconds-interval) rather
+# than coerced to "1"/"0". YAML key absent → env var unset → consumer
+# falls back to its own default (typically off / 0).
+_NUMERIC_ENV_VAR_FIELDS = {
+    "pynccl_trace_flush_interval_sec": "VLLM_PYNCCL_TRACE_FLUSH_INTERVAL_SEC",
+}
+
 
 def _build_vllm_cli_args(server_config: dict) -> tuple[list[str], dict[str, str]]:
     """Convert vllm_server config dict to CLI args and env vars.
@@ -139,6 +147,11 @@ def _build_vllm_cli_args(server_config: dict) -> tuple[list[str], dict[str, str]
         # "skip on falsy" behavior couldn't disable those defaults.
         if key in _ENV_VAR_FIELDS:
             env_vars[_ENV_VAR_FIELDS[key]] = "1" if value else "0"
+            continue
+
+        # Numeric env var fields: pass through as-is (str-coerced).
+        if key in _NUMERIC_ENV_VAR_FIELDS:
+            env_vars[_NUMERIC_ENV_VAR_FIELDS[key]] = str(value)
             continue
 
         # Rename field if needed

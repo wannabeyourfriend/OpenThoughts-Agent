@@ -83,6 +83,12 @@ vllm_server:
   use_deep_gemm: false
   use_flashinfer_sampler: false
   use_flashinfer_moe_fp16: true
+  # Periodic pynccl trace-buffer flush every 300 s. Survives SIGKILL — the
+  # on-disk pickle is updated regardless of how the worker eventually dies.
+  # Set to 0 (or omit the key entirely) to disable. v4l-agrs had a real
+  # hang at T+1h but its atexit-only dumps were all empty because Slurm
+  # SIGKILL'd before atexit fired.
+  pynccl_trace_flush_interval_sec: 300
   extra_args:
   - --dtype
   - bfloat16
