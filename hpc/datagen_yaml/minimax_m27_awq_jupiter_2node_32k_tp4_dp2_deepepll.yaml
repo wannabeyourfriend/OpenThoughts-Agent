@@ -55,7 +55,13 @@ vllm_server:
   pipeline_parallel_size: 1
   data_parallel_size: 2
   time_limit: '11:59:00'
-  max_model_len: 32768
+  # max_model_len dropped 32768 -> 4096 because vLLM's SchedulerConfig
+  # validator requires max_num_batched_tokens >= max_model_len. DeepEP's
+  # 32 GiB RDMA buffer cap forces mnbt <= 4096 for MiniMax-M2.7's expert
+  # routing shape (see comment near extra_args below). Result: prompts
+  # longer than 4096 tokens are rejected by vLLM — acceptable trade-off
+  # for the all2all-backend ablation since most Daytona trials fit in 4k.
+  max_model_len: 4096
   max_num_seqs: 32
   gpu_memory_utilization: 0.9
   # enable_expert_parallel: true — 2026-05-22 (revised): matches the
@@ -91,14 +97,15 @@ vllm_server:
   - --enforce-eager
   - --chat-template-content-format
   - string
-  # max-num-batched-tokens lowered from 32768 -> 2048 for deepep_low_latency:
-  # DeepEP's get_low_latency_rdma_size_hint scales linearly at ~6.1 GiB / 1024
-  # tokens for our config (h=3072, num_experts=256, top_k=8, num_ranks=8). The
-  # default 32768 produces a 195 GiB hint that trips
-  # deep_ep.cpp:44 EP_HOST_ASSERT(num_rdma_bytes / sizeof(int4) < INT_MAX)
-  # (32 GiB cap). 2048 -> 12.2 GiB -> safe with headroom.
+  # max-num-batched-tokens 4096 (bumped from earlier 2048 attempt):
+  # - DeepEP's get_low_latency_rdma_size_hint at 4096 = 24.4 GiB (under
+  #   the 32 GiB int4 cap at deep_ep.cpp:44 by ~24% headroom)
+  # - 32768 -> 195 GiB hint, trips the assertion
+  # - 2048 -> 12.2 GiB hint, but vLLM SchedulerConfig validator then
+  #   rejects with "max_num_batched_tokens < max_model_len" → tied to
+  #   max_model_len above. 4096/4096 is the workable sweet spot.
   - --max-num-batched-tokens
-  - '2048'
+  - '4096'
   - --all2all-backend
   - deepep_low_latency
   # ----- DP backend selection (2026-05-21) -----

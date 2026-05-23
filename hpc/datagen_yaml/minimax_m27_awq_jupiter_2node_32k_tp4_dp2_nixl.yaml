@@ -55,7 +55,10 @@ vllm_server:
   pipeline_parallel_size: 1
   data_parallel_size: 2
   time_limit: '11:59:00'
-  max_model_len: 32768
+  # max_model_len 4096 to satisfy vLLM SchedulerConfig invariant
+  # max_num_batched_tokens >= max_model_len; mnbt is capped at 4096 by
+  # the EP-buffer 32 GiB cap (see comment near extra_args below).
+  max_model_len: 4096
   max_num_seqs: 32
   gpu_memory_utilization: 0.9
   # enable_expert_parallel: true — 2026-05-22 (revised): matches the
@@ -91,13 +94,13 @@ vllm_server:
   - --enforce-eager
   - --chat-template-content-format
   - string
-  # max-num-batched-tokens kept at 2048 (same headroom as deepepll variant):
-  # NIXL EP uses Buffer.get_rdma_size_hint() with the same input shape
-  # as DeepEP. NIXL itself does not have the 32 GiB int4 cap (uses size_t
-  # internally), but the size HINT comes from the same compute path — so
-  # leaving 2048 as a safety margin. Can revisit 32768 once stable.
+  # max-num-batched-tokens 4096 (matches max_model_len, satisfies vLLM
+  # SchedulerConfig). NIXL itself uses size_t internally (no INT_MAX cap),
+  # but the Buffer.get_rdma_size_hint() shape matches DeepEP and 4096 is
+  # known-safe for that hint; can revisit if NIXL succeeds and we want
+  # higher throughput.
   - --max-num-batched-tokens
-  - '2048'
+  - '4096'
   - --all2all-backend
   - nixl_ep
   # ----- DP backend selection (2026-05-21) -----
