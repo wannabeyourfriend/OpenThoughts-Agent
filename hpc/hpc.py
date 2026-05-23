@@ -849,14 +849,25 @@ jupiter = HPC(
         # already past (out-of-order issue). DESYNC_DEBUG=1 adds extra state
         # logging at timeout. Dump path is /e/data1 (no quota issues vs /tmp
         # tmpfs which gets cleaned up).
+        # v4k dumps printed a deprecation warning recommending the new name
+        # TORCH_FR_BUFFER_SIZE. Set both for forward compat across PyTorch
+        # 2.x versions — both still honored in 2.11 but the legacy name is
+        # going away in a future release.
         "TORCH_NCCL_TRACE_BUFFER_SIZE": "10000",
+        "TORCH_FR_BUFFER_SIZE": "10000",
         "TORCH_NCCL_DESYNC_DEBUG": "1",
         "TORCH_NCCL_DEBUG_INFO_TEMP_FILE": "/e/data1/datasets/playground/ot-baf/experiments/_nccl_dumps/nccl_trace",
+        # vLLM's pynccl bypasses ProcessGroupNCCL — PyTorch flight recorder
+        # is blind to it. Our local instrumentation in pynccl.py records the
+        # same shape/seq info for pynccl-driven collectives (MoE all-to-all
+        # etc.). Dump triggers: SIGUSR1, atexit. Same dir as TORCH_NCCL_DEBUG_INFO_TEMP_FILE.
+        "VLLM_PYNCCL_TRACE_BUFFER_SIZE": "10000",
+        "VLLM_PYNCCL_TRACE_DUMP_DIR": "/e/data1/datasets/playground/ot-baf/experiments/_nccl_dumps/nccl_trace",
         # vLLM's ray_env.py default whitelist (VLLM_/LMCACHE_/NCCL_/UCX_/HF_/HUGGING_FACE_)
         # doesn't include TORCH_NCCL_ — so without this override, the env vars above
         # only exist on the launcher shell, not inside DPMoEEngineCoreActor or
         # RayWorkerProc where PyTorch reads them. Additive prefix override:
-        "VLLM_RAY_EXTRA_ENV_VAR_PREFIXES_TO_COPY": "TORCH_NCCL_",
+        "VLLM_RAY_EXTRA_ENV_VAR_PREFIXES_TO_COPY": "TORCH_NCCL_,TORCH_FR_,VLLM_PYNCCL_",
     },
     # NOTE: Do NOT use master_addr_suffix="i" - the "i" suffixed hostname is not DNS-resolvable
     # InfiniBand routing is handled by NCCL_SOCKET_IFNAME=ib0 instead

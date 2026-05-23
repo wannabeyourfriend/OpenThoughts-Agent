@@ -541,9 +541,12 @@ python -m hpc.launch \
   `DAYTONA_API_KEY` (RL), `DAYTONA_B_API_KEY`, `DAYTONA_BASE_API_KEY` (evals),
   `DAYTONA_DATA_API_KEY`.
 - **`--datagen_config qwen3_8b_vllm_serve_32k_4xA100.yaml`** — use the A100
-  variant, NOT the GH200 one. The GH200 config has `--all2all-backend pplx`
-  which crashes on A100 (PPLX library not available). A100 variants:
-  `qwen3_8b_vllm_serve_32k_4xA100.yaml` (8B) and
+  variant, NOT the GH200 one. The GH200 config historically used
+  `--all2all-backend pplx` which previously crashed on A100 (PPLX library
+  not available). Note that `pplx` is now a dead name in current vLLM
+  (commit `eb19955c3` removed it; the parser silently rewrites it to
+  `allgather_reducescatter` with a warning). Either way, stick to the A100
+  variants on A100 hardware: `qwen3_8b_vllm_serve_32k_4xA100.yaml` (8B) and
   `qwen3_32b_vllm_serve_32k_4xA100.yaml` (32B).
 
 Replace `--tasks_input_path` with the appropriate benchmark dataset (`DCAgent/dev_set_v2`, `DCAgent2/terminal_bench_2`, etc.).
