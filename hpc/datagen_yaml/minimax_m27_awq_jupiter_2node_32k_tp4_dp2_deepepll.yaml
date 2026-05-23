@@ -91,8 +91,14 @@ vllm_server:
   - --enforce-eager
   - --chat-template-content-format
   - string
+  # max-num-batched-tokens lowered from 32768 -> 2048 for deepep_low_latency:
+  # DeepEP's get_low_latency_rdma_size_hint scales linearly at ~6.1 GiB / 1024
+  # tokens for our config (h=3072, num_experts=256, top_k=8, num_ranks=8). The
+  # default 32768 produces a 195 GiB hint that trips
+  # deep_ep.cpp:44 EP_HOST_ASSERT(num_rdma_bytes / sizeof(int4) < INT_MAX)
+  # (32 GiB cap). 2048 -> 12.2 GiB -> safe with headroom.
   - --max-num-batched-tokens
-  - '32768'
+  - '2048'
   - --all2all-backend
   - deepep_low_latency
   # ----- DP backend selection (2026-05-21) -----
