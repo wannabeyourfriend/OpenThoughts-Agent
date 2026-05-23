@@ -835,6 +835,23 @@ jupiter = HPC(
         # dump at watchdog time to tell us WHICH reader is stuck.
         # Experiment 494030+ on 2026-05-23.
         "VLLM_MQ_MAX_CHUNKS": "240",
+        # Redirect Ray cluster startup logs to /e/data1 — /e/scratch jureap59
+        # project-shared inode quota is chronically over-soft (8.20M / 8.0M)
+        # and any new file creation under $DCFT/experiments/logs/ EDQUOTs.
+        # Symlink fix isn't viable because creating the symlink itself needs
+        # a new inode. See reference_jupiter_inode_quota.md.
+        "OT_AGENT_RAY_LOG_DIR": "/e/data1/datasets/playground/ot-baf/experiments/_ray_logs",
+        # NCCL flight recorder for v4i and beyond — keeps last 10000 collective
+        # ops per rank in a ring buffer, dumped to disk on timeout. v4h told us
+        # _ALLGATHER_BASE on TP group hangs at seq 14157; the flight recorder
+        # gives us each peer rank's last-completed seq so we can see if peer is
+        # behind (slow workload), at same point but not enqueued (GIL/JIT), or
+        # already past (out-of-order issue). DESYNC_DEBUG=1 adds extra state
+        # logging at timeout. Dump path is /e/data1 (no quota issues vs /tmp
+        # tmpfs which gets cleaned up).
+        "TORCH_NCCL_TRACE_BUFFER_SIZE": "10000",
+        "TORCH_NCCL_DESYNC_DEBUG": "1",
+        "TORCH_NCCL_DEBUG_INFO_TEMP_FILE": "/e/data1/datasets/playground/ot-baf/experiments/_nccl_dumps/nccl_trace",
     },
     # NOTE: Do NOT use master_addr_suffix="i" - the "i" suffixed hostname is not DNS-resolvable
     # InfiniBand routing is handled by NCCL_SOCKET_IFNAME=ib0 instead
