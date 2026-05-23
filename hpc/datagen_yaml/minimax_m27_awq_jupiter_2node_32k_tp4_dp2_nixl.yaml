@@ -101,6 +101,14 @@ vllm_server:
   - '4096'
   - --all2all-backend
   - nixl_ep
+  # NIXL EP is the Elastic-EP backend. The vLLM regular GroupCoordinator
+  # path constructs CudaCommunicator without tcp_store_group (parallel_state.py:376-381)
+  # which then fails NixlEPAll2AllManager's assert. Only the
+  # StatelessGroupCoordinator path (stateless_coordinator.py:170-178) passes
+  # tcp_store_group through, and that path is gated on `enable_elastic_ep`,
+  # which in turn requires `enable_eplb`. Both must be on for NIXL_EP to init.
+  - --enable-eplb
+  - --enable-elastic-ep
   # ----- DP backend selection (2026-05-21) -----
   # Use the Ray actor data-parallel backend. The default (`mp`) path
   # spawns ALL `data_parallel_size` engine procs locally on the API-server
