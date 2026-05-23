@@ -824,6 +824,17 @@ jupiter = HPC(
         # masking permanent hangs (those still die, just 20 min later).
         "TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC": "1800",
         "TORCH_NCCL_BLOCKING_WAIT_TIMEOUT_MS": "1800000",
+        # Bump shm_broadcast ring slot count 10 → 240 to widen the buffer
+        # for the cross-node DP+MoE+EP coordination bus. Hardcoded default
+        # in MessageQueue is 10 slots; with our patches it's overridable
+        # via this env var. 240 slots × 16 MiB chunk size = ~3.8 GB per
+        # MessageQueue (trivial against Jupiter's 239 GB /dev/shm cap).
+        # If the late-game shm_broadcast hang is "chronic-slow reader",
+        # 24× more chunks gives ~24× more pre-stuck headroom; if it's
+        # "stuck reader", we still get the new diagnostic slot-state
+        # dump at watchdog time to tell us WHICH reader is stuck.
+        # Experiment 494030+ on 2026-05-23.
+        "VLLM_MQ_MAX_CHUNKS": "240",
     },
     # NOTE: Do NOT use master_addr_suffix="i" - the "i" suffixed hostname is not DNS-resolvable
     # InfiniBand routing is handled by NCCL_SOCKET_IFNAME=ib0 instead
