@@ -89,12 +89,17 @@ vllm_server:
   # hang at T+1h but its atexit-only dumps were all empty because Slurm
   # SIGKILL'd before atexit fired.
   pynccl_trace_flush_interval_sec: 300
-  # py-spy snapshot on SIGUSR1: when the external stall-watchdog kills the
-  # workers with SIGUSR1 at hang time, also fork+exec py-spy --pid <self>
-  # --native and write the Python+native stack alongside the pynccl dump.
-  # Lets us tell GIL deadlock vs stuck CUDA kernel vs Triton JIT compile
-  # vs allocator-lock contention from a single capture.
+  # py-spy snapshot on SIGUSR1: kept on for engine-core actors, but on
+  # Jupiter (ptrace_scope=2) it is silently ineffective for the worker
+  # PIDs where the actual hang happens. Real diagnostic is faulthandler.
   pynccl_pyspy_on_sigusr1: true
+  # In-process Python stack dump via faulthandler.dump_traceback_later.
+  # Every interval_sec, every worker writes its full Python + all-threads
+  # traceback to <dump_dir>/faulthandler_<hostname>_pid<PID>.txt. Bypasses
+  # the GIL — works even when main thread is busy-waiting in CUDA C code.
+  # The replacement for py-spy on Jupiter where ptrace_scope=2 blocks
+  # external attach.
+  pynccl_faulthandler_interval_sec: 60
   extra_args:
   - --dtype
   - bfloat16

@@ -109,6 +109,10 @@ class VLLMServerConfig:
     # py-spy --pid <self> --native and writes the stack snapshot next to the
     # pynccl trace dump. Default off.
     pynccl_pyspy_on_sigusr1: Optional[bool] = None
+    # faulthandler.dump_traceback_later interval (seconds). 0/None disables.
+    # In-process periodic Python stack dump for ALL threads — replacement
+    # for py-spy on clusters where ptrace_scope=2 blocks external attach.
+    pynccl_faulthandler_interval_sec: Optional[int] = None
     extra_args: Any = None
 
 

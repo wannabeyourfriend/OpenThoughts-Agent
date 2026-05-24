@@ -115,6 +115,7 @@ _ENV_VAR_FIELDS = {
 # falls back to its own default (typically off / 0).
 _NUMERIC_ENV_VAR_FIELDS = {
     "pynccl_trace_flush_interval_sec": "VLLM_PYNCCL_TRACE_FLUSH_INTERVAL_SEC",
+    "pynccl_faulthandler_interval_sec": "VLLM_PYNCCL_FAULTHANDLER_INTERVAL_SEC",
 }
 
 
