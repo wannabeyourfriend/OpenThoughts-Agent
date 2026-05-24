@@ -89,6 +89,12 @@ vllm_server:
   # hang at T+1h but its atexit-only dumps were all empty because Slurm
   # SIGKILL'd before atexit fired.
   pynccl_trace_flush_interval_sec: 300
+  # py-spy snapshot on SIGUSR1: when the external stall-watchdog kills the
+  # workers with SIGUSR1 at hang time, also fork+exec py-spy --pid <self>
+  # --native and write the Python+native stack alongside the pynccl dump.
+  # Lets us tell GIL deadlock vs stuck CUDA kernel vs Triton JIT compile
+  # vs allocator-lock contention from a single capture.
+  pynccl_pyspy_on_sigusr1: true
   extra_args:
   - --dtype
   - bfloat16

@@ -106,6 +106,7 @@ _ENV_VAR_FIELDS = {
     "use_deep_gemm": "VLLM_USE_DEEP_GEMM",
     "use_flashinfer_sampler": "VLLM_USE_FLASHINFER_SAMPLER",
     "use_flashinfer_moe_fp16": "VLLM_USE_FLASHINFER_MOE_FP16",
+    "pynccl_pyspy_on_sigusr1": "VLLM_PYNCCL_PYSPY_ON_SIGUSR1",
 }
 
 # Numeric env var fields. Same idea as _ENV_VAR_FIELDS but the value

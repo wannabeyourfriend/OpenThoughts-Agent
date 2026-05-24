@@ -105,6 +105,10 @@ class VLLMServerConfig:
     # Periodic pynccl trace-buffer flush interval (seconds). 0/None disables.
     # See vllm_utils._NUMERIC_ENV_VAR_FIELDS for the env var plumbing.
     pynccl_trace_flush_interval_sec: Optional[int] = None
+    # py-spy-on-SIGUSR1: if true, the pynccl SIGUSR1 handler also forks
+    # py-spy --pid <self> --native and writes the stack snapshot next to the
+    # pynccl trace dump. Default off.
+    pynccl_pyspy_on_sigusr1: Optional[bool] = None
     extra_args: Any = None
 
 
