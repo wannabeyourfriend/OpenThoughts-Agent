@@ -94,12 +94,10 @@ vllm_server:
   # PIDs where the actual hang happens. Real diagnostic is faulthandler.
   pynccl_pyspy_on_sigusr1: true
   # In-process Python stack dump via faulthandler.dump_traceback_later.
-  # Every interval_sec, every worker writes its full Python + all-threads
-  # traceback to <dump_dir>/faulthandler_<hostname>_pid<PID>.txt. Bypasses
-  # the GIL — works even when main thread is busy-waiting in CUDA C code.
-  # The replacement for py-spy on Jupiter where ptrace_scope=2 blocks
-  # external attach.
-  pynccl_faulthandler_interval_sec: 60
+  # DISABLED for v4x — v4v died during weight load and v4w couldn't
+  # spawn Ray actors with faulthandler enabled. A/B test of whether
+  # faulthandler is the cause.
+  pynccl_faulthandler_interval_sec: 0
   extra_args:
   - --dtype
   - bfloat16
