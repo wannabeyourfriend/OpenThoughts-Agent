@@ -74,9 +74,16 @@ terminal_bench:
       min_turns: 4
       k: 8
 
-    # Inherit 56GPU_base's tripled Daytona concurrency (300 → 900) to
-    # match the 3x inference engine count.
-    n_concurrent_trials: 900
+    # v3 (2026-05-25): walked back concurrency 900 → 500. Three v2 chain
+    # links (53383710/12/13) died with the Ray-2.48 distributed-refcount
+    # SIGABRT after monotonically-growing volumes of
+    # `reference_count.cc:1619: ref already removed` warnings (133→431→838).
+    # Root cause: single skyrl_entrypoint driver hits a Ray-internal
+    # threshold under extreme actor/object-ref concurrency. v1 (300 trials)
+    # ran 23h clean; 500 keeps 1.67x v1 headroom while staying clear of
+    # the empirically-bad ceiling. check_interval=4 retained — that is
+    # the actual ablation knob.
+    n_concurrent_trials: 500
 
     log_level: INFO
 
@@ -176,8 +183,11 @@ trainer:
 
   fully_async:
     max_staleness_steps: 16
-    # 3x base — match 56GPU_base.
-    num_parallel_generation_workers: 2304
+    # v3 (2026-05-25): walked back 2304 → 1500 alongside n_concurrent_trials
+    # 900 → 500 to avoid the Ray-2.48 ref-counting SIGABRT. 1500 is ~2x v1's
+    # 768. Keeps inference-engine pressure low while staying clear of the
+    # driver-side concurrency ceiling.
+    num_parallel_generation_workers: 1500
 
 generator:
   backend: vllm
