@@ -2108,26 +2108,41 @@ def check_daytona_resources(sandbox_limit: int, warning_buffer: float) -> bool:
     Returns True if OK to proceed, False if active sandboxes >= sandbox_limit.
     Logs a warning when active sandboxes >= sandbox_limit * warning_buffer.
     """
+    # Daytona migrated /api/sandbox/paginated (page-based) -> /api/sandbox
+    # (cursor-based) on 2026-06-25; daytona SDK >= 0.180.0 exposes the new
+    # endpoint via `daytona.list()`, which returns an iterator that handles
+    # cursor pagination internally. The iterator does not expose a `.total`
+    # attribute (unlike the deprecated `list_sandboxes_paginated`), so to
+    # check whether we're at the sandbox cap we walk the iterator and
+    # short-circuit once we hit `sandbox_limit + 1` (no need to enumerate
+    # every active sandbox in the org).
     try:
-        from daytona_api_client import ApiClient, Configuration, SandboxApi
+        from daytona import Daytona, DaytonaConfig, ListSandboxesQuery, SandboxState
     except ImportError:
-        log("WARNING: daytona_api_client not installed, skipping resource check")
+        log("WARNING: daytona SDK not installed (>=0.180.0 required), skipping resource check")
         return True
 
     api_key = os.environ.get("DAYTONA_API_KEY")
-    api_url = os.environ.get("DAYTONA_API_URL", "https://app.daytona.io/api")
+    api_url = os.environ.get("DAYTONA_API_URL")
     if not api_key:
         log("WARNING: DAYTONA_API_KEY not set, skipping resource check")
         return True
 
     try:
-        config = Configuration(host=api_url)
-        client = ApiClient(config)
-        client.default_headers["Authorization"] = f"Bearer {api_key}"
-        api = SandboxApi(client)
+        cfg_kwargs: Dict[str, Any] = {"api_key": api_key}
+        if api_url:
+            cfg_kwargs["api_url"] = api_url
+        client = Daytona(DaytonaConfig(**cfg_kwargs))
 
-        result = api.list_sandboxes_paginated(states=["started"], limit=1, page=1)
-        active_count = result.total
+        # Walk the iterator, counting up to sandbox_limit + 1 (we only need
+        # to know whether we're at the cap). The SDK transparently fetches
+        # subsequent cursor pages as we iterate.
+        query = ListSandboxesQuery(states=[SandboxState.STARTED], limit=100)
+        active_count = 0
+        for _ in client.list(query):
+            active_count += 1
+            if active_count > sandbox_limit:
+                break
 
         threshold = int(sandbox_limit * warning_buffer)
         if active_count >= sandbox_limit:

@@ -422,23 +422,59 @@ class _SnapshotManager:
     # --- list / status ---------------------------------------------------
 
     def list_all(self, *, page_limit: int = 100) -> Dict[str, List[SnapshotInfo]]:
+        """Enumerate all snapshots per org via cursor pagination.
+
+        Daytona moved off ``page=`` pagination on 2026-06-25 (see
+        ``scripts/daytona/cleanup_stale_sandboxes.py``). The daytona Python
+        SDK <= 0.182.0 still exposes ``client.snapshot.list(page=, limit=)``
+        for snapshots, but the underlying server endpoint accepts ``cursor``
+        and returns ``nextCursor`` -- and the ``page=`` kwarg is going away
+        on the deadline. To avoid maintenance debt and the SDK-version
+        cliff, we bypass the SDK for listing and call the snapshots HTTP
+        endpoint directly with cursor pagination. Per-org API base is read
+        from ``OrgConfig.api_url`` (falls back to ``https://app.daytona.io/api``).
+        """
+        import requests  # local import to avoid hard dep at module load
         out: Dict[str, List[SnapshotInfo]] = {}
         for org in self.orgs:
-            client = self._client(org)
+            api_base = (org.api_url or "https://app.daytona.io/api").rstrip("/")
+            headers = {"Authorization": f"Bearer {org.api_key}"}
             items: List[SnapshotInfo] = []
-            page = 1
+            cursor: Optional[str] = None
             while True:
-                try:
-                    resp = _with_rate_limit_backoff(
-                        lambda: client.snapshot.list(page=page, limit=page_limit)
+                params: Dict[str, Any] = {"limit": page_limit}
+                if cursor:
+                    params["cursor"] = cursor
+
+                def _do_get():
+                    r = requests.get(
+                        f"{api_base}/snapshots",
+                        headers=headers,
+                        params=params,
+                        timeout=30,
                     )
-                except TypeError:
-                    # Some clients don't accept ``page``; fall back to a single call.
-                    resp = _with_rate_limit_backoff(lambda: client.snapshot.list(limit=page_limit))
-                snaps = getattr(resp, "items", None) or getattr(resp, "data", None) or []
+                    r.raise_for_status()
+                    return r.json()
+
+                data = _with_rate_limit_backoff(_do_get)
+
+                # Server returns either {items: [...], nextCursor: ...} or a
+                # bare list (pre-cutover servers). Tolerate both.
+                if isinstance(data, list):
+                    snaps = data
+                    next_cursor = None
+                else:
+                    snaps = data.get("items") or data.get("data") or []
+                    next_cursor = (
+                        data.get("nextCursor")
+                        or data.get("next_cursor")
+                        or data.get("cursor")
+                    )
+
                 for snap in snaps:
-                    name = getattr(snap, "name", "") or ""
-                    state = _normalized_state(getattr(snap, "state", None))
+                    name = (snap.get("name") if isinstance(snap, dict) else getattr(snap, "name", "")) or ""
+                    raw_state = snap.get("state") if isinstance(snap, dict) else getattr(snap, "state", None)
+                    state = _normalized_state(raw_state)
                     # Decode hash from name: harbor__{hash}__... -> {hash}
                     h = ""
                     if name.startswith("harbor__"):
@@ -446,11 +482,10 @@ class _SnapshotManager:
                         if len(parts) >= 3:
                             h = parts[1]
                     items.append(SnapshotInfo(name=name, hash=h, org=org.name, state=state))
-                # Pagination heuristic
-                total_pages = getattr(resp, "total_pages", None)
-                if total_pages is None or page >= total_pages:
+
+                if not next_cursor:
                     break
-                page += 1
+                cursor = next_cursor
             out[org.name] = items
         return out
 
