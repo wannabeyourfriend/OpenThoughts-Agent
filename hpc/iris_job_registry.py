@@ -207,3 +207,19 @@ def get(job_id: str) -> Optional[JobRecord]:
     with _connect() as conn:
         row = conn.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
     return _row_to_record(row) if row is not None else None
+
+
+def get_latest_by_job_name(job_name: str) -> Optional[JobRecord]:
+    """Return the most recently submitted record for ``job_name``.
+
+    Multiple iris job_ids can share a job_name (e.g. when the same
+    short name is launched twice). Returning the latest matches the
+    intent of ``--resume-from <job-name>``: pick up where the last
+    attempt left off.
+    """
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM jobs WHERE job_name = ? ORDER BY submitted_at DESC LIMIT 1",
+            (job_name,),
+        ).fetchone()
+    return _row_to_record(row) if row is not None else None

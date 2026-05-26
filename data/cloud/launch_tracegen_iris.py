@@ -19,6 +19,8 @@ _repo_root = Path(__file__).resolve().parents[2]
 if str(_repo_root) not in sys.path:
     sys.path.append(str(_repo_root))
 
+import yaml
+
 from hpc.iris_launch_utils import IrisLauncher
 from hpc.cloud_launch_utils import repo_relative, parse_gpu_count, infer_harbor_env_from_config
 from hpc.arg_groups import (
@@ -29,6 +31,27 @@ from hpc.arg_groups import (
     add_tasks_input_arg,
 )
 from hpc.launch_utils import PROJECT_ROOT
+
+
+def _env_vars_from_datagen_yaml(path: Path) -> dict:
+    """Lift a top-level ``env_vars:`` block from a datagen YAML, if present.
+
+    Lets a per-config knob override launcher-side env defaults (e.g.
+    `MODEL_IMPL_TYPE=auto` for models that prefer the JAX-native flax_nnx
+    path). Returns ``{}`` if no env_vars block is declared.
+    """
+    if not path or not path.exists():
+        return {}
+    try:
+        with path.open() as f:
+            cfg = yaml.safe_load(f) or {}
+    except Exception as e:
+        print(f"[tracegen-iris] WARNING: failed to parse {path} for env_vars: {e}", file=sys.stderr)
+        return {}
+    env = cfg.get("env_vars") or {}
+    if not isinstance(env, dict):
+        return {}
+    return {str(k): str(v) for k, v in env.items()}
 
 
 class TracegenIrisLauncher(IrisLauncher):
@@ -117,8 +140,14 @@ class TracegenIrisLauncher(IrisLauncher):
         if args.harbor_env:
             cmd.extend(["--harbor_env", args.harbor_env])
 
-        if args.job_name:
-            cmd.extend(["--job_name", args.job_name])
+        # When --resume-from is active, the iris-level job_name is fresh
+        # (timestamped for iris uniqueness) but the harbor identity must be
+        # the OLD job's name so harbor's _maybe_init_existing_job picks up
+        # the existing config.json / trials. IrisLauncher.run() stashes the
+        # old name on args._harbor_job_name_override.
+        harbor_job_name = getattr(args, "_harbor_job_name_override", None) or args.job_name
+        if harbor_job_name:
+            cmd.extend(["--job_name", harbor_job_name])
         if args.dry_run:
             cmd.append("--dry_run")
 
@@ -139,6 +168,25 @@ class TracegenIrisLauncher(IrisLauncher):
             cmd.append("--upload_hf_private")
 
         return cmd
+
+    def build_env(self, args: argparse.Namespace) -> dict:
+        """Lift a per-config ``env_vars:`` block from the datagen YAML.
+
+        Returned entries are merged BEFORE the launcher's setdefaults in
+        IrisLauncher.run(), so they win — e.g. setting
+        ``env_vars: {MODEL_IMPL_TYPE: auto}`` in a gemma4 YAML overrides
+        the launcher-wide default of `MODEL_IMPL_TYPE=vllm` (which is
+        the right default only for AWQ workloads). Other env defaults
+        the launcher provides (UV_LINK_MODE, OT_AGENT_SKIP_SFT_SYNC,
+        etc) remain in effect via setdefault.
+        """
+        env = super().build_env(args)
+        # args.datagen_config has been normalized to a repo-relative string in
+        # normalize_paths(); resolve it against repo_root for file open().
+        if args.datagen_config:
+            yaml_path = self.repo_root / args.datagen_config
+            env.update(_env_vars_from_datagen_yaml(yaml_path))
+        return env
 
 
 def main() -> None:

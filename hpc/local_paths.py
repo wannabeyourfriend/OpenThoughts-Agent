@@ -96,11 +96,17 @@ def ensure(*subdirs: Path) -> None:
 def _dir_size_bytes(path: Path) -> int:
     """Sum of file sizes under ``path``, or 0 if missing.
 
-    Walks once; tolerates broken symlinks and permission errors so an
-    inventory call never raises mid-walk.
+    Accepts either a directory (walks recursively) or a single file
+    (returns its size). Tolerates broken symlinks and permission errors
+    so an inventory call never raises mid-walk.
     """
     if not path.exists():
         return 0
+    if path.is_file():
+        try:
+            return os.path.getsize(path)
+        except OSError:
+            return 0
     total = 0
     for dirpath, _dirnames, filenames in os.walk(path, followlinks=False):
         for fn in filenames:
@@ -144,6 +150,10 @@ def inventory() -> List[InventoryEntry]:
         ("logs",        PATHS.logs),
         ("cache/hf",    PATHS.cache / "hf"),
         ("cache/tiktoken", PATHS.cache / "tiktoken"),
+        # Individual SQLite catalogs under state/. Listing them explicitly
+        # makes "did the registry initialize?" answerable from `inventory`.
+        ("state/iris_jobs.db",     PATHS.state / "iris_jobs.db"),
+        ("state/model_mirrors.db", PATHS.state / "model_mirrors.db"),
     ]
 
     entries: list[InventoryEntry] = []

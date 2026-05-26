@@ -38,7 +38,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from hpc.local_paths import PATHS as LOCAL_PATHS, ensure as ensure_local_paths
-from hpc.iris_job_registry import register_submission
+from hpc.iris_job_registry import register_submission, get_latest_by_job_name
 
 # Default chips per TPU host VM on every family currently exposed by marin
 # (ct5lp-hightpu-4t, ct6e-standard-4t, ct5p-hightpu-4t, ct4p-hightpu-4t).
@@ -119,10 +119,21 @@ class IrisLauncher:
                             "**UNTESTED in v1**, see module docstring.")
         g.add_argument("--cpu", type=float, default=8.0,
                        help="CPU cores for the entrypoint task (default 8).")
-        g.add_argument("--memory", default="64GB",
-                       help="Memory for the entrypoint task (default 64GB).")
-        g.add_argument("--disk", default="200GB",
-                       help="Ephemeral disk (default 200GB).")
+        g.add_argument("--memory", default="256GB",
+                       help="Memory for the entrypoint task (default 256GB). "
+                            "v6e workers have 720GB total, so 256GB covers "
+                            "HF weight loading for models up to ~120B bf16 "
+                            "or ~400B AWQ-4-bit with comfortable headroom. "
+                            "Bump for larger models; drop to 64GB for small "
+                            "smokes if you want to be polite to the queue.")
+        g.add_argument("--disk", default="100GB",
+                       help="Ephemeral disk (default 100GB). marin's v6e/v5p "
+                            "workers cap per-VM disk at 100GB; requests above "
+                            "that queue forever waiting on the autoscaler which "
+                            "can't provision a larger-disk worker. For models "
+                            "whose weights exceed 100GB, use --load-format "
+                            "runai_streamer + gs://-hosted weights instead of "
+                            "bumping disk.")
         g.add_argument("--priority", default=DEFAULT_PRIORITY,
                        choices=["production", "interactive", "batch"],
                        help="Iris priority band (default interactive).")
@@ -151,6 +162,18 @@ class IrisLauncher:
                              f"{DEFAULT_GCS_OUTPUT_ROOT}. The fetch daemon "
                              f"(hpc.iris_fetch_daemon) pulls completed jobs from here into "
                              f"{LOCAL_PATHS.runs}/<job-name>/.")
+
+        rg = parser.add_argument_group("resume")
+        rg.add_argument("--resume-from", "--resume_from", dest="resume_from", default=None,
+                        help="Resume harbor state from a previously-submitted iris job "
+                             "(by job_name; looked up in the local registry "
+                             f"at {LOCAL_PATHS.state}/iris_jobs.db). The new iris job gets a "
+                             "fresh timestamped name (for iris-level uniqueness), but the "
+                             "harbor --job_name and --jobs-dir are routed at the old job's "
+                             "GCS path so harbor's _maybe_init_existing_job picks up the "
+                             "existing trial results and only runs the unmatched remaining "
+                             "trials. No config gating: per the user's direction (2026-05-24), "
+                             "OT-Agent and harbor already validate compatibility on resume.")
 
         sg = parser.add_argument_group("secrets")
         sg.add_argument("--secrets-env", "--secrets_env", default=None,
@@ -219,12 +242,44 @@ class IrisLauncher:
                 "--gcs-output-dir is required (set OT_AGENT_GCS_OUTPUT_ROOT or pass the flag)."
             )
 
+        # --resume-from: look up a previously-submitted job and route the
+        # new task's harbor command at the old GCS path. The iris-level
+        # job_name still gets a fresh timestamp (iris rejects duplicates);
+        # the harbor-level identity (jobs_dir + job_name) is preserved so
+        # harbor's _maybe_init_existing_job (job.py:203) finds existing
+        # trial results and skips them. We stash the old harbor identity
+        # on the args namespace so subclass build_task_command can read it.
+        resume_target = getattr(args, "resume_from", None)
+        if resume_target:
+            prev = get_latest_by_job_name(resume_target)
+            if prev is None:
+                raise SystemExit(
+                    f"--resume-from {resume_target!r}: no record found in "
+                    f"{LOCAL_PATHS.state}/iris_jobs.db. Available recent jobs:\n"
+                    "  python -c 'from hpc.iris_job_registry import list_all; "
+                    "[print(r.job_name) for r in list_all(limit=20)]'"
+                )
+            ts = time.strftime("%Y%m%d-%H%M%S")
+            args.job_name = getattr(args, "job_name", None) or f"{prev.job_name}-resume-{ts}"
+            args._harbor_job_name_override = prev.job_name
+            args._resume_gcs_output_dir = prev.gcs_output_dir
+            print(
+                f"[iris] Resume mode: harbor job_name={prev.job_name}  "
+                f"gcs={prev.gcs_output_dir}",
+                flush=True,
+            )
+
         job_name = self._derive_job_name(args)
         user = os.environ.get("USER") or os.environ.get("USERNAME") or "user"
 
         # The workload writes outputs directly to GCS; the fetch daemon
         # pulls them back to LOCAL_PATHS.runs/<job-name>/ on completion.
-        remote_output_dir = f"{args.gcs_output_dir.rstrip('/')}/{job_name}"
+        if resume_target:
+            # Resume: point at the OLD job's full GCS path so harbor finds
+            # its existing config.json / trial dirs. Do NOT re-join job_name.
+            remote_output_dir = args._resume_gcs_output_dir.rstrip("/")
+        else:
+            remote_output_dir = f"{args.gcs_output_dir.rstrip('/')}/{job_name}"
 
         # Make sure the local managed tree exists so the daemon (and any
         # downstream consumers) find LOCAL_PATHS.runs/ on first run.
@@ -314,6 +369,34 @@ class IrisLauncher:
         # load-bearing — vLLM does its own ray.init internally.
         env_vars.setdefault("VLLM_SKIP_RAY_PROBE", "1")
 
+        # tpu_inference resolves MODEL_IMPL_TYPE=auto → flax_nnx for many
+        # architectures (Gemma4, Qwen3.5Moe, etc), but flax_nnx doesn't
+        # support AWQ weights (`NotImplementedError: awq quantization
+        # method not supported. Supported methods are dict_keys([None,
+        # 'fp8'])`). For our AWQ workloads (QuantTrio Qwen3.5-397B-AWQ,
+        # QuantTrio MiniMax-M2.7-AWQ, etc) we need the PyTorch-XLA
+        # ('vllm') path, which routes through tpu_inference's
+        # VllmAWQConfig override. Marin's own native vllm_server.py
+        # sets the same default — see lib/marin/src/marin/inference/
+        # vllm_server.py:276.
+        env_vars.setdefault("MODEL_IMPL_TYPE", "vllm")
+
+        # Run:AI Model Streamer config so `--load-format runai_streamer`
+        # can pull safetensors from S3-compatible storage on workers that
+        # can't disk-cache the full model (>50 GB total weights vs the
+        # 100 GB v6e per-VM disk cap).
+        #
+        # AWS_ENDPOINT_URL is NOT setdefault'd here — it must come from
+        # the user's ~/Documents/secrets.env via --secrets-env so the
+        # launcher works against any S3-compatible target (real AWS,
+        # MinIO at Jülich, GCS-S3-interop, etc.). The original Plan A
+        # was GCS-S3-interop via HMAC keys (set AWS_ENDPOINT_URL=
+        # https://storage.googleapis.com), but the user lacked
+        # storage.hmacKeys.create on hai-gcp-models — we pivoted to
+        # MinIO@Jülich, accessed via LAION_ENDPOINT.
+        env_vars.setdefault("RUNAI_STREAMER_S3_USE_VIRTUAL_ADDRESSING", "False")
+        env_vars.setdefault("AWS_EC2_METADATA_DISABLED", "true")
+
         # Forward sandbox-backend / external-API credentials from the
         # launcher's shell env into the iris worker. Iris auto-injects
         # HF_TOKEN, WANDB_API_KEY, HF_DATASETS_TRUST_REMOTE_CODE, and
@@ -375,6 +458,63 @@ class IrisLauncher:
             print(
                 f"[iris] Secrets:    loaded {len(loaded)} entries from "
                 f"{secrets_path}: {', '.join(sorted(loaded))}",
+                flush=True,
+            )
+
+        # Alias S3-compat credentials → AWS_* env vars for runai_streamer.
+        # ~/Documents/secrets.env may carry several S3-compat credential
+        # pairs:
+        #   - LAION_ACCESS_KEY + LAION_SECRET_KEY + LAION_ENDPOINT
+        #     (MinIO@Jülich)
+        #   - MARIN_HMAC_ACCESS_ID + MARIN_HMAC_SECRET
+        #     (GCS S3-interop via hai-gcp-models HMAC keys; endpoint is
+        #     always https://storage.googleapis.com, no separate env var)
+        # plus the real-AWS pair (AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY)
+        # which `_load_secrets` already populated in env_vars by name.
+        #
+        # The C SDK can only carry ONE credential pair, so we need to
+        # pick the right one based on which endpoint the YAML targets.
+        # Priority: MARIN_HMAC_* (GCS S3-interop) > LAION_* (MinIO Jülich).
+        # If the YAML pre-sets AWS_ENDPOINT_URL we honor that and pick
+        # the credential pair matching it; otherwise default to LAION
+        # (the historical pre-MARIN-HMAC behavior).
+        endpoint_in_yaml = env_vars.get("AWS_ENDPOINT_URL")
+        is_marin_endpoint = (endpoint_in_yaml is not None and
+                              "storage.googleapis.com" in endpoint_in_yaml)
+        has_marin = (
+            "MARIN_HMAC_ACCESS_ID" in env_vars
+            and "MARIN_HMAC_SECRET" in env_vars
+        )
+        has_laion = "LAION_ENDPOINT" in env_vars
+        aliased: list[str] = []
+
+        if has_marin and (is_marin_endpoint or not has_laion):
+            env_vars.setdefault("AWS_ENDPOINT_URL", "https://storage.googleapis.com")
+            env_vars["AWS_ACCESS_KEY_ID"] = env_vars["MARIN_HMAC_ACCESS_ID"]
+            env_vars["AWS_SECRET_ACCESS_KEY"] = env_vars["MARIN_HMAC_SECRET"]
+            aliased = [
+                "AWS_ENDPOINT_URL ← https://storage.googleapis.com",
+                "AWS_ACCESS_KEY_ID ← MARIN_HMAC_ACCESS_ID",
+                "AWS_SECRET_ACCESS_KEY ← MARIN_HMAC_SECRET",
+            ]
+        elif has_laion:
+            # AWS_ENDPOINT_URL: only auto-fill from LAION_ENDPOINT if YAML
+            # didn't pre-set it.
+            if "AWS_ENDPOINT_URL" not in env_vars:
+                env_vars["AWS_ENDPOINT_URL"] = env_vars["LAION_ENDPOINT"]
+                aliased.append("AWS_ENDPOINT_URL ← LAION_ENDPOINT")
+            if "LAION_ACCESS_KEY" in env_vars:
+                env_vars["AWS_ACCESS_KEY_ID"] = env_vars["LAION_ACCESS_KEY"]
+                aliased.append("AWS_ACCESS_KEY_ID ← LAION_ACCESS_KEY")
+            if "LAION_SECRET_KEY" in env_vars:
+                env_vars["AWS_SECRET_ACCESS_KEY"] = env_vars["LAION_SECRET_KEY"]
+                aliased.append("AWS_SECRET_ACCESS_KEY ← LAION_SECRET_KEY")
+
+        if aliased:
+            print(
+                f"[iris] Aliased for runai_streamer S3 against "
+                f"{env_vars.get('AWS_ENDPOINT_URL', '<unset>')}: "
+                f"{', '.join(aliased)}",
                 flush=True,
             )
 
@@ -501,13 +641,20 @@ class IrisLauncher:
                     f"uv sync {quiet} --frozen --reinstall --link-mode=copy "
                     f"--all-packages --no-group dev {extras_flags}".rstrip()
                 )
+                # Runtime patch step: apply ot-agent-side workarounds to
+                # third-party packages that ship in the wheel (currently
+                # the tpu-inference hbm_usage_bytes multi-host bug). Runs
+                # after `uv sync` so we're patching the freshly-installed
+                # copies, before the workload exec. The script is
+                # idempotent and prints a one-line status per patch.
+                patch_cmd = "python scripts/iris/patch_tpu_inference.py"
                 # Quote the python -c body and script argv for the bash -c
                 # invocation. We use a single shlex.join for the python
                 # invocation so spaces/quotes in argv survive.
                 py_invoke = shlex.join(
                     ["python", "-c", py_bootstrap, script_path, *script_argv]
                 )
-                bash_cmd = f"set -e; {resync_cmd}; exec {py_invoke}"
+                bash_cmd = f"set -e; {resync_cmd}; {patch_cmd}; exec {py_invoke}"
                 wrapped = ["bash", "-c", bash_cmd]
                 entrypoint = Entrypoint.from_command(*wrapped)
             else:
@@ -564,5 +711,7 @@ class IrisLauncher:
 # Imported lazily inside .run() to keep CLI startup fast, but tiny enough
 # to define here.
 def _seconds_to_duration(secs: int):
-    from iris.cluster.types import Duration
+    # Duration moved from iris.cluster.types to rigging.timing on a
+    # marin/iris refactor; iris.client imports from rigging.timing now.
+    from rigging.timing import Duration
     return Duration.from_seconds(secs)
