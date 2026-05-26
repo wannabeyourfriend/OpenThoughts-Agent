@@ -141,7 +141,7 @@ trainer:
 
   # Database registration (auto-registers trained model to Supabase)
   # Requires KEYS env var pointing to Supabase credentials file
-  enable_db_registration: true
+  enable_db_registration: false
 
   # Logging
   project_name: OpenThoughts-Agent

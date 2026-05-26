@@ -167,7 +167,7 @@ trainer:
   hf_hub_revision: main
 
   # Database registration (auto-registers trained model to Supabase)
-  enable_db_registration: true
+  enable_db_registration: false
 
   # Logging
   project_name: OpenThoughts-Agent
