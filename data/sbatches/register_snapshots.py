@@ -300,89 +300,21 @@ def load_needed_hashes() -> set[str]:
 
 # ---- CLI modes ----
 
-class _SnapshotLite:
-    """Lightweight stand-in for the SDK Snapshot used by list-all callers.
+async def list_all_snapshots(client: AsyncDaytona) -> list:
+    """List all snapshots with pagination and rate-limit retries."""
+    from daytona.common.errors import DaytonaRateLimitError
 
-    Exposes the attributes downstream code reads (``name``, ``id``, ``state``
-    with ``.value``). Sufficient for filtering and for ``client.snapshot.delete``
-    which only dereferences ``snapshot.id``.
-    """
-
-    class _StateProxy:
-        def __init__(self, value: str) -> None:
-            self.value = value
-
-        def __eq__(self, other: object) -> bool:
-            # Allow comparing against ``SnapshotState.ACTIVE`` etc.
-            if hasattr(other, "value"):
-                return self.value == other.value
-            return self.value == other
-
-        def __hash__(self) -> int:
-            return hash(self.value)
-
-    def __init__(self, raw: dict) -> None:
-        self.id: str = raw.get("id") or raw.get("name") or ""
-        self.name: str = raw.get("name") or ""
-        self.state = self._StateProxy(str(raw.get("state") or "").upper())
-
-
-async def list_all_snapshots(api_key: str, api_url: str = "https://app.daytona.io/api") -> list:
-    """List all snapshots via cursor pagination, with rate-limit retries.
-
-    Daytona's deprecated ``page=`` pagination retires on 2026-06-25; the
-    snapshots endpoint accepts ``cursor`` instead. The daytona Python SDK
-    (<= 0.182.0) still exposes ``client.snapshot.list(page=, limit=)`` for
-    snapshots but the underlying server moves to cursor-only at the cutover,
-    so we bypass the SDK and call the HTTP endpoint directly. Returns a list
-    of ``_SnapshotLite`` objects compatible with downstream callers (which
-    only read ``.name``, ``.id``, and ``.state``).
-    """
-    import aiohttp
-    from daytona.common.errors import DaytonaRateLimitError  # noqa: F401  (preserved for parity)
-
-    api_url = api_url.rstrip("/")
-    headers = {"Authorization": f"Bearer {api_key}"}
-
-    all_snaps: list = []
+    all_snaps = []
+    page = 1
     for attempt in range(5):
         try:
-            cursor = None
-            all_snaps = []  # reset on retry
-            async with aiohttp.ClientSession(headers=headers) as session:
-                while True:
-                    params = {"limit": 100}
-                    if cursor:
-                        params["cursor"] = cursor
-                    async with session.get(
-                        f"{api_url}/snapshots",
-                        params=params,
-                        timeout=aiohttp.ClientTimeout(total=30),
-                    ) as resp:
-                        if resp.status == 429:
-                            raise DaytonaRateLimitError("HTTP 429 from /snapshots")
-                        resp.raise_for_status()
-                        data = await resp.json()
-
-                    # Post-cutover: {items: [...], nextCursor}. Pre-cutover
-                    # / bare list response: handle both.
-                    if isinstance(data, list):
-                        items = data
-                        next_cursor = None
-                    else:
-                        items = data.get("items") or data.get("data") or []
-                        next_cursor = (
-                            data.get("nextCursor")
-                            or data.get("next_cursor")
-                            or data.get("cursor")
-                        )
-
-                    all_snaps.extend(_SnapshotLite(it) for it in items)
-
-                    if not next_cursor:
-                        return all_snaps
-                    cursor = next_cursor
-                    await asyncio.sleep(2)
+            while True:
+                result = await client.snapshot.list(page=page, limit=100)
+                all_snaps.extend(result.items)
+                if page >= result.total_pages:
+                    return all_snaps
+                page += 1
+                await asyncio.sleep(2)
         except DaytonaRateLimitError:
             wait = 30 * (attempt + 1)
             print(f"  Rate limited, waiting {wait}s...")
@@ -399,7 +331,7 @@ async def cmd_list():
 
         client = AsyncDaytona(DaytonaConfig(api_key=api_key, target="us"))
         try:
-            snapshots = await list_all_snapshots(api_key)
+            snapshots = await list_all_snapshots(client)
             print(f"Total snapshots: {len(snapshots)}")
             for snap in sorted(snapshots, key=lambda s: s.name):
                 print(f"  {snap.state.value:8s} {snap.name}")
@@ -454,7 +386,7 @@ async def cmd_cleanup():
 
         client = AsyncDaytona(DaytonaConfig(api_key=api_key, target="us"))
         try:
-            snapshots = await list_all_snapshots(api_key)
+            snapshots = await list_all_snapshots(client)
             print(f"Total snapshots: {len(snapshots)}")
 
             to_delete = [s for s in snapshots if s.name not in needed_names]
