@@ -1237,13 +1237,63 @@ After an RL job terminates (early or completed), follow these steps to preserve 
    scancel <retry_job_ids>
    ```
 
-1. **Locate the best checkpoint** (by reward) in the exports folder:
+1. **Locate the best checkpoint** (by EMA of reward) in the exports folder:
    ```bash
    # NOTE: There is an empty exports/ dir at the base level — ignore it.
    # The real HF-exportable checkpoints are in the nested subdir:
    ls -lt $EXPERIMENTS_DIR/<job_name>/<job_name>/exports/ | head -10
    ```
-   Check `trainer_log.jsonl` for `reward/avg_raw_reward` at each step to identify the checkpoint with the highest reward. Upload that one, not necessarily the last one (reward can degrade in later steps).
+
+   **Use the EMA of `reward/avg_raw_reward` over the trailing 5-step
+   window, NOT the single-step max.** Single-step max overfits to one
+   noisy lucky step; EMA picks the checkpoint sitting in the most
+   sustained-good region of the trajectory.
+
+   Rules:
+   - **EMA must be computed across ALL steps in chronological order,
+     regardless of chain restarts.** If the chain restarted mid-training,
+     reconstruct the full step sequence by collecting `step` lines from
+     EVERY `.out` file (or `trainer_log.jsonl` if present, but `.out` is
+     the canonical source per `feedback_sft_status_via_out_not_jsonl`)
+     and sorting by `trainer/global_step`. Do NOT compute per-chain-link
+     EMA — chain boundaries are not training-meaningful, and naive
+     per-link averaging will under-weight or over-weight the steps near
+     a resume point.
+   - Use the standard 5-period EMA formula: `α = 2/(5+1) = 1/3`.
+     `EMA_n = α · reward_n + (1−α) · EMA_{n−1}`, with `EMA_1 = reward_1`.
+   - **Never select the first saved checkpoint** (typically `global_step_5`
+     with `hf_save_interval: 5`). The EMA is not warmed up yet — it
+     mostly reflects step 5 itself. Start checkpoint selection from the
+     second-saved-step onward (typically step 10).
+   - Of the saved-and-aligned checkpoints (multiples of
+     `hf_save_interval`, excluding the first), upload the one whose EMA
+     at that step is highest.
+
+   Quick Python snippet:
+   ```python
+   import json, glob, re
+   rewards = {}  # step -> avg_raw_reward
+   for fn in glob.glob(f"{EXP_DIR}/logs/*.out"):
+       for line in open(fn):
+           m = re.search(r'trainer/global_step":\s*(\d+).*avg_raw_reward":\s*([\d.eE+-]+)', line)
+           if m:
+               step, r = int(m.group(1)), float(m.group(2))
+               rewards.setdefault(step, r)  # first-seen wins (chain links may overlap)
+   steps = sorted(rewards)
+   alpha = 1/3
+   ema = {}
+   prev = rewards[steps[0]]
+   for s in steps:
+       prev = alpha * rewards[s] + (1 - alpha) * prev
+       ema[s] = prev
+   # Exclude the first saved checkpoint (EMA not warmed up).
+   SAVE_EVERY = 5  # match hf_save_interval
+   aligned_eligible = [s for s in steps if s % SAVE_EVERY == 0 and s >= 2 * SAVE_EVERY]
+   best = max(aligned_eligible, key=ema.get)
+   print(f"best EMA={ema[best]:.4f} at step={best} (reward at that step={rewards[best]:.4f})")
+   ```
+
+   Then upload the checkpoint at `exports/global_step_<best>/`.
 
 2. **Locate the W&B run**: Check the job logs or `trainer_log.jsonl` for the wandb run URL. Format: `https://wandb.ai/dogml/OpenThoughts-Agent/runs/<run_id>`
 
