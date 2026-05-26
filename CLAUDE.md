@@ -1325,6 +1325,12 @@ After an RL job terminates (early or completed), follow these steps to preserve 
 6. **Upload to HuggingFace**: Use `hf upload` (folder-to-root form; see "HF Uploads + Long-Running Login-Node Commands" above for why not `hf upload-large-folder`) to push to `laion/<job_name>-<step>-<size>` (append the global step AND the base-model size suffix, e.g. `-20-32B` for step 20 of a 32B model, `-20-8B` for an 8B model). The size suffix is required:
    ```bash
    # Wrap in tmux for long uploads — see the general HF-upload section above.
+   # NOTE: `--private` is a no-value flag, NOT `--private false`. Per
+   # `feedback_hf_public_default`, default policy is public — so just OMIT
+   # the flag (the laion org is set to public-default these days). If you
+   # add `--private false` you'll get a CLI parse error and the upload
+   # won't run; this trapped two cleanup runs on 2026-05-25/26 before it
+   # was caught.
    hf upload laion/<job_name>-<step>-<size> $UPLOAD_DIR . --repo-type=model
    ```
    **Naming convention:** the SkyRL trainer auto-pushes intermediates to a
@@ -1374,6 +1380,12 @@ After an RL job terminates (early or completed), follow these steps to preserve 
 
 8. **Upload RL traces**: Upload the training traces from the job:
    ```bash
+   # IMPORTANT: run from the `otagent` conda env, NOT `dcagent-rl` /
+   # `rl`. The trace upload script depends on `google.cloud.storage` and
+   # matplotlib which only the otagent env has; the rl env will fail with
+   # `ModuleNotFoundError: google.cloud.storage`. Same applies to step 9's
+   # `parse_skyrl_metrics.py` (needs matplotlib). Both trapped on the
+   # 2026-05-26 nl2bash + curriculum-easy cleanups.
    python -m scripts.harbor.make_and_upload_trace_dataset \
      --job_dir "$EXPERIMENTS_DIR/<job_name>/<job_name>" \
      --repo_id penfever/<job_name> \
