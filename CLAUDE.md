@@ -1339,14 +1339,44 @@ After an RL job terminates (early or completed), follow these steps to preserve 
    Supabase. We bypass that by uploading the manually-flattened export to
    the `-<step>-<size>` repo with weights at root.
 
-7. **Register in DB**: First, delete the trainer's auto-registered duplicate, then push the correct row.
+7. **Register in DB**: First, delete the trainer's auto-registered duplicate IF SAFE, then push the correct row.
 
-   - **Delete the trainer's auto-registered Supabase row** (it points to the wrong-layout canonical repo):
+   - **CRITICAL — cross-user FK safety:** Before deleting the auto-row,
+     check whether any **other-user** rows in `sandbox_jobs`,
+     `sandbox_trial_model_usage`, or any other table have a foreign-key
+     pointing to it. If yes — **STOP**. Do NOT delete and do NOT mutate
+     those rows. Surface the FK conflict to the user instead and skip
+     the auto-row deletion entirely. The cost of leaving a duplicate
+     `models` row is one row of DB noise; the cost of mutating another
+     user's eval-job records (changing their `model_id` to point at our
+     `-<step>-<size>` repo, then deleting the original HF repo) is real
+     downstream breakage of their evals. This happened on 2026-05-26 to
+     `zhuang1`'s eval jobs during the curriculum-easy cleanup — three
+     `sandbox_jobs` rows had their `model_id` repointed without
+     authorization. Per `feedback_supabase_filter_username`, restrict
+     ALL writes (delete AND update) to rows you own; if a foreign-key
+     constraint forces you to touch someone else's row, STOP and ask.
+
      ```python
-     # Find the row by name and delete it
-     c.table("models").delete().eq("name", "laion/<job_name>").execute()
+     # Safe pre-check before the delete
+     other_users_fk = (
+         c.table("sandbox_jobs")
+          .select("id,username,model_id")
+          .eq("model_id", auto_row_id)
+          .neq("username", os.environ.get("USER", "<your_user>"))
+          .execute()
+     )
+     if other_users_fk.data:
+         print(f"SKIPPING auto-row delete — {len(other_users_fk.data)} other-user rows FK'd. Leaving duplicate models row.")
+         # Do NOT delete the auto-row. Do NOT mutate the FK'd rows.
+         # Surface to the user via the cleanup report.
+     else:
+         c.table("models").delete().eq("name", "laion/<job_name>").execute()
      ```
-   - **Optionally also delete the trainer's auto-uploaded canonical HF repo**:
+
+   - **Optionally also delete the trainer's auto-uploaded canonical HF repo** —
+     ONLY if the safe pre-check above passed (no other-user FKs). Otherwise
+     the HF repo bytes may still be in use by another user's running evals:
      ```python
      from huggingface_hub import HfApi
      HfApi().delete_repo("laion/<job_name>", repo_type="model")
