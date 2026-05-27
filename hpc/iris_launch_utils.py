@@ -381,6 +381,27 @@ class IrisLauncher:
         # vllm_server.py:276.
         env_vars.setdefault("MODEL_IMPL_TYPE", "vllm")
 
+        # NO cross-run persistent XLA compilation cache.
+        #
+        # A shared GCS JAX compilation cache (gs://marin-models-us/ot-agent/
+        # xla-cache) was tried for Qwen122B-FP8 to skip the ~100-min cold
+        # compile, but it is UNSAFE across iris's heterogeneous host pool.
+        # JAX's persistent cache key for an XLA:CPU AOT executable does not
+        # pin the exact host CPU feature set. The FP8→bf16 weight dequant
+        # runs as an XLA:CPU kernel; a cache entry compiled on a host with
+        # AVX `+prefer-no-gather/+prefer-no-scatter` and loaded on a host
+        # lacking them logs `cpu_aot_loader.cc:220 ... could lead to ...
+        # SIGILL` and produces DIVERGENT host-side weight arrays per
+        # process. On a multi-host slice (v5p-32 DP=2) the replicated-weight
+        # `device_put` then fails with `AssertionError: ArrayImpl passed to
+        # device_put is not the same on each process`, killing all engine
+        # cores (qwen122b v8d/v8e, 2026-05-27).
+        #
+        # Within a single slice the host VMs are homogeneous, so a fresh
+        # per-run compile is self-consistent. Eating the cold compile each
+        # run is correct; re-enabling a persistent cache requires either a
+        # CPU-feature-keyed cache dir or pinning a single host machine type.
+
         # Run:AI Model Streamer config so `--load-format runai_streamer`
         # can pull safetensors from S3-compatible storage on workers that
         # can't disk-cache the full model (>50 GB total weights vs the

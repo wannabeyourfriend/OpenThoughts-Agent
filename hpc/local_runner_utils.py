@@ -677,9 +677,20 @@ class LocalHarborRunner:
         if args.model is None and needs_local_vllm:
             raise ValueError("Provide --model or supply a datagen config with vllm_server.model_path.")
 
-        # Generate served model ID (only for local vLLM)
+        # Generate served model ID (only for local vLLM).
+        #
+        # Derive the ID deterministically from the harbor job_name so it is
+        # *stable across launches* of the same job. The served-model-name is
+        # baked into the materialized harbor config as
+        # ``agents[].model_name = hosted_vllm/<id>``; if it changes between the
+        # first run and a preempt-resume, harbor's _maybe_init_existing_job
+        # equality check sees a divergent ``agents[0].model_name`` and raises
+        # FileExistsError. Passing job_name selects the sha256-derived branch
+        # in generate_served_model_id (vs the time-based fallback, which mints
+        # a fresh ID every launch). Ad-hoc local runs without --job_name fall
+        # back to the timestamp ID; they are not resumed, so drift is harmless.
         if needs_local_vllm:
-            served_model_id = generate_served_model_id()
+            served_model_id = generate_served_model_id(job_name=args.job_name)
             args._served_model_id = served_model_id
             args._harbor_model_name = hosted_vllm_alias(served_model_id)
         else:

@@ -1,0 +1,81 @@
+# Qwen3.5-122B-A10B-FP8 — fewest-host (v6e-8 = 2-host) TP=8 serving.
+#
+# Context: on a 4-host slice (v5p-32 DP=2 TP=8, jobs v8c-v8f) every engine
+# core dies at the end of weight load with
+#   AssertionError: <jaxlib._jax.ArrayImpl> passed to device_put is not the
+#   same on each process.
+# tpu_inference's runai_streamer load path produces byte-divergent
+# host-side arrays for *replicated* FP8 weights across JAX processes, and
+# JAX's cross-process device_put consistency check then aborts. This
+# reproduced even after disabling the (separately-buggy) persistent XLA
+# cache (v8f, 2026-05-27), proving it is inherent to the multi-process
+# load — not the cache.
+#
+# v6e-8 is the FEWEST-host slice that still fits TP=8: it is 2 hosts
+# (vm_count=2 → 2 JAX processes), NOT single-host. A true single-process
+# slice caps at 4 chips (v5p-8 / v6e-4 → TP<=4, which OOM'd 122B at 32k in
+# v7), so TP=8 unavoidably spans >=2 processes here. This run tests whether
+# the device_put divergence is a function of process *count* (2 vs 4) or of
+# the FP8+runai_streamer multi-process load itself. Note: gemma4-31B served
+# fine on this same v6e-8 2-host slice, so multi-host is not broken in
+# general — the 122B failure is FP8+streamer-specific.
+#
+# Hardware: v6e-8 = 8 chips, 2 hosts, 32 GiB HBM/chip = 256 GiB total.
+# 122B FP8 weights ~125 GB / TP=8 = ~15.6 GB/chip → ~16 GB/chip free for
+# KV (seqs=1, tiny) + the 32k-bucket XLA compile scratch. Tighter than
+# v5p (95 GiB/chip) so the 32k compile bucket is the OOM risk to watch; if
+# it OOMs, drop max_model_len/max-num-batched-tokens.
+#
+# TP=8 is the max the FP8 weight_block_size [128,128] allows
+# (moe_intermediate_size 1024 / 128 = 8) and fills the whole single host.
+
+env_vars:
+  RUNAI_STREAMER_CONCURRENCY: '4'
+  MODEL_IMPL_TYPE: vllm
+  # gs:// URI forces libstreamer's GCS-native path (the AWS-CRT S3 client
+  # fails to construct in iris worker threads). See memory
+  # runai-streamer-gs-uri-on-iris.
+  AWS_ENDPOINT_URL: https://storage.googleapis.com
+
+engine:
+  type: vllm_local
+  model: gs://marin-models-us/ot-agent/models/Qwen/Qwen3.5-122B-A10B-FP8/
+  max_output_tokens: 8192
+  healthcheck_interval: 1800
+  vllm_local: {}
+backend:
+  type: ray
+  wait_for_endpoint: true
+vllm_server:
+  model_path: gs://marin-models-us/ot-agent/models/Qwen/Qwen3.5-122B-A10B-FP8/
+  num_replicas: 1
+  tensor_parallel_size: 8
+  pipeline_parallel_size: 1
+  data_parallel_size: 1
+  time_limit: '48:00:00'
+  max_model_len: 32768
+  max_num_seqs: 1
+  gpu_memory_utilization: 0.85
+  enable_expert_parallel: true
+  enable_auto_tool_choice: true
+  tool_call_parser: qwen3_coder
+  reasoning_parser: qwen3
+  trust_remote_code: true
+  extra_args:
+  - --dtype
+  - bfloat16
+  - --load-format
+  - runai_streamer
+  # 64 (was 2096): the original 2096 is 32x the block size every working
+  # v6e-8 config uses (gemma4 configs all use 64). An oversized KV block
+  # inflates the paged-attention compile working set — the fixed ~86M that
+  # OOM'd v8g/v8i/v8k/v8l in _precompile_backbone_text_only, invariant to
+  # max_model_len and max-num-batched-tokens. 64 matches the proven configs.
+  - --block-size
+  - '64'
+  - --max-num-partial-prefills
+  - '1'
+  - --limit-mm-per-prompt
+  - '{"image":0,"video":0}'
+  - --max-num-batched-tokens
+  - '16384'

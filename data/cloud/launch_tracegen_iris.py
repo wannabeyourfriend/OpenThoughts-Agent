@@ -84,6 +84,25 @@ class TracegenIrisLauncher(IrisLauncher):
 
         add_tasks_input_arg(parser, required=True)
 
+        # Health-check passthrough for the run_tracegen.py worker. These are
+        # registered by hpc.arg_groups.add_ray_vllm_args on the local runner
+        # but NOT auto-registered on the launcher (add_ray_vllm_args adds
+        # local-only flags like --host/--ray_port that the launcher must
+        # not touch). Re-declare just the health knobs here so users can
+        # extend the startup-wait timeout for slow XLA compiles (e.g.
+        # large MoE models on cold-cache iris workers).
+        parser.add_argument("--health_max_attempts", "--health-max-attempts",
+                            type=int, default=None,
+                            help="Override the worker's run_tracegen.py "
+                                 "--health_max_attempts (default 100 on the "
+                                 "worker; 100 × --health_retry_delay seconds "
+                                 "is the hard cap on cold-start XLA compile + "
+                                 "engine warmup). Bump for large MoE models.")
+        parser.add_argument("--health_retry_delay", "--health-retry-delay",
+                            type=int, default=None,
+                            help="Override the worker's run_tracegen.py "
+                                 "--health_retry_delay (default 30s).")
+
         # NOTE: --job_name comes from add_harbor_args above.
 
         add_hf_upload_args(parser)
@@ -136,6 +155,12 @@ class TracegenIrisLauncher(IrisLauncher):
             "--gpus", str(args.gpus),
             "--experiments_dir", remote_output_dir,
         ])
+
+        # Health-check passthrough (run_tracegen.py worker-side args).
+        if args.health_max_attempts is not None:
+            cmd.extend(["--health_max_attempts", str(args.health_max_attempts)])
+        if args.health_retry_delay is not None:
+            cmd.extend(["--health_retry_delay", str(args.health_retry_delay)])
 
         if args.harbor_env:
             cmd.extend(["--harbor_env", args.harbor_env])

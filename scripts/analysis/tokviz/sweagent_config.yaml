@@ -1,0 +1,48 @@
+# swe-agent SMALL-MODEL OVERRIDE config.
+#
+# This file is loaded SECOND, on top of swe-agent's bundled
+# `config/sweagent_0_7/07_thought_action.yaml` (see run_agentic.py):
+#
+#     sweagent run --config <repo>/config/sweagent_0_7/07_thought_action.yaml \
+#                  --config <this file>
+#
+# swe-agent merges multiple --config files in order, later keys winning. The
+# bundled 07_thought_action.yaml already wires the real swe-agent prompt:
+#   * system_template containing {{command_docs}}  -> tool docs inlined as text
+#   * instance_template containing {{problem_statement}} -> the issue text
+#   * the tool bundles (registry, windowed, search, windowed_edit_linting,
+#     submit) so {{command_docs}} actually has commands to render
+#   * parse_function.type: thought_action  -> text-based tool calls (right for
+#     a tiny 2B model that can't do native function-calling)
+#
+# This override therefore ONLY touches:
+#   * the model section (route litellm to the local OpenAI-compatible HF shim,
+#     zero out all cost/length limits since the shim is free + local, bound the
+#     call count so the 5-repo x 2-model sweep stays short), and
+#   * disables the marshmallow demonstration + history rewriting so the FIRST
+#     captured model call is a clean (system + instance) prompt — i.e. exactly
+#     the tokenizer input we want to visualize: tool docs + issue, nothing else.
+agent:
+  model:
+    name: openai/Qwen/Qwen3.5-2B
+    api_base: http://localhost:8123/v1
+    api_key: dummy
+    per_instance_cost_limit: 0
+    total_cost_limit: 0
+    # Cap model calls per task so the full 5-repo x 2-model sweep stays bounded
+    # (a 2B model never actually solves these; we only need a representative
+    # step's prompt). Raise/remove to let it run longer.
+    per_instance_call_limit: 4
+    max_input_tokens: 0
+    max_output_tokens: 256
+    temperature: 0.0
+    top_p: 1.0
+  templates:
+    # Drop the bundled marshmallow demonstration so the first model call is a
+    # clean system+instance prompt (tool docs + issue) rather than dominated by
+    # an unrelated demo trajectory. The system_template ({{command_docs}}) and
+    # instance_template ({{problem_statement}}) from 07_thought_action.yaml are
+    # inherited unchanged.
+    demonstrations: []
+  # No history rewriting -- we want the raw templated string the tokenizer sees.
+  history_processors: []

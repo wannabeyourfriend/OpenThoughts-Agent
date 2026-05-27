@@ -43,20 +43,41 @@ class HfMirrorIrisLauncher(IrisLauncher):
     job_name_prefix = "hf-mirror"
     default_tpu = "v6e-4"
 
+    # Default fan-out: one multi-region bucket in US + one in EU. Together
+    # they cover all 6 iris worker regions (us-central1, us-central2,
+    # us-east1, us-east5, us-west4, europe-west4) with zero cross-region
+    # egress at read time. Override with --gcs-prefix to mirror to a
+    # different set of locations.
+    DEFAULT_GCS_PREFIXES = (
+        "gs://marin-models-us/ot-agent/models",
+        "gs://marin-models-eu/ot-agent/models",
+    )
+
     def add_task_specific_args(self, parser: argparse.ArgumentParser) -> None:
         parser.add_argument("--repo", action="append", required=True,
                             help="HF model repo id (repeatable).")
-        parser.add_argument("--gcs-prefix", "--gcs_prefix", required=True,
-                            help="GCS prefix; each repo lands under <prefix>/<repo>/.")
+        parser.add_argument(
+            "--gcs-prefix", "--gcs_prefix", action="append", default=None,
+            help="GCS prefix; each repo lands under <prefix>/<repo>/. "
+                 "Repeatable — every prefix gets a full mirror, so a single "
+                 "HF download fans out to every region. Defaults to the "
+                 "marin-models-us + marin-models-eu multi-region buckets, "
+                 "which together cover all iris worker regions with zero "
+                 "cross-region egress.",
+        )
         parser.add_argument("--job_name",
                             help="Override the auto-generated iris job name.")
         parser.add_argument("--dry_run", action="store_true",
                             help="Print the command without submitting.")
 
     def normalize_paths(self, args: argparse.Namespace) -> None:
-        # No paths to normalize; --repo and --gcs-prefix are passed through.
-        if not args.gcs_prefix.startswith("gs://"):
-            raise SystemExit("--gcs-prefix must start with gs://")
+        if not args.gcs_prefix:
+            args.gcs_prefix = list(self.DEFAULT_GCS_PREFIXES)
+        bad = [p for p in args.gcs_prefix if not p.startswith("gs://")]
+        if bad:
+            raise SystemExit(
+                f"--gcs-prefix entries must start with gs:// (got {bad!r})"
+            )
 
     def build_task_command(self, args: argparse.Namespace, remote_output_dir: str) -> list[str]:
         # remote_output_dir is the GCS prefix the daemon will fetch from
@@ -64,8 +85,9 @@ class HfMirrorIrisLauncher(IrisLauncher):
         # it streams the actual HF shards to args.gcs_prefix. Pass it
         # through so the registry record + daemon fetch still work; the
         # daemon will just find an empty (or nearly-empty) directory.
-        cmd: list[str] = ["python", "scripts/iris/mirror_hf_to_gcs.py",
-                          "--gcs-prefix", args.gcs_prefix]
+        cmd: list[str] = ["python", "scripts/iris/mirror_hf_to_gcs.py"]
+        for prefix in args.gcs_prefix:
+            cmd.extend(["--gcs-prefix", prefix])
         for repo in args.repo:
             cmd.extend(["--repo", repo])
         return cmd

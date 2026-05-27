@@ -1,0 +1,72 @@
+# Qwen3.5-122B-A10B-FP8 — v5p-16 (2-host) TP=8 serving.
+#
+# This config threads between the two failure modes found 2026-05-27:
+#
+#   1. device_put divergence (v8c-v8f, v5p-32 = 4 hosts/4 processes):
+#      every engine core dies at end of weight load with
+#      `AssertionError: ArrayImpl passed to device_put is not the same on
+#      each process`. tpu_inference's runai_streamer load produces
+#      byte-divergent replicated FP8 weights across processes. v8g proved
+#      this is a function of process COUNT: on a 2-host slice (v6e-8) the
+#      replicated weights load consistently and compilation proceeds.
+#
+#   2. CompileTimeHbmOom (v7 v5p-8 TP=4; v8g v6e-8 TP=8): the 32k XLA
+#      compile bucket overflows HBM. v8g missed by only 85.83M
+#      (Used 31.33G of 31.25G) on v6e's 32 GiB/chip.
+#
+# v5p-16 = 8 chips / 2 hosts (vm_count=2 → 2 JAX processes) → the
+# device_put-safe 2-process topology, AND 95 GiB HBM/chip → ~3x the
+# headroom v8g lacked, so the 32k compile fits with room to spare. TP=8 is
+# the max the FP8 weight_block_size [128,128] allows (moe_intermediate
+# 1024 / 128). 125 GB FP8 weights / 8 = ~15.6 GB/chip → ~79 GiB/chip free.
+#
+# Availability: v5p-16 is historically thin in this cluster (often 1 slice
+# or none). If it won't schedule, the device_put-safe alternatives are
+# v5p-8 single-host TP=4 (abundant, but needs max_model_len <=16k to dodge
+# the v7 OOM) — NOT v5p-32 (4 processes → device_put).
+
+env_vars:
+  RUNAI_STREAMER_CONCURRENCY: '4'
+  MODEL_IMPL_TYPE: vllm
+  # gs:// URI forces libstreamer's GCS-native path (AWS-CRT S3 client fails
+  # to construct in iris worker threads). See memory
+  # runai-streamer-gs-uri-on-iris.
+  AWS_ENDPOINT_URL: https://storage.googleapis.com
+
+engine:
+  type: vllm_local
+  model: gs://marin-models-us/ot-agent/models/Qwen/Qwen3.5-122B-A10B-FP8/
+  max_output_tokens: 8192
+  healthcheck_interval: 1800
+  vllm_local: {}
+backend:
+  type: ray
+  wait_for_endpoint: true
+vllm_server:
+  model_path: gs://marin-models-us/ot-agent/models/Qwen/Qwen3.5-122B-A10B-FP8/
+  num_replicas: 1
+  tensor_parallel_size: 8
+  pipeline_parallel_size: 1
+  data_parallel_size: 1
+  time_limit: '48:00:00'
+  max_model_len: 32768
+  max_num_seqs: 1
+  gpu_memory_utilization: 0.85
+  enable_expert_parallel: true
+  enable_auto_tool_choice: true
+  tool_call_parser: qwen3_coder
+  reasoning_parser: qwen3
+  trust_remote_code: true
+  extra_args:
+  - --dtype
+  - bfloat16
+  - --load-format
+  - runai_streamer
+  - --block-size
+  - '2096'
+  - --max-num-partial-prefills
+  - '1'
+  - --limit-mm-per-prompt
+  - '{"image":0,"video":0}'
+  - --max-num-batched-tokens
+  - '32768'
