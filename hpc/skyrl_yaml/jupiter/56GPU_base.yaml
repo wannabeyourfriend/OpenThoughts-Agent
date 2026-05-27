@@ -62,23 +62,16 @@ terminal_bench:
       - RewardFileEmptyError
       - VerifierOutputParseError
 
-    # 2026-05-27: walked back 900 → 500 to stop the FD-exhaustion / libuv
-    # uv__epoll_ctl_prep SIGABRT that killed the stack-junit-v6 (522118) and
-    # nemotron-junit chains at ~1h08, before training step 1. Root cause
-    # (agent_logs/2026-05-27_rl_chains_stuck_step0.md): boundary-hugging
-    # datasets overflow context (292× / 152× `32769 input tokens`) because
-    # harbor's max_input_tokens truncation is inert when enable_summarize=false
-    # — nothing truncates the growing multi-turn prompt. The HTTP-400 fix
-    # (da68e141) closed the retry-storm vector, but each overflow still feeds
-    # litellm's async logging worker, whose `clear_queue exceeded max_time 5.0s`
-    # backlog leaks FDs faster than the single worker drains. The leak rate
-    # scales with concurrent trials, so 900 saturated it; 500 (the value the
-    # Perlmutter maxgn09 config already runs CLEAN at) gives the worker enough
-    # drain headroom. NOTE: stack-junit/nemotron overflow ~30× more than
-    # maxgn09, so if 500 still leaks, the next lever is the harbor logging
-    # worker itself (disable litellm async logging on the RL path), not a
-    # further concurrency cut. Was 900 (3x base); base is 300.
-    n_concurrent_trials: 500
+    # 3x base (300 → 900): triple Daytona concurrency for higher throughput.
+    # Mirrors ALCC/56GPU_base.yaml — per-job sandbox count; doesn't affect
+    # the cross-cluster RUNNING-RL cap (≤ 6) which is about job count, not
+    # sandboxes-per-job.
+    # NOTE (2026-05-27): a temporary 900→500 walk-back was tried to mitigate
+    # the FD-exhaustion / uv__epoll_ctl_prep SIGABRT but REVERTED — the real
+    # fix is porting harbor's terminus-2 FD-taming features from
+    # penfever/temp-override into penfever/otagent-latest (that branch had the
+    # issue tamed at full concurrency). See agent_logs/2026-05-27_rl_chains_stuck_step0.md.
+    n_concurrent_trials: 900
 
     # Logging settings
     log_level: INFO
