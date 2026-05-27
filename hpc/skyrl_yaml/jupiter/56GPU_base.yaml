@@ -80,7 +80,14 @@ terminal_bench:
     # fix is porting harbor's terminus-2 FD-taming features from
     # penfever/temp-override into penfever/otagent-latest (that branch had the
     # issue tamed at full concurrency). See agent_logs/2026-05-27_rl_chains_stuck_step0.md.
-    n_concurrent_trials: 900
+    # 2026-05-28: 900 → 675 (-25%). Fresh a3 chains (#12/#13) abort with a
+    # driver SIGABRT that is NOT FD exhaustion (fd-monitor showed 1.6% of the
+    # 131072 limit) — suspected host-memory OOM from too many concurrent
+    # never-completing trials piling up resident state in skyrl_entrypoint on
+    # hard datasets. Cutting concurrent trial count reduces that resident
+    # memory. Paired with num_parallel_generation_workers -25%. See
+    # agent_logs/2026-05-28_fresh_a3_chain_crash_not_fd.md.
+    n_concurrent_trials: 675
 
     # Logging settings
     log_level: INFO
@@ -245,7 +252,10 @@ trainer:
   fully_async:
     max_staleness_steps: 16
     # Setting conservatively to 1 / 2 of total concurrency
-    num_parallel_generation_workers: 450
+    # 2026-05-28: 450 → 338 (-25%), paired with n_concurrent_trials 900→675,
+    # to cut driver memory pressure (suspected OOM on fresh hard-dataset a3
+    # chains). See agent_logs/2026-05-28_fresh_a3_chain_crash_not_fd.md.
+    num_parallel_generation_workers: 338
 
 # Generator configuration
 generator:
