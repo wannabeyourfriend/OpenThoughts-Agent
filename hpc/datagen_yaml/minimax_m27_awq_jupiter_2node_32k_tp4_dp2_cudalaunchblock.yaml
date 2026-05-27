@@ -1,0 +1,97 @@
+# MiniMax-M2.7-AWQ-4bit — DP=2 COMPILED + CUDA_LAUNCH_BLOCKING=1 (2026-05-27)
+# https://huggingface.co/cyankiwi/MiniMax-M2.7-AWQ-4bit
+#
+# 32K context — Jupiter GH200 2-node TP=4 / DP=2, cudagraphs ON
+# (FULL_AND_PIECEWISE). Run 2a of the capture-crash discriminator ladder.
+#
+# WHY THIS RUN EXISTS — H1 vs H3 synchronous-traceback discriminator.
+# Three compiled DP=2 runs (522000 FULL_AND_PIECEWISE, 522159 PIECEWISE,
+# 522437 NCCL_CUMEM_ENABLE=0) all crashed IDENTICALLY at
+# profile_cudagraph_memory (gpu_model_runner.py:6102) on the cross-node
+# worker (Worker_DP1_*) with "CUDA driver error: illegal memory access",
+# ~T+12min, no serving. H2 (NCCL state mid-capture: cuMem + lazy-connect) is
+# RULED OUT by 522437. Remaining: H1 (in-graph torch.empty colliding with
+# the profiling mempool) vs H3 (CPU-offset read during capture, e.g.
+# num_tokens_across_dp_cpu producing bad split sizes).
+#
+# The illegal-memory-access is reported ASYNCHRONOUSLY (at
+# multiproc_executor.py:965), so the Python traceback doesn't pinpoint the
+# offending op (522437's traceback bottomed out at a Triton _launch_kernel
+# that was merely in flight). CUDA_LAUNCH_BLOCKING=1 makes the abort
+# SYNCHRONOUS → the traceback names the exact failing line:
+#   - fault at/after a torch.empty(...) alloc or a copy into it        → H1
+#   - fault in the variadic per-root size loop driven by
+#     num_tokens_across_dp_cpu / get_chunk_sizes_across_dp_rank         → H3
+#
+# DELTA vs dp2_nccl_cumem0.yaml: DROP nccl_cumem_enable (H2 is out) and
+# nccl_debug/nccl_debug_subsys (reduce log noise — keep NCCL_DEBUG off).
+# ADD cuda_launch_blocking + vllm_ray_extra_env_vars_to_copy.
+#
+# IMPORTANT — CUDA_ is NOT a vLLM default copy-prefix (DEFAULT_ENV_VAR_PREFIXES
+# = VLLM_, NCCL_, ...), so CUDA_LAUNCH_BLOCKING does NOT reach the cross-node
+# Ray DP actor on its own. vllm_ray_extra_env_vars_to_copy ='CUDA_LAUNCH_BLOCKING'
+# → VLLM_RAY_EXTRA_ENV_VARS_TO_COPY, which IS read by get_env_vars_to_copy
+# (vllm/ray/ray_env.py:92, _parse_csv) and is VLLM_-prefixed so it self-copies.
+# This ferries CUDA_LAUNCH_BLOCKING to the worker where the fault occurs.
+#
+# CUDA_LAUNCH_BLOCKING=1 serializes every CUDA op (large slowdown) — debug only.
+#
+# Required launch flags: --num_nodes 2 --gpus_per_node 4
+
+engine:
+  type: vllm_local
+  model: cyankiwi/MiniMax-M2.7-AWQ-4bit
+  max_output_tokens: 8192
+  healthcheck_interval: 300
+  request_params:
+    temperature: 0.7
+    top_p: 0.95
+  vllm_local: {}
+backend:
+  type: ray
+  wait_for_endpoint: true
+  ray_cgraph_max_inflight_executions: 16
+  healthcheck_max_attempts: 160
+  healthcheck_retry_delay: 15
+vllm_server:
+  model_path: cyankiwi/MiniMax-M2.7-AWQ-4bit
+  num_replicas: 1
+  tensor_parallel_size: 4
+  pipeline_parallel_size: 1
+  data_parallel_size: 2
+  time_limit: '11:59:00'
+  max_model_len: 32768
+  max_num_seqs: 32
+  gpu_memory_utilization: 0.9
+  enable_expert_parallel: true
+  enable_auto_tool_choice: true
+  tool_call_parser: minimax_m2
+  reasoning_parser: minimax_m2
+  trust_remote_code: true
+  use_deep_gemm: false
+  use_flashinfer_sampler: false
+  use_flashinfer_moe_fp16: true
+  pynccl_trace_flush_interval_sec: 300
+  pynccl_pyspy_on_sigusr1: true
+  pynccl_faulthandler_interval_sec: 0
+  # Run 2a — synchronous-abort discriminator (see header).
+  cuda_launch_blocking: true
+  vllm_ray_extra_env_vars_to_copy: 'CUDA_LAUNCH_BLOCKING'
+  # NCCL_DEBUG deliberately OFF here (H2 ruled out — no need for the noise).
+  extra_args:
+  - --dtype
+  - bfloat16
+  - --kv-cache-dtype
+  - fp8
+  # NO --enforce-eager — cudagraphs ON (FULL_AND_PIECEWISE). We WANT the
+  # capture crash to reproduce, this time synchronously.
+  - --chat-template-content-format
+  - string
+  - --max-num-batched-tokens
+  - '32768'
+  - --all2all-backend
+  - allgather_reducescatter
+  - --data-parallel-backend
+  - ray
+  - --data-parallel-size-local
+  - '1'

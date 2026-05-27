@@ -112,6 +112,13 @@ _ENV_VAR_FIELDS = {
     # memory access on the cross-node MoE all-to-all. Propagates to Ray DP
     # actors via vLLM's NCCL_ copy-prefix (vllm/ray/ray_env.py).
     "nccl_cumem_enable": "NCCL_CUMEM_ENABLE",
+    # CUDA_LAUNCH_BLOCKING: true → "1". Serializes CUDA ops so an async
+    # illegal-memory-access aborts synchronously at the offending kernel,
+    # making the traceback name the exact failing line (H1 vs H3
+    # discriminator for the MiniMax DP=2 capture crash). CUDA_ is NOT a
+    # default vLLM copy-prefix → also set vllm_ray_extra_env_vars_to_copy
+    # = 'CUDA_LAUNCH_BLOCKING' so vLLM ferries it to the cross-node DP actor.
+    "cuda_launch_blocking": "CUDA_LAUNCH_BLOCKING",
 }
 
 # Numeric env var fields. Same idea as _ENV_VAR_FIELDS but the value
@@ -126,6 +133,11 @@ _NUMERIC_ENV_VAR_FIELDS = {
     # tell whether it happens DURING the profile_cudagraph_memory capture.
     "nccl_debug": "NCCL_DEBUG",
     "nccl_debug_subsys": "NCCL_DEBUG_SUBSYS",
+    # VLLM_RAY_EXTRA_ENV_VARS_TO_COPY: comma-separated EXACT env var names
+    # vLLM copies to the cross-node Ray DP actors in addition to the
+    # DEFAULT_ENV_VAR_PREFIXES. Self-copies (it is VLLM_-prefixed and read by
+    # get_env_vars_to_copy). Use to ferry non-prefixed vars (CUDA_LAUNCH_BLOCKING).
+    "vllm_ray_extra_env_vars_to_copy": "VLLM_RAY_EXTRA_ENV_VARS_TO_COPY",
 }
 
 

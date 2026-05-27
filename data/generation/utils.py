@@ -129,6 +129,23 @@ class VLLMServerConfig:
     nccl_cumem_enable: Optional[bool] = None
     nccl_debug: Optional[str] = None
     nccl_debug_subsys: Optional[str] = None
+    # cuda_launch_blocking=true → CUDA_LAUNCH_BLOCKING=1. Serializes every
+    #   CUDA op so an async illegal-memory-access aborts SYNCHRONOUSLY at the
+    #   offending kernel, making the Python traceback name the exact failing
+    #   line inside profile_cudagraph_memory (H1 vs H3 discriminator for the
+    #   MiniMax DP=2 capture crash). NOTE: CUDA_ is NOT a default vLLM
+    #   copy-prefix, so this var does NOT reach the cross-node Ray DP actor on
+    #   its own — you MUST also set vllm_ray_extra_env_vars_to_copy below
+    #   (= 'CUDA_LAUNCH_BLOCKING') so vLLM copies it to the worker. Big
+    #   slowdown; debug-only.
+    cuda_launch_blocking: Optional[bool] = None
+    # vllm_ray_extra_env_vars_to_copy → VLLM_RAY_EXTRA_ENV_VARS_TO_COPY.
+    #   Comma-separated list of EXACT env var names vLLM should copy to the
+    #   cross-node Ray DP actors in addition to the DEFAULT_ENV_VAR_PREFIXES
+    #   (VLLM_, NCCL_, ...). This var is itself read by get_env_vars_to_copy
+    #   and is VLLM_-prefixed, so it self-copies. Use it to ferry non-prefixed
+    #   vars (e.g. CUDA_LAUNCH_BLOCKING) to the worker.
+    vllm_ray_extra_env_vars_to_copy: Optional[str] = None
     extra_args: Any = None
 
 
