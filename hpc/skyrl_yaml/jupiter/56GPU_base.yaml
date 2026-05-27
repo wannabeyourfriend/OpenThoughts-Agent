@@ -84,6 +84,7 @@ terminal_bench:
       - RewardFileNotFoundError
       - RewardFileEmptyError
       - AgentEnvironmentTimeoutError
+      - ContextLengthExceededError
     default_error_treatment: zero
     # NOTE (2026-05-27): AgentTimeoutError / ContextLengthExceededError moved
     # OUT of passthrough_exceptions into zero_exceptions. Passthrough routed
@@ -93,14 +94,17 @@ terminal_bench:
     # alive in the training batch. That fed Ray's distributed-refcount race
     # (reference_count.cc:1619 → SIGABRT / WorkerCrashedError) that killed the
     # nemotron-junit chain (litellm +1 32769 VLLMValidationError +
-    # ContextLengthExceeded on near-budget prompts). zero_exceptions takes the
-    # EARLY-RETURN path (response_ids=[0], reward=0, included in baseline)
-    # which never consumes rollout_details, so no dangling refs enter
-    # training. Matches harbor_config.py schema default.
-    passthrough_exceptions: []
-    zero_exceptions:
+    # ContextLengthExceeded on near-budget prompts). Both mask + zero take the
+    # EARLY-RETURN path (response_ids=[0]) which never consumes rollout_details,
+    # so no dangling refs enter training. 2026-05-27: ContextLengthExceededError
+    # moved to mask_exceptions (above) — excluded from the RLOO-N baseline, since
+    # GLM-4_7-swesmith ~32k prompts overflow routinely and we don't want hard
+    # zeros dragging the baseline. AgentTimeoutError stays PASSTHROUGH (partial trajectory+reward is
+    # meaningful signal; infrequent vs ContextLengthExceeded so low refcount risk). Belt-and-suspenders w/ the _harbor_compat rollback_hook that
+    # already truncates these trials' dangling prompt-without-response.
+    passthrough_exceptions:
       - AgentTimeoutError
-      - ContextLengthExceededError
+    zero_exceptions: []
 
   # Model info for Harbor's hosted_vllm validation
   model_info:

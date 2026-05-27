@@ -98,6 +98,7 @@ terminal_bench:
       - RewardFileNotFoundError
       - RewardFileEmptyError
       - AgentEnvironmentTimeoutError
+      - ContextLengthExceededError
     default_error_treatment: zero
     # NOTE (2026-05-27): AgentTimeoutError / ContextLengthExceededError moved
     # OUT of passthrough_exceptions into zero_exceptions. Passthrough routed
@@ -110,10 +111,9 @@ terminal_bench:
     # prompts). zero_exceptions takes the EARLY-RETURN path (response_ids=[0],
     # reward=0, included in baseline) which never consumes rollout_details, so
     # no dangling refs enter training. Matches harbor_config.py schema default.
-    passthrough_exceptions: []
-    zero_exceptions:
+    passthrough_exceptions:
       - AgentTimeoutError
-      - ContextLengthExceededError
+    zero_exceptions: []
 
   model_info:
     max_input_tokens: 32767
