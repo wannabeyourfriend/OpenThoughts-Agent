@@ -107,6 +107,20 @@ fi
 {nccl_exports}
 
 # --- Standard environment variables ---
+# UV_USE_IO_URING=0 forces libuv (bundled in uvloop 0.22.1 as libuv 1.48.0)
+# onto the plain, immediate epoll_ctl path instead of the io_uring EPOLL_CTL
+# batching path. libuv 1.48.0 defers EPOLL_CTL_DEL through an io_uring SQ; under
+# high socket churn (timeout-heavy RL rollouts → constant connect/teardown to
+# vLLM + Daytona) a deferred op runs against a closed/recycled fd and libuv
+# aborts() in uv__epoll_ctl_flush — surfacing as `uv__epoll_ctl_prep ->
+# Fatal Python error: Aborted` in the skyrl_entrypoint Ray driver at ~30-70 min.
+# Fixed upstream in libuv 1.49.0 ("don't delay EPOLL_CTL_DEL operations"), which
+# no uvloop release ships yet. This var is exported in the top-level batch shell
+# and propagates to every Ray head/worker via `srun --export=ALL` (ray_utils.py),
+# so the skyrl_entrypoint Ray task inherits it. Harmless on io_uring-disabled
+# nodes (they already run the plain-epoll path). See
+# notes/ot-agent/agent_logs/2026-05-28_uvloop_libuv_io_uring_epoll_abort_rootcause.md
+export UV_USE_IO_URING=0
 export PYTHONFAULTHANDLER=1
 export TORCH_SHOW_CPP_STACKTRACES=1
 export CUDA_LAUNCH_BLOCKING=0
@@ -202,6 +216,7 @@ echo "Config: {config_path}"
 echo "Working directory: $WORKDIR"
 echo "Python: $(which python)"
 echo "Python version: $(python --version)"
+echo "UV_USE_IO_URING: ${UV_USE_IO_URING:-<unset>}"  # libuv io_uring epoll-abort fix; must be 0
 
 # --- Proxy setup for no-internet clusters ---
 # Uses LD_PRELOAD set by ssh_tunnel_setup (proxychains library approach)
