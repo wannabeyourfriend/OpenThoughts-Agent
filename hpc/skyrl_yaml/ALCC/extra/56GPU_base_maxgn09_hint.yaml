@@ -116,17 +116,17 @@ terminal_bench:
     zero_exceptions: []
 
   model_info:
-    # 2026-05-28: bumped 32767 → 65535 to address pymethods2test-large
-    # boundary-hugging context overflows. 9 consecutive chain links
-    # (53389713→…→53494636) FAILED with 0 training steps; 24-948
-    # "32847 input tokens > 32768 max" overflows per link drove
-    # litellm/asyncio FD churn into SIGABRT on the Ray driver. Base
-    # model GLM-4_7-…-maxeps-131k-fixthink supports up to 131k, so 65k
-    # is mid-range. enable_summarize=false unchanged (preserves
-    # maxgn09 ablation purity; max_input_tokens truncation only fires
-    # when summarize=true, but the wider budget pushes the overflow
-    # distribution into the tail). See 2026-05-28_perlmutter_53494636_…
-    max_input_tokens: 65535
+    # 2026-05-28: 32767 → 65535 was REVERTED to 40959 after 53508905 FAILED
+    # at 5:48 with vLLM ValidationError: "max_model_len (65536) > derived
+    # max_model_len (max_position_embeddings=40960 in model's config.json)".
+    # The base model's name "GLM-4_7-…-131k-fixthink" was aspirational
+    # training-target naming; the actual config.json caps at 40960. Could
+    # force 65k with VLLM_ALLOW_LONG_MAX_MODEL_LEN=1 but vLLM warns of
+    # CUDA errors / garbage outputs from RoPE extrapolation past trained
+    # range. 40959 (one-below-max-model-len) preserves the original
+    # loose-truncation pattern while giving ~25% more headroom than the
+    # 32767 that failed. See 2026-05-28_perlmutter_53494636_…
+    max_input_tokens: 40959
     max_output_tokens: 4096
 
   archiving:
@@ -248,13 +248,15 @@ generator:
     top_k: 20
 
   engine_init_kwargs:
-    # 2026-05-28: bumped 32768 → 65536 to match max_input_tokens raise above.
-    # GLM-4_7-fixthink supports 131k natively; 65k is mid-range. Cuts
-    # the boundary-hugging-dataset overflow rate from 24-948/link into
-    # the distribution tail, killing the FD-churn → SIGABRT path
-    # without compromising the maxgn09 ablation (no summarize, no
-    # dataset filter). See agent_logs/2026-05-28_perlmutter_53494636_…
-    max_model_len: 65536
+    # 2026-05-28: 32768 → 65536 REVERTED to 40960 (the model's actual
+    # max_position_embeddings per config.json). vLLM ValidationError on
+    # 53508905 confirmed the "131k-fixthink" suffix was aspirational
+    # naming, not architectural. 40960 still gives ~25% more headroom
+    # over the failing 32768 — should push most of the boundary-hugging
+    # overflow distribution out of the FD-churn → SIGABRT path. If
+    # 24-948/link overflow rate persists at 40k, the next lever is
+    # option 2 (pre-filter dataset to drop prompts > ~36k tokens).
+    max_model_len: 40960
     custom_chat_template_chat_completion_path: chat_templates/qwen3_thinking_acc.jinja2
 
 data:
