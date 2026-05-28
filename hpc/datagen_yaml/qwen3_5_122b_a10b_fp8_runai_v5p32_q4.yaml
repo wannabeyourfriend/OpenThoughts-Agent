@@ -1,0 +1,80 @@
+# Qwen3.5-122B-A10B-FP8 — v5p-32 (4-process) TP=8 DP=2 serving.
+#
+# DURABLE-FIX TEST for the multi-process device_put failure. v5p-32 is
+# 4 JAX processes (vm_count=4) — the topology that killed v8c-v8f with
+#   AssertionError: ArrayImpl passed to device_put is not the same on each
+#   process.
+#
+# Root cause (tpu-inference v0.20.0, source read of
+# tpu_inference/layers/common/utils.py:118-146 `general_device_put`): in the
+# default (non-ray) executor path it places replicated weights with plain
+# `jax.device_put(t, sharding)`, which asserts the per-process host arrays
+# are byte-identical. Per-process FP8 dequant diverges → assert → all engine
+# cores die on every >=2-process-with-cross-process-replication slice
+# (the DP `data` axis on v5p-32). Setting TPU_MULTIHOST_BACKEND=ray was tried
+# (v8j) and rejected: it switches to RayDistributedExecutor, which ray.init()s
+# against a multi-host Ray cluster iris doesn't bootstrap (ConnectionError).
+#
+# THE FIX (this run): scripts/iris/patch_tpu_inference.py monkeypatches
+# general_device_put to broadcast process 0's copy of any FULLY-REPLICATED
+# weight to all processes (jax.experimental.multihost_utils.broadcast_one_to_all)
+# before device_put — making replicated weights byte-identical (correct, not
+# a silencing hack) while sharded weights are untouched. Default executor kept.
+# Confirm the worker log shows
+#   [tpu-inference-patch] APPLIED: general_device_put: broadcast replicated...
+# CAVEAT: validate generated output vs the working smaller-model runs before
+# trusting for real datagen.
+#
+# 95 GiB/chip, 122B FP8 / TP=8 = ~15.6 GiB weights/chip → ~79 GiB free, so
+# max-num-batched-tokens=32768 (single-chunk, no chunked prefill needed).
+
+env_vars:
+  RUNAI_STREAMER_CONCURRENCY: '4'
+  MODEL_IMPL_TYPE: vllm
+  AWS_ENDPOINT_URL: https://storage.googleapis.com
+  # NOTE: deliberately NOT setting TPU_MULTIHOST_BACKEND=ray. That env
+  # switches tpu_inference to its RayDistributedExecutor, which ray.init()s
+  # against a multi-host Ray cluster iris does not bootstrap (v8j died:
+  # ConnectionError to 10.x:6379). Instead the device_put divergence is
+  # fixed in the DEFAULT (non-ray) executor path by the
+  # scripts/iris/patch_tpu_inference.py broadcast-from-rank-0 patch to
+  # general_device_put, which makes replicated FP8 weights byte-identical
+  # across processes before placement.
+
+engine:
+  type: vllm_local
+  model: gs://marin-models-us/ot-agent/models/Qwen/Qwen3.5-122B-A10B-FP8/
+  max_output_tokens: 8192
+  healthcheck_interval: 1800
+  vllm_local: {}
+backend:
+  type: ray
+  wait_for_endpoint: true
+vllm_server:
+  model_path: gs://marin-models-us/ot-agent/models/Qwen/Qwen3.5-122B-A10B-FP8/
+  num_replicas: 1
+  tensor_parallel_size: 8
+  pipeline_parallel_size: 1
+  data_parallel_size: 2
+  time_limit: '48:00:00'
+  max_model_len: 32768
+  max_num_seqs: 8
+  gpu_memory_utilization: 0.85
+  enable_expert_parallel: true
+  enable_auto_tool_choice: true
+  tool_call_parser: qwen3_coder
+  reasoning_parser: qwen3
+  trust_remote_code: true
+  extra_args:
+  - --dtype
+  - bfloat16
+  - --load-format
+  - runai_streamer
+  - --block-size
+  - '64'
+  - --max-num-partial-prefills
+  - '1'
+  - --limit-mm-per-prompt
+  - '{"image":0,"video":0}'
+  - --max-num-batched-tokens
+  - '32768'
