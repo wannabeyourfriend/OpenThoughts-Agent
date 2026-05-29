@@ -38,7 +38,15 @@ backend:
   type: ray
   wait_for_endpoint: true
   ray_cgraph_max_inflight_executions: 16
-  healthcheck_max_attempts: 160
+  # 2026-05-29: 160 -> 300 (75-min serve window). The launcher now honors this
+  # YAML value (silent health_max_attempts=120 override fixed in 381cffd7).
+  # GLM-5.1 cross-node startup is ~16 min (528568 served at attempt 63); 300 is
+  # pure safety margin. This PP=2/TP=4 run is the experimental control for the
+  # cross-node-TP NCCL logits all-gather hang on the TP=8 528568 run
+  # (agent_logs/2026-05-29_glm51_528568_engine_dead_generation_failure.md):
+  # PP=2 keeps sampling/logits on the last stage's single node (TP=4 NVLink),
+  # so the logits _ALLGATHER_BASE should not cross IB.
+  healthcheck_max_attempts: 300
   healthcheck_retry_delay: 15
 vllm_server:
   model_path: QuantTrio/GLM-5.1-AWQ
