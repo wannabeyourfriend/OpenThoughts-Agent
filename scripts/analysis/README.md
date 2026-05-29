@@ -16,6 +16,8 @@ keyed to four research questions:
 
 Each step writes into `--output-dir/<step>/` and is skipped if its output marker already exists (use `--force` to re-run, `--skip <names>` to opt out, `--only <names>` for a subset). The plan + cross-linked index land at `--output-dir/{pipeline_plan.json, INDEX.md}`.
 
+**Fully manual:**
+
 ```
 python -m scripts.analysis.analyze_rl_behavior \
     --rl-traces        penfever/rl-train-traces-foo \
@@ -27,6 +29,24 @@ python -m scripts.analysis.analyze_rl_behavior \
     --output-dir       /Users/me/Documents/notes/rl-behavior-foo/
 ```
 
+**With autofill** (recommended) — pass `--model-repo` and let the orchestrator query Supabase (`models` + `sandbox_jobs` tables) plus the HF Hub (`<model_repo>/training_logs/`) to fill in `--post-rl-eval`, `--post-rl-eval-ts`, `--baseline-eval`, `--baseline-eval-ts`, and `--training-log-dir`:
+
+```
+python -m scripts.analysis.analyze_rl_behavior \
+    --rl-traces  https://huggingface.co/datasets/penfever/a3-rl-DCAgent_exp_rpt_e2egit-large \
+    --model-repo https://huggingface.co/laion/a3-rl-DCAgent_exp_rpt_e2egit-large-15-8B \
+    --output-dir /Users/me/Documents/notes/rl-behavior-foo/
+```
+
+The resolver:
+- `--post-rl-eval`     ← most recent `sandbox_jobs(model_id = <model>).hf_traces_link`
+- `--post-rl-eval-ts`  ← `models.training_end`
+- `--baseline-eval`    ← `sandbox_jobs(model_id = base_model_id).hf_traces_link`
+- `--baseline-eval-ts` ← `models.training_start`
+- `--training-log-dir` ← `huggingface_hub.snapshot_download(<model_repo>, allow_patterns=["training_logs/**"])` if the repo has one, else stays unset
+
+Explicit CLI values still win on conflict — the resolver only fills blanks. A trace of what was resolved lands at `--output-dir/auto_resolve.json`. Disable the HF training_logs fetch with `--no-fetch-training-logs`.
+
 Add `--annotate-failure-modes` to run `update_hf_failure_modes` on both eval repos before Q1 picks up the labels (requires `OPENAI_API_KEY`; can take hours on large datasets). Use `--dry-run` to print the plan without executing.
 
 ## New Analysis Tools
@@ -36,7 +56,8 @@ Add `--annotate-failure-modes` to run `update_hf_failure_modes` on both eval rep
 | `behavioral_delta.py` | Q1 | Diff failure-mode + behavioral metrics between two trace datasets. Writes markdown + JSON sidecar. |
 | `trace_pair_render.py` | Q3 | Side-by-side HTML render of representative trials per common task (default sort: pass/fail flips first). |
 | `eval_temporal_overlay.py` | Q3 | Extends `temporal_trace_analysis`: overlays eval-checkpoint markers on the RL-time reward curve. |
-| `analyze_rl_behavior.py` | (orchestrator) | Runs all of the above + the existing scripts in the right order, with resumability via output-marker detection. |
+| `auto_resolve.py` | (orchestrator helper) | Given `(rl_traces, model_repo)`, looks up the model + its `sandbox_jobs` in Supabase and snapshots `<model_repo>/training_logs/` from HF to fill in the orchestrator's other flags automatically. |
+| `analyze_rl_behavior.py` | (orchestrator) | Runs all of the above + the existing scripts in the right order, with resumability via output-marker detection. `--model-repo` triggers `auto_resolve`. |
 
 ## Shared Utilities
 

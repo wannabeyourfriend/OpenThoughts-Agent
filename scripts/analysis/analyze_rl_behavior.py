@@ -314,6 +314,16 @@ def parse_args() -> argparse.Namespace:
         help="RL-time training-trace dataset (HF id, JSONL, or dir). Drives Q2.",
     )
     parser.add_argument(
+        "--model-repo",
+        help=(
+            "Trained-model HF repo (id or URL). When provided, the orchestrator "
+            "calls scripts.analysis.auto_resolve.resolve() to autofill the "
+            "post-rl-eval / baseline-eval / *-ts / training-log-dir flags from "
+            "Supabase (models + sandbox_jobs tables) and the HF Hub. Explicit "
+            "CLI values still win on conflict."
+        ),
+    )
+    parser.add_argument(
         "--baseline-eval",
         help="Pre-RL eval traces. Pair with --post-rl-eval for Q1/Q3/Q4 diffs.",
     )
@@ -332,6 +342,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--training-log-dir",
         help="Directory of SkyRL training logs (drives Q2 attribution analysis)",
+    )
+    parser.add_argument(
+        "--no-fetch-training-logs",
+        action="store_true",
+        help="When --model-repo is set, skip the HF training_logs/ snapshot step",
     )
     parser.add_argument(
         "--post-training-config",
@@ -373,6 +388,55 @@ def parse_args() -> argparse.Namespace:
 def run(args: argparse.Namespace) -> int:
     args.output_dir = Path(args.output_dir).expanduser().resolve()
     args.output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Autofill from supabase + HF if --model-repo was provided.
+    # CLI-set values win on conflict (resolver only fills blanks).
+    if args.model_repo:
+        if not args.rl_traces:
+            print(
+                "[orchestrator] --model-repo set but --rl-traces missing; "
+                "Q2 temporal analysis won't run without RL-time traces.",
+                file=sys.stderr,
+            )
+        from scripts.analysis.auto_resolve import resolve as _resolve
+        resolved = _resolve(
+            rl_traces=args.rl_traces or "",
+            model_repo=args.model_repo,
+            fetch_training_logs=not args.no_fetch_training_logs,
+        )
+        fills = resolved.as_dict()
+        applied: List[str] = []
+        for key, value in fills.items():
+            if value is None:
+                continue
+            attr = key  # post_rl_eval, post_rl_eval_ts, baseline_eval, baseline_eval_ts, training_log_dir
+            if getattr(args, attr, None):
+                continue  # CLI already set; don't clobber
+            setattr(args, attr, value)
+            applied.append(f"--{attr.replace('_', '-')}={value}")
+        # Persist the resolver report alongside the pipeline plan for transparency.
+        (args.output_dir / "auto_resolve.json").write_text(
+            json.dumps(
+                {
+                    "model_repo": args.model_repo,
+                    "rl_traces": args.rl_traces,
+                    "applied": applied,
+                    "resolver_fills": fills,
+                    "notes": resolved.notes,
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        if applied:
+            print(f"\n[orchestrator] auto-resolve applied {len(applied)} arg(s):")
+            for a in applied:
+                print(f"  {a}")
+        if resolved.notes:
+            print("[orchestrator] auto-resolve notes:")
+            for n in resolved.notes:
+                print(f"  - {n}")
 
     steps = _build_steps(args)
     if not steps:
