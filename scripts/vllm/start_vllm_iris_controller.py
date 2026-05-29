@@ -136,20 +136,50 @@ def write_rendezvous(rendezvous_dir: str, head_ip: str, ray_port: int) -> None:
     _log(f"Wrote rendezvous {uri}: head_ip={head_ip} port={ray_port}")
 
 
-def poll_rendezvous(rendezvous_dir: str, timeout: int) -> dict:
-    """Poll for the head's rendezvous file. Returns its parsed payload."""
+# Slack for the rendezvous-freshness check. Tolerates clock skew between
+# the head VM and worker VMs and the ~30s rank-0 needs to start Ray head
+# in cases where workers race rank 0 on attempt 1.
+RENDEZVOUS_FRESHNESS_SLACK = 60
+
+
+def poll_rendezvous(
+    rendezvous_dir: str,
+    timeout: int,
+    min_written_at: float | None = None,
+) -> dict:
+    """Poll for the head's rendezvous file. Returns its parsed payload.
+
+    When ``min_written_at`` is provided, payloads with an older ``written_at``
+    are treated as stale (from a prior iris task attempt) and ignored — the
+    poller keeps waiting for a fresh write by rank 0. ``RENDEZVOUS_FRESHNESS_SLACK``
+    seconds of slack apply, to absorb clock skew across VMs.
+    """
     uri = _rendezvous_uri(rendezvous_dir)
     fs = _gcs_fs()
     deadline = time.time() + timeout
-    _log(f"Polling for rendezvous {uri} (timeout {timeout}s)...")
+    threshold = (min_written_at - RENDEZVOUS_FRESHNESS_SLACK) if min_written_at else None
+    if threshold is not None:
+        _log(
+            f"Polling for rendezvous {uri} (timeout {timeout}s, "
+            f"min written_at {threshold:.0f})..."
+        )
+    else:
+        _log(f"Polling for rendezvous {uri} (timeout {timeout}s)...")
     while time.time() < deadline:
         try:
             if fs.exists(uri):
                 with fs.open(uri, "r") as f:
                     payload = json.load(f)
                 if payload.get("head_ip"):
-                    _log(f"Found rendezvous: {payload}")
-                    return payload
+                    written_at = payload.get("written_at", 0)
+                    if threshold is not None and written_at < threshold:
+                        _log(
+                            f"Ignoring stale rendezvous (written_at={written_at:.0f} "
+                            f"< threshold={threshold:.0f}); waiting for rank-0 rewrite."
+                        )
+                    else:
+                        _log(f"Found rendezvous: {payload}")
+                        return payload
         except Exception as exc:  # pragma: no cover - transient GCS hiccup
             _log(f"rendezvous poll error (will retry): {exc}")
         time.sleep(POLL_INTERVAL)
@@ -369,6 +399,14 @@ def run_head(args: argparse.Namespace, extra_args: List[str]) -> int:
     ray_address = f"{head_ip}:{args.ray_port}"
     _log(f"ROLE=head rank=0/{num_tasks} head_ip={head_ip} ray_port={args.ray_port}")
 
+    # On iris task retry (preemption), the rendezvous file from a previous
+    # attempt still points at a now-dead head VM. Purge it before starting
+    # the new Ray head so worker ranks don't race-read stale data. The
+    # freshness check in poll_rendezvous is the backstop; this is the
+    # primary defense.
+    if num_tasks > 1 and args.rendezvous_dir:
+        clear_rendezvous(args.rendezvous_dir)
+
     ray_start_head(head_ip, args.ray_port)
 
     # Publish the head IP so worker ranks can join. Single-host slices
@@ -472,6 +510,7 @@ def run_head(args: argparse.Namespace, extra_args: List[str]) -> int:
 
 
 def run_worker(args: argparse.Namespace) -> int:
+    worker_start = time.time()
     rank = _rank()
     num_tasks = _num_tasks()
     node_ip = _own_ip()
@@ -483,7 +522,14 @@ def run_worker(args: argparse.Namespace) -> int:
             "to discover the head IP."
         )
 
-    payload = poll_rendezvous(args.rendezvous_dir, args.rendezvous_timeout)
+    # Pass worker_start as the freshness floor: on preempt-retry, the
+    # rendezvous file from a prior attempt is older than this worker's
+    # restart time, so it's rejected and we wait for rank-0's rewrite.
+    payload = poll_rendezvous(
+        args.rendezvous_dir,
+        args.rendezvous_timeout,
+        min_written_at=worker_start,
+    )
     head_ip = payload["head_ip"]
     ray_port = int(payload.get("port", args.ray_port))
     ray_address = f"{head_ip}:{ray_port}"
