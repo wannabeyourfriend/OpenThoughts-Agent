@@ -2,11 +2,47 @@
 
 Utilities for analyzing RL/SFT training traces, evaluation results, and HuggingFace datasets.
 
+## Behavioral Analysis Pipeline (orchestrator)
+
+`analyze_rl_behavior.py` chains the scripts below into a single pipeline
+keyed to four research questions:
+
+| Question | Steps invoked |
+|---|---|
+| **Q1.** What model behaviors are changing as a result of RL? | `behavioral_delta` + `summarize_conversations` (+ optional `update_hf_failure_modes` upstream) |
+| **Q2.** Are reward changes over time attributable to behavior or other factors? | `temporal_trace_analysis` + `parse_skyrl_metrics` |
+| **Q3.** Do behavioral changes persist in post-RL eval traces? | `eval_temporal_overlay` + `trace_pair_render` + `post_training_comparison` |
+| **Q4.** Do those changes affect eval results? If not, is it expected? | `solve_rate_by_context` (+ Q1/Q3 outputs for interpretation) |
+
+Each step writes into `--output-dir/<step>/` and is skipped if its output marker already exists (use `--force` to re-run, `--skip <names>` to opt out, `--only <names>` for a subset). The plan + cross-linked index land at `--output-dir/{pipeline_plan.json, INDEX.md}`.
+
+```
+python -m scripts.analysis.analyze_rl_behavior \
+    --rl-traces        penfever/rl-train-traces-foo \
+    --baseline-eval    penfever/eval-pre-rl-foo \
+    --post-rl-eval     penfever/eval-post-rl-foo \
+    --post-rl-eval-ts  2026-05-28T18:30 \
+    --baseline-eval-ts 2026-05-23T09:00 \
+    --training-log-dir /scratch/skyrl-logs/foo/ \
+    --output-dir       /Users/me/Documents/notes/rl-behavior-foo/
+```
+
+Add `--annotate-failure-modes` to run `update_hf_failure_modes` on both eval repos before Q1 picks up the labels (requires `OPENAI_API_KEY`; can take hours on large datasets). Use `--dry-run` to print the plan without executing.
+
+## New Analysis Tools
+
+| Script | Question | Description |
+|---|---|---|
+| `behavioral_delta.py` | Q1 | Diff failure-mode + behavioral metrics between two trace datasets. Writes markdown + JSON sidecar. |
+| `trace_pair_render.py` | Q3 | Side-by-side HTML render of representative trials per common task (default sort: pass/fail flips first). |
+| `eval_temporal_overlay.py` | Q3 | Extends `temporal_trace_analysis`: overlays eval-checkpoint markers on the RL-time reward curve. |
+| `analyze_rl_behavior.py` | (orchestrator) | Runs all of the above + the existing scripts in the right order, with resumability via output-marker detection. |
+
 ## Shared Utilities
 
 | Module | Description |
 |---|---|
-| `utils.py` | Common helpers: text extraction, reward/error parsing, token counting, date parsing, JSONL iteration |
+| `utils.py` | Common helpers: `load_traces()` unified loader (HF/JSONL/dir), `Trace` dataclass with eager field caching, `task_id_of()`, `group_by_task()`, plus the original text/reward/error/date/token primitives |
 
 ## Dataset & Context Analysis
 

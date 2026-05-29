@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Iterable, Iterator, List, Optional
+from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence, Union
 
 try:
     import tiktoken
@@ -334,3 +335,159 @@ def extract_date(record) -> Optional[datetime]:
         except (TypeError, ValueError):
             return None
     return None
+
+
+# ---------------------------------------------------------------------------
+# Task identity
+# ---------------------------------------------------------------------------
+
+def task_id_of(record) -> Optional[str]:
+    """Best-effort canonical task identifier for a trace row.
+
+    Trace datasets disagree on which field holds the task identity — some
+    use ``task``, others ``task_name``, others bury it inside a nested
+    dict. This helper handles the common cases.
+    """
+    if not isinstance(record, dict):
+        return None
+    for key in ("task", "task_name", "task_id", "trial_name"):
+        value = record.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Trace dataclass + unified loader
+# ---------------------------------------------------------------------------
+
+@dataclass
+class Trace:
+    """Normalized view over a single trace row.
+
+    Field-extraction (``extract_reward``, ``extract_error_type``, etc.) is
+    eager and cached here so downstream analyses don't repeat the work.
+    The ``raw`` dict is kept for one-off field access.
+    """
+    raw: Dict[str, Any]
+    task: Optional[str] = None
+    reward: Optional[float] = None
+    error_type: Optional[str] = None
+    date: Optional[datetime] = None
+    turns: int = 0
+    conversation: str = ""
+    failure_mode: Optional[str] = None
+    # Optional cached token count (filled on demand to avoid tokenizer cost).
+    tokens: Optional[int] = None
+    # Origin tag (e.g. "hf:penfever/dataset", "jsonl:/path/foo.jsonl",
+    # "dir:/path/results"). Useful when cross-referencing traces from
+    # multiple sources in the same analysis pass.
+    source: Optional[str] = None
+
+    @classmethod
+    def from_row(cls, row: Dict[str, Any], source: Optional[str] = None) -> "Trace":
+        # update_hf_failure_modes writes to "failure_mode_analysis" by default;
+        # accept either the new short name or the legacy long name.
+        fm = row.get("failure_mode") or row.get("failure_mode_analysis")
+        if isinstance(fm, dict):
+            # GPT-5 judge returns a dict; collapse to its 'mode' field if present.
+            fm = fm.get("mode") or fm.get("category") or fm.get("summary")
+        return cls(
+            raw=row,
+            task=task_id_of(row),
+            reward=extract_reward(row),
+            error_type=extract_error_type(row),
+            date=extract_date(row),
+            turns=count_turns(row),
+            conversation=extract_conversation_text(row),
+            failure_mode=fm if isinstance(fm, str) else None,
+            source=source,
+        )
+
+
+def _iter_results_in_dir(root: Path) -> Iterator[Dict[str, Any]]:
+    """Walk a directory of trial folders, yielding their result.json contents.
+
+    Mirrors the eval-trace layout (``<root>/<trial-name>/result.json`` plus
+    optional ``agent/``, ``verifier/``). Each yielded row carries the
+    trial_name + the conversation pulled from ``agent/conversation.json``
+    when present, so downstream code can treat it like an HF row.
+    """
+    for trial_dir in sorted(p for p in root.iterdir() if p.is_dir()):
+        result_path = trial_dir / "result.json"
+        if not result_path.exists():
+            continue
+        try:
+            payload = json.loads(result_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        if not isinstance(payload, dict):
+            payload = {"result": payload}
+        payload.setdefault("trial_name", trial_dir.name)
+        # Pull the conversation if it sits at the conventional path.
+        conv_path = trial_dir / "agent" / "conversation.json"
+        if conv_path.exists():
+            try:
+                conv = json.loads(conv_path.read_text(encoding="utf-8"))
+                if isinstance(conv, list):
+                    payload.setdefault("messages", conv)
+            except (json.JSONDecodeError, OSError):
+                pass
+        yield payload
+
+
+def load_traces(
+    source: Union[str, Path],
+    *,
+    split: str = "train",
+    max_rows: Optional[int] = None,
+) -> List[Trace]:
+    """Load traces from any of the supported source types.
+
+    Supported ``source`` formats:
+      - HuggingFace dataset id (``"penfever/foo-bar"``)
+      - JSONL path (``.jsonl`` or ``.json`` suffix)
+      - Local directory of trial folders (each holding ``result.json``)
+
+    Returns a list of :class:`Trace` instances. ``max_rows`` caps the
+    number of rows loaded (useful for smoke tests).
+    """
+    if isinstance(source, str) and not Path(source).expanduser().exists():
+        # Treat as HF repo id.
+        ds = load_hf_trace_dataset(source, split=split)
+        traces: List[Trace] = []
+        for i, row in enumerate(ds):
+            if max_rows is not None and i >= max_rows:
+                break
+            traces.append(Trace.from_row(row, source=f"hf:{source}"))
+        return traces
+
+    path = Path(source).expanduser().resolve()
+    if path.is_file() and path.suffix in (".jsonl", ".json"):
+        rows = list(iter_jsonl(path))
+        if max_rows is not None:
+            rows = rows[:max_rows]
+        return [Trace.from_row(r, source=f"jsonl:{path}") for r in rows]
+
+    if path.is_dir():
+        rows: List[Dict[str, Any]] = []
+        for row in _iter_results_in_dir(path):
+            rows.append(row)
+            if max_rows is not None and len(rows) >= max_rows:
+                break
+        return [Trace.from_row(r, source=f"dir:{path}") for r in rows]
+
+    raise ValueError(
+        f"Cannot resolve traces source {source!r}: not an existing JSONL, "
+        "result.json directory, or HF dataset id."
+    )
+
+
+def group_by_task(traces: Sequence[Trace]) -> Dict[str, List[Trace]]:
+    """Bucket traces by their canonical task id; drops rows with no task."""
+    out: Dict[str, List[Trace]] = {}
+    for t in traces:
+        if t.task is None:
+            continue
+        out.setdefault(t.task, []).append(t)
+    return out

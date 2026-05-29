@@ -1,0 +1,463 @@
+#!/usr/bin/env python3
+"""Orchestrate the full RL behavioral-analysis pipeline.
+
+Runs the existing analysis scripts plus the new behavioral_delta /
+trace_pair_render / eval_temporal_overlay tools in the right order, with
+each step writing into ``--output-dir/<step>/``. Each step is skipped if
+its output already exists (use ``--force`` to re-run, ``--skip step1,step2``
+to opt out individually).
+
+The pipeline maps to the four research questions:
+
+    Q1 (what changed):     behavioral_delta  +  summarize_conversations
+                           Optionally update_hf_failure_modes upstream
+                           for both --baseline and --post-rl-eval if
+                           --annotate-failure-modes is set.
+
+    Q2 (attribution):      temporal_trace_analysis  +  parse_skyrl_metrics
+                           Side-by-side temporal plots of RL reward and
+                           skyrl training metrics (KL, grad norm, ...).
+
+    Q3 (persistence):      eval_temporal_overlay  +  trace_pair_render
+                           +  post_training_comparison
+                           Eval markers overlaid on RL time axis; same-
+                           task pairs rendered side-by-side; stage-level
+                           summary table.
+
+    Q4 (eval impact):      solve_rate_by_context  +  the Q1+Q3 outputs
+                           Did behavior shifts move trace distribution
+                           into bins that have different solve rates? If
+                           not, eval-stable behavior change is expected.
+
+Example:
+
+    python -m scripts.analysis.analyze_rl_behavior \\
+        --rl-traces        penfever/rl-train-traces-foo \\
+        --baseline-eval    penfever/eval-pre-rl-foo \\
+        --post-rl-eval     penfever/eval-post-rl-foo \\
+        --post-rl-eval-ts  2026-05-28T18:30 \\
+        --training-log-dir /scratch/skyrl-logs/foo/ \\
+        --output-dir       /Users/me/Documents/notes/rl-behavior-foo/
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import shutil
+import subprocess
+import sys
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+from typing import Callable, List, Optional
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+
+@dataclass
+class Step:
+    """One pipeline step. ``runner`` is invoked when the step's output is missing."""
+
+    name: str
+    description: str
+    question: str  # "Q1" .. "Q4"
+    output_marker: Path  # if this exists and is non-empty, step is skipped
+    runner: Callable[[], int]
+    optional: bool = False  # if True, missing inputs cause skip-with-warning, not fail
+
+
+def _run_subprocess(cmd: List[str]) -> int:
+    print(f"\n[orchestrator] $ {' '.join(cmd)}")
+    return subprocess.run(cmd).returncode
+
+
+def _module_runner(module: str, extra: List[str]) -> Callable[[], int]:
+    """Build a runner that invokes ``python -m <module> <extra>``."""
+    def _run() -> int:
+        return _run_subprocess([sys.executable, "-m", module] + extra)
+    return _run
+
+
+def _build_steps(args: argparse.Namespace) -> List[Step]:
+    out = Path(args.output_dir).expanduser().resolve()
+    steps: List[Step] = []
+
+    # Q1: behavioral delta (baseline vs post-RL eval). Requires both repos
+    # to have been failure-mode-annotated already (or --annotate-failure-modes).
+    if args.baseline_eval and args.post_rl_eval:
+        delta_md = out / "Q1_behavioral_delta" / "report.md"
+        steps.append(
+            Step(
+                name="Q1.behavioral_delta",
+                description="Macro-metric + failure-mode diff baseline-eval vs post-RL eval",
+                question="Q1",
+                output_marker=delta_md,
+                runner=_module_runner(
+                    "scripts.analysis.behavioral_delta",
+                    [
+                        "--before", args.baseline_eval,
+                        "--after", args.post_rl_eval,
+                        "--output", str(delta_md),
+                        *(["--max-rows", str(args.max_rows)] if args.max_rows else []),
+                    ],
+                ),
+            )
+        )
+
+    # Q1: summarize_conversations on the RL-time traces (token/turn macros).
+    if args.rl_traces:
+        rl_summary = out / "Q1_rl_summary" / "summary.txt"
+        steps.append(
+            Step(
+                name="Q1.rl_summary",
+                description="Per-row token/turn/reward stats on RL-time traces",
+                question="Q1",
+                output_marker=rl_summary,
+                # summarize_conversations expects a JSONL on disk; if the
+                # source is an HF id, the user should pre-export. We make
+                # this step optional and tolerate JSONL-only sources here.
+                runner=_module_runner(
+                    "scripts.analysis.summarize_conversations",
+                    [args.rl_traces, "--output", str(rl_summary)],
+                ),
+                optional=True,
+            )
+        )
+
+    # Q2: temporal_trace_analysis on the RL-time traces.
+    if args.rl_traces:
+        temp_dir = out / "Q2_temporal"
+        temp_marker = temp_dir / "temporal_summary.json"
+        steps.append(
+            Step(
+                name="Q2.temporal_trace_analysis",
+                description="Time-binned reward + behavioral stats over RL training",
+                question="Q2",
+                output_marker=temp_marker,
+                runner=_module_runner(
+                    "scripts.analysis.temporal_trace_analysis",
+                    [
+                        args.rl_traces,
+                        "--bin-hours", str(args.rl_bin_hours),
+                        "--output-dir", str(temp_dir),
+                        *(["--max-rows", str(args.max_rows)] if args.max_rows else []),
+                    ],
+                ),
+            )
+        )
+
+    # Q2: parse_skyrl_metrics on training logs.
+    if args.training_log_dir:
+        skyrl_dir = out / "Q2_skyrl_metrics"
+        skyrl_marker = skyrl_dir / "summary.md"
+        steps.append(
+            Step(
+                name="Q2.parse_skyrl_metrics",
+                description="KL / grad-norm / LR / vLLM stats from SkyRL training logs",
+                question="Q2",
+                output_marker=skyrl_marker,
+                runner=_module_runner(
+                    "scripts.analysis.parse_skyrl_metrics",
+                    [args.training_log_dir, str(skyrl_dir)],
+                ),
+            )
+        )
+
+    # Q3: eval_temporal_overlay. Needs the post-RL eval to carry a timestamp.
+    if args.rl_traces and args.post_rl_eval:
+        overlay_dir = out / "Q3_temporal_overlay"
+        overlay_png = overlay_dir / "overlay.png"
+        # Build eval-traces specs: baseline (if present) without ts, post-rl with --post-rl-eval-ts.
+        eval_specs: List[str] = []
+        post_spec = args.post_rl_eval
+        if args.post_rl_eval_ts:
+            post_spec = f"{post_spec}@post-RL:{args.post_rl_eval_ts}"
+        eval_specs.extend(["--eval-traces", post_spec])
+        if args.baseline_eval and args.baseline_eval_ts:
+            eval_specs.extend(
+                ["--eval-traces", f"{args.baseline_eval}@baseline:{args.baseline_eval_ts}"]
+            )
+        if args.extra_eval:
+            for s in args.extra_eval:
+                eval_specs.extend(["--eval-traces", s])
+        steps.append(
+            Step(
+                name="Q3.eval_temporal_overlay",
+                description="RL reward curve with post-RL eval-checkpoint markers",
+                question="Q3",
+                output_marker=overlay_png,
+                runner=_module_runner(
+                    "scripts.analysis.eval_temporal_overlay",
+                    [
+                        "--rl-traces", args.rl_traces,
+                        "--bin-hours", str(args.rl_bin_hours),
+                        "--output", str(overlay_png),
+                        *eval_specs,
+                        *(["--max-rows", str(args.max_rows)] if args.max_rows else []),
+                    ],
+                ),
+                optional=not args.post_rl_eval_ts,
+            )
+        )
+
+    # Q3: trace_pair_render baseline vs post-RL.
+    if args.baseline_eval and args.post_rl_eval:
+        pair_html = out / "Q3_trace_pairs" / "pairs.html"
+        steps.append(
+            Step(
+                name="Q3.trace_pair_render",
+                description="Same-task side-by-side render (highest-reward trials)",
+                question="Q3",
+                output_marker=pair_html,
+                runner=_module_runner(
+                    "scripts.analysis.trace_pair_render",
+                    [
+                        "--before", args.baseline_eval,
+                        "--after", args.post_rl_eval,
+                        "--output", str(pair_html),
+                        "--top-n", str(args.pair_top_n),
+                        *(["--max-rows", str(args.max_rows)] if args.max_rows else []),
+                    ],
+                ),
+            )
+        )
+
+    # Q3/Q4: post_training_comparison takes a list of model eval dirs. We
+    # provide baseline + post-RL as a minimal pair; downstream user can
+    # extend the JSON config to add SFT-only / weak-SFT / etc.
+    if args.post_training_config:
+        ptc_md = out / "Q3_post_training_comparison" / "comparison.md"
+        steps.append(
+            Step(
+                name="Q3.post_training_comparison",
+                description="Per-task scores + failure-mode + context-length across post-training stages",
+                question="Q3",
+                output_marker=ptc_md,
+                runner=_module_runner(
+                    "scripts.analysis.post_training_comparison",
+                    [
+                        "--config", args.post_training_config,
+                        "--output", str(ptc_md),
+                    ],
+                ),
+            )
+        )
+
+    # Q4: solve_rate_by_context for baseline vs post-RL.
+    if args.baseline_eval and args.post_rl_eval:
+        sr_dir = out / "Q4_solve_rate_by_context"
+        sr_png = sr_dir / "solve_rate.png"
+        steps.append(
+            Step(
+                name="Q4.solve_rate_by_context",
+                description="Solve / timeout / error rates binned by context length",
+                question="Q4",
+                output_marker=sr_png,
+                runner=_module_runner(
+                    "scripts.analysis.solve_rate_by_context",
+                    [
+                        args.baseline_eval,
+                        args.post_rl_eval,
+                        "--plot", str(sr_png),
+                    ],
+                ),
+            )
+        )
+
+    # Optional upstream: annotate failure modes via GPT-5 on both eval repos.
+    # Inserted at the FRONT (must run before Q1 behavioral_delta picks up the labels).
+    if args.annotate_failure_modes:
+        prefix: List[Step] = []
+        for label, repo in [("baseline", args.baseline_eval), ("post-rl", args.post_rl_eval)]:
+            if not repo:
+                continue
+            marker = out / f"Q0_failure_mode_{label}" / "done.txt"
+            # update_hf_failure_modes writes back to the HF repo when --push
+            # is set; we just record the run-attempt locally.
+            def _annotate(repo=repo, marker=marker) -> int:
+                rc = _run_subprocess(
+                    [
+                        sys.executable,
+                        "-m",
+                        "scripts.analysis.update_hf_failure_modes",
+                        repo,
+                        "--resume",
+                        "--push",
+                    ]
+                )
+                if rc == 0:
+                    marker.parent.mkdir(parents=True, exist_ok=True)
+                    marker.write_text(f"annotated {repo} at {datetime.utcnow().isoformat()}\n")
+                return rc
+            prefix.append(
+                Step(
+                    name=f"Q0.annotate_failure_modes.{label}",
+                    description=f"GPT-5 failure-mode annotation on {repo}",
+                    question="Q0",
+                    output_marker=marker,
+                    runner=_annotate,
+                    optional=True,
+                )
+            )
+        steps = prefix + steps
+
+    return steps
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser.add_argument(
+        "--rl-traces",
+        help="RL-time training-trace dataset (HF id, JSONL, or dir). Drives Q2.",
+    )
+    parser.add_argument(
+        "--baseline-eval",
+        help="Pre-RL eval traces. Pair with --post-rl-eval for Q1/Q3/Q4 diffs.",
+    )
+    parser.add_argument("--baseline-eval-ts", help="ISO timestamp for the baseline eval marker (Q3 overlay)")
+    parser.add_argument(
+        "--post-rl-eval",
+        help="Post-RL eval traces. Pair with --baseline-eval for Q1/Q3/Q4 diffs.",
+    )
+    parser.add_argument("--post-rl-eval-ts", help="ISO timestamp for the post-RL eval marker (Q3 overlay)")
+    parser.add_argument(
+        "--extra-eval",
+        action="append",
+        default=[],
+        help="Additional eval-checkpoint specs for the Q3 overlay: '<source>[@label][:ts]'",
+    )
+    parser.add_argument(
+        "--training-log-dir",
+        help="Directory of SkyRL training logs (drives Q2 attribution analysis)",
+    )
+    parser.add_argument(
+        "--post-training-config",
+        help="JSON config for post_training_comparison (Base/SFT/RL stages); see that script's docs",
+    )
+    parser.add_argument(
+        "--annotate-failure-modes",
+        action="store_true",
+        help="Run update_hf_failure_modes on baseline + post-rl FIRST (GPT-5 API; can be slow)",
+    )
+    parser.add_argument(
+        "--output-dir",
+        required=True,
+        type=Path,
+        help="Root directory where each step's output is written",
+    )
+    parser.add_argument("--rl-bin-hours", type=float, default=4.0, help="Hours per RL temporal bin")
+    parser.add_argument("--pair-top-n", type=int, default=25, help="Number of side-by-side trace pairs to render")
+    parser.add_argument("--max-rows", type=int, default=None, help="Per-source row cap (for smoke testing)")
+    parser.add_argument(
+        "--skip",
+        default="",
+        help="Comma-separated step names to skip (e.g. 'Q2.parse_skyrl_metrics,Q4.solve_rate_by_context')",
+    )
+    parser.add_argument(
+        "--only",
+        default="",
+        help="Comma-separated step names to run exclusively (everything else skipped)",
+    )
+    parser.add_argument("--force", action="store_true", help="Re-run steps even if their output marker exists")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print the planned steps without running anything",
+    )
+    return parser.parse_args()
+
+
+def run(args: argparse.Namespace) -> int:
+    args.output_dir = Path(args.output_dir).expanduser().resolve()
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+
+    steps = _build_steps(args)
+    if not steps:
+        print(
+            "[orchestrator] No steps planned. Provide at least one of "
+            "--rl-traces, --baseline-eval+--post-rl-eval, or --post-training-config.",
+            file=sys.stderr,
+        )
+        return 2
+
+    skip_set = {s.strip() for s in args.skip.split(",") if s.strip()}
+    only_set = {s.strip() for s in args.only.split(",") if s.strip()}
+
+    plan_path = args.output_dir / "pipeline_plan.json"
+    plan = []
+    for step in steps:
+        status = "planned"
+        if only_set and step.name not in only_set:
+            status = "skipped:not-in-only"
+        elif step.name in skip_set:
+            status = "skipped:--skip"
+        elif step.output_marker.exists() and step.output_marker.stat().st_size > 0 and not args.force:
+            status = f"skipped:already-present ({step.output_marker})"
+        plan.append({
+            "name": step.name,
+            "question": step.question,
+            "description": step.description,
+            "output_marker": str(step.output_marker),
+            "status": status,
+            "optional": step.optional,
+        })
+    plan_path.write_text(json.dumps(plan, indent=2) + "\n", encoding="utf-8")
+
+    # Print plan summary.
+    print(f"\n[orchestrator] Plan ({args.output_dir}/pipeline_plan.json):")
+    for p in plan:
+        print(f"  [{p['status']:30s}] {p['name']:40s} {p['question']:4s} {p['description']}")
+    if args.dry_run:
+        return 0
+
+    failures: List[str] = []
+    for step, p in zip(steps, plan):
+        if p["status"].startswith("skipped"):
+            continue
+        rc = step.runner()
+        if rc != 0:
+            (failures if not step.optional else []).append(f"{step.name} (rc={rc})")
+            print(
+                f"[orchestrator] step {step.name} failed (rc={rc})"
+                + (" — non-fatal, optional step" if step.optional else ""),
+                file=sys.stderr,
+            )
+
+    # Write the final index report.
+    index_path = args.output_dir / "INDEX.md"
+    index = ["# RL Behavioral Analysis", "", f"Generated {datetime.utcnow().isoformat()}Z", ""]
+    for q_label, q_name in [
+        ("Q1", "What model behaviors are changing as a result of RL?"),
+        ("Q2", "Are reward changes attributable to behavior changes or other factors?"),
+        ("Q3", "Do behavioral changes persist in post-RL eval traces?"),
+        ("Q4", "Do those changes affect eval results? If not, is it expected?"),
+    ]:
+        index += [f"## {q_label}. {q_name}", ""]
+        for step, p in zip(steps, plan):
+            if step.question != q_label:
+                continue
+            link = step.output_marker.relative_to(args.output_dir) if step.output_marker.exists() else None
+            if link:
+                index.append(f"- **{step.name}** — [{link}]({link}) — {step.description}")
+            else:
+                index.append(f"- **{step.name}** — _(not produced)_ — {step.description}")
+        index.append("")
+    index_path.write_text("\n".join(index) + "\n", encoding="utf-8")
+    print(f"\n[orchestrator] index → {index_path}")
+    print(f"[orchestrator] plan → {plan_path}")
+
+    if failures:
+        print(f"[orchestrator] {len(failures)} required step(s) failed: {', '.join(failures)}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def main() -> None:
+    sys.exit(run(parse_args()))
+
+
+if __name__ == "__main__":
+    main()
