@@ -96,12 +96,46 @@ def _model_by_name(client, name: str) -> Optional[Dict[str, Any]]:
     return resp.data[0] if resp.data else None
 
 
-def _latest_eval_job_for_model(client, model_id: str) -> Optional[Dict[str, Any]]:
-    """Return the most recent sandbox_job for the given model_id with an hf_traces_link.
+# Fallback chain for extracting a primary numeric score from the ``metrics``
+# JSONB column. ``metrics`` is a list of ``{"name": str, "value": float}``
+# entries on this schema; we walk the keys in this order, first hit wins.
+DEFAULT_SCORE_KEYS: tuple = ("accuracy", "mean_reward", "Mean", "MeanDropEI", "reward", "score", "pass_rate")
 
-    "Most recent" = highest ``ended_at`` (fall back to ``started_at``,
-    then ``created_at``). Picks any benchmark — caller can pre-filter if
-    they want a specific one.
+
+def _score_of_job(job: Dict[str, Any], key: Optional[str] = None) -> Optional[float]:
+    """Extract a numeric score from a sandbox_job's ``metrics`` column.
+
+    Supports both shapes seen in the wild:
+      - list of ``{"name", "value"}`` dicts (the current schema)
+      - bare ``{key: value}`` dict (older rows / future migrations)
+
+    When ``key`` is None, walks :data:`DEFAULT_SCORE_KEYS` and returns the
+    first match. Returns None if no numeric value is found.
+    """
+    metrics = job.get("metrics")
+    if metrics is None:
+        return None
+    candidates = [key] if key else list(DEFAULT_SCORE_KEYS)
+    if isinstance(metrics, list):
+        index = {m.get("name"): m.get("value") for m in metrics if isinstance(m, dict)}
+        for k in candidates:
+            v = index.get(k)
+            if isinstance(v, (int, float)):
+                return float(v)
+    elif isinstance(metrics, dict):
+        for k in candidates:
+            v = metrics.get(k)
+            if isinstance(v, (int, float)):
+                return float(v)
+    return None
+
+
+def _eval_jobs_for_model(client, model_id: str) -> List[Dict[str, Any]]:
+    """Return ALL sandbox_jobs for ``model_id`` that have an hf_traces_link.
+
+    Ordered by ``ended_at`` desc so callers that want "latest" can take
+    the first element, and callers that want to rank by score-delta can
+    walk the whole list.
     """
     resp = (
         client.table("sandbox_jobs")
@@ -112,13 +146,182 @@ def _latest_eval_job_for_model(client, model_id: str) -> Optional[Dict[str, Any]
         .order("created_at", desc=True)
         .execute()
     )
-    if not resp.data:
-        return None
-    for row in resp.data:
-        # Need a non-null hf_traces_link for the resolver to be useful.
-        if row.get("hf_traces_link"):
-            return row
-    return None
+    return [r for r in (resp.data or []) if r.get("hf_traces_link")]
+
+
+def _benchmark_name_to_id(client, name_or_id: str) -> Optional[str]:
+    """Accept either a benchmark UUID or a benchmark name; return the UUID."""
+    if "-" in name_or_id and len(name_or_id) == 36:
+        return name_or_id  # already a UUID
+    resp = client.table("benchmarks").select("id").eq("name", name_or_id).limit(1).execute()
+    return resp.data[0]["id"] if resp.data else None
+
+
+def _pick_eval_pair(
+    post_jobs: List[Dict[str, Any]],
+    baseline_jobs: List[Dict[str, Any]],
+    *,
+    selection: str = "largest-delta",
+    score_key: Optional[str] = None,
+    benchmark: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Pick a (post_job, baseline_job, delta_info) triple from the candidate lists.
+
+    Selection strategies:
+      - ``"largest-delta"``: rank pairs by ``post_score - baseline_score``,
+        pick the largest (the "most-improved-by-RL" benchmark). Requires
+        a benchmark with at least one eval on each side and numeric scores.
+      - ``"largest-abs-delta"``: same but ranked by ``|post - baseline|``
+        (catches regressions too).
+      - ``"latest"``: pick the most recent post-RL job (any benchmark);
+        match the baseline to the same benchmark if available, else the
+        most recent baseline job overall.
+      - ``"benchmark"``: filter both sides to ``benchmark`` (UUID or name)
+        and pick the latest from each.
+
+    Returns a dict with keys ``post``, ``baseline``, ``delta``,
+    ``selection_strategy``, ``benchmark_id``, plus any explanatory notes
+    in ``reason``. ``post`` and/or ``baseline`` may be None if no match.
+    """
+    by_benchmark: Dict[str, Dict[str, Any]] = {}
+    for j in post_jobs:
+        bid = j.get("benchmark_id")
+        if bid and bid not in by_benchmark:
+            by_benchmark[bid] = {"post": j, "baseline": None}
+    for j in baseline_jobs:
+        bid = j.get("benchmark_id")
+        if bid is None:
+            continue
+        if bid in by_benchmark:
+            if by_benchmark[bid]["baseline"] is None:
+                by_benchmark[bid]["baseline"] = j
+        else:
+            by_benchmark[bid] = {"post": None, "baseline": j}
+
+    def _info(pair: Dict[str, Any], reason: str) -> Dict[str, Any]:
+        post = pair.get("post")
+        base = pair.get("baseline")
+        ps = _score_of_job(post, score_key) if post else None
+        bs = _score_of_job(base, score_key) if base else None
+        delta = (ps - bs) if (ps is not None and bs is not None) else None
+        return {
+            "post": post,
+            "baseline": base,
+            "post_score": ps,
+            "baseline_score": bs,
+            "delta": delta,
+            "selection_strategy": selection,
+            "benchmark_id": (post or base or {}).get("benchmark_id"),
+            "reason": reason,
+        }
+
+    if selection == "benchmark":
+        if not benchmark:
+            return _info({}, "selection=benchmark requires --eval-benchmark; none supplied")
+        # Resolve name → id if a client+name was supplied (handled by caller).
+        target = benchmark
+        pair = by_benchmark.get(target, {"post": None, "baseline": None})
+        return _info(pair, f"pinned to benchmark={target}")
+
+    if selection == "latest":
+        # Most recent post-RL job (already sorted desc), match baseline by benchmark.
+        post = post_jobs[0] if post_jobs else None
+        base = None
+        if post and post.get("benchmark_id"):
+            for j in baseline_jobs:
+                if j.get("benchmark_id") == post["benchmark_id"]:
+                    base = j
+                    break
+        if base is None and baseline_jobs:
+            base = baseline_jobs[0]
+        return _info({"post": post, "baseline": base}, "selection=latest (most recent post-RL)")
+
+    # Default: largest-delta / largest-abs-delta — both need a matched pair.
+    pairs_with_delta = []
+    for bid, pair in by_benchmark.items():
+        ps = _score_of_job(pair["post"], score_key) if pair["post"] else None
+        bs = _score_of_job(pair["baseline"], score_key) if pair["baseline"] else None
+        if ps is None or bs is None:
+            continue
+        pairs_with_delta.append((bid, pair, ps - bs))
+
+    if not pairs_with_delta:
+        # Fall back to latest if no matched pair has numeric scores.
+        return _pick_eval_pair(
+            post_jobs, baseline_jobs,
+            selection="latest", score_key=score_key, benchmark=benchmark,
+        ) | {"selection_strategy": f"{selection}→latest (no matched scored pair)"}
+
+    rank_key = (lambda t: abs(t[2])) if selection == "largest-abs-delta" else (lambda t: t[2])
+    bid, pair, delta = max(pairs_with_delta, key=rank_key)
+    return _info(
+        pair,
+        f"selection={selection}: ranked {len(pairs_with_delta)} matched pair(s); "
+        f"chose benchmark={bid[:8]} with delta={delta:+.4f}",
+    )
+
+
+def list_evals_for_model(
+    rl_traces: str,
+    model_repo: str,
+    *,
+    score_key: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Enumerate all matched eval pairs without picking one.
+
+    Returns a dict with ``post_only``, ``baseline_only``, and ``matched``
+    arrays; each ``matched`` entry has the benchmark id, both job ids,
+    both scores (under ``score_key`` or the default chain), and delta.
+    Useful for `--list-evals` operator workflow.
+    """
+    model_name = parse_hf_url(model_repo)
+    client = _supabase_client()
+    model = _model_by_name(client, model_name)
+    if model is None:
+        return {"error": f"no model with name={model_name}"}
+    post_jobs = _eval_jobs_for_model(client, model["id"])
+    base_jobs = (
+        _eval_jobs_for_model(client, model["base_model_id"])
+        if model.get("base_model_id")
+        else []
+    )
+    by_b: Dict[str, Dict[str, Any]] = {}
+    for j in post_jobs:
+        bid = j.get("benchmark_id") or ""
+        by_b.setdefault(bid, {"post": [], "baseline": []})["post"].append(j)
+    for j in base_jobs:
+        bid = j.get("benchmark_id") or ""
+        by_b.setdefault(bid, {"post": [], "baseline": []})["baseline"].append(j)
+    matched, post_only, baseline_only = [], [], []
+    for bid, lists in by_b.items():
+        post = lists["post"][0] if lists["post"] else None
+        base = lists["baseline"][0] if lists["baseline"] else None
+        ps = _score_of_job(post, score_key) if post else None
+        bs = _score_of_job(base, score_key) if base else None
+        row = {
+            "benchmark_id": bid,
+            "post_job_id": (post or {}).get("id"),
+            "baseline_job_id": (base or {}).get("id"),
+            "post_score": ps,
+            "baseline_score": bs,
+            "delta": (ps - bs) if (ps is not None and bs is not None) else None,
+            "post_traces": (post or {}).get("hf_traces_link"),
+            "baseline_traces": (base or {}).get("hf_traces_link"),
+        }
+        if post and base:
+            matched.append(row)
+        elif post:
+            post_only.append(row)
+        elif base:
+            baseline_only.append(row)
+    matched.sort(key=lambda r: (r["delta"] if r["delta"] is not None else -1e9), reverse=True)
+    return {
+        "model_id": model["id"],
+        "base_model_id": model.get("base_model_id"),
+        "matched": matched,
+        "post_only": post_only,
+        "baseline_only": baseline_only,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -170,6 +373,9 @@ def resolve(
     rl_traces: str,
     model_repo: str,
     *,
+    eval_selection: str = "largest-delta",
+    eval_benchmark: Optional[str] = None,
+    eval_score_key: Optional[str] = None,
     training_log_cache: Optional[Path] = None,
     fetch_training_logs: bool = True,
 ) -> Resolved:
@@ -180,14 +386,25 @@ def resolve(
             populate ``notes`` cross-reference; the resolver doesn't need
             to query it.
         model_repo: Trained-model HF id or URL.
+        eval_selection: How to pick which eval-job pair to surface when
+            the model has multiple. One of:
+              - ``"largest-delta"`` (default) — match post/baseline by
+                benchmark_id, score with ``eval_score_key``, pick the
+                pair with the largest positive delta (i.e. the
+                benchmark RL helped the most on; usually the most
+                interesting to inspect).
+              - ``"largest-abs-delta"`` — same but rank by ``|delta|``;
+                catches regressions too.
+              - ``"latest"`` — original behavior: most recent post-RL
+                sandbox_job, baseline matched by benchmark.
+              - ``"benchmark"`` — pin to ``eval_benchmark`` (UUID or
+                ``benchmarks.name``).
+        eval_benchmark: Required when ``eval_selection="benchmark"``.
+        eval_score_key: Which metrics entry to read for the score-delta
+            ranking. Defaults to the first hit among
+            :data:`DEFAULT_SCORE_KEYS` (``"accuracy"`` first).
         training_log_cache: Where to drop the snapshotted training_logs/.
-            Defaults to ``~/.ot-agent/training_logs/<safe_repo>/``.
-        fetch_training_logs: If False, skip the HF snapshot step entirely
-            (just emit the URL convention as a note).
-
-    Returns:
-        A :class:`Resolved` with whatever could be filled. Fields that
-        couldn't be resolved stay ``None``; ``notes`` carries the reason.
+        fetch_training_logs: If False, skip the HF snapshot step.
     """
     out = Resolved()
     try:
@@ -224,37 +441,68 @@ def resolve(
         if not out.post_rl_eval_ts:
             out.notes.append("models.training_end is null; post_rl_eval_ts not set")
 
-        # Post-RL eval comes from the model's own sandbox_jobs.
+        # Collect ALL valid eval-jobs on both sides, then rank by the
+        # caller's selection strategy. Default is largest-delta — usually
+        # the most interesting benchmark to inspect, since the largest
+        # gain is where RL learned the most.
         if client is not None:
             try:
-                eval_job = _latest_eval_job_for_model(client, model_row["id"])
-                if eval_job and eval_job.get("hf_traces_link"):
-                    out.post_rl_eval = eval_job["hf_traces_link"]
-                    out.notes.append(
-                        f"post_rl_eval ← sandbox_jobs[{eval_job['id']}] "
-                        f"(benchmark={eval_job.get('benchmark_id')}, status={eval_job.get('job_status')})"
-                    )
-                else:
-                    out.notes.append(f"no sandbox_jobs with hf_traces_link for model_id={model_row['id']}")
+                post_jobs = _eval_jobs_for_model(client, model_row["id"])
             except Exception as exc:
+                post_jobs = []
                 out.notes.append(f"sandbox_jobs lookup (post-RL) failed: {exc}")
 
-            # Baseline eval = the model's base_model_id's sandbox_jobs.
             base_id = model_row.get("base_model_id")
+            base_jobs: List[Dict[str, Any]] = []
             if base_id:
                 try:
-                    base_eval = _latest_eval_job_for_model(client, base_id)
-                    if base_eval and base_eval.get("hf_traces_link"):
-                        out.baseline_eval = base_eval["hf_traces_link"]
-                        out.notes.append(
-                            f"baseline_eval ← sandbox_jobs[{base_eval['id']}] for base_model_id={base_id}"
-                        )
-                    else:
-                        out.notes.append(f"no sandbox_jobs with hf_traces_link for base_model_id={base_id}")
+                    base_jobs = _eval_jobs_for_model(client, base_id)
                 except Exception as exc:
                     out.notes.append(f"sandbox_jobs lookup (baseline) failed: {exc}")
             else:
                 out.notes.append("models.base_model_id is null; baseline_eval can't be auto-resolved")
+
+            # Resolve a benchmark name → id if the caller passed a name.
+            bench_target = eval_benchmark
+            if bench_target and "-" not in bench_target:
+                try:
+                    resolved_bid = _benchmark_name_to_id(client, bench_target)
+                    if resolved_bid is None:
+                        out.notes.append(f"benchmark name={bench_target!r} not found in benchmarks table")
+                    bench_target = resolved_bid or bench_target
+                except Exception as exc:
+                    out.notes.append(f"benchmark name lookup failed: {exc}")
+
+            pick = _pick_eval_pair(
+                post_jobs, base_jobs,
+                selection=eval_selection,
+                score_key=eval_score_key,
+                benchmark=bench_target,
+            )
+            out.notes.append(f"eval pair selection: {pick['reason']}")
+            post = pick.get("post")
+            base = pick.get("baseline")
+            if post and post.get("hf_traces_link"):
+                out.post_rl_eval = post["hf_traces_link"]
+                out.notes.append(
+                    f"post_rl_eval ← sandbox_jobs[{post['id']}] "
+                    f"(benchmark={(post.get('benchmark_id') or '')[:8]}, "
+                    f"status={post.get('job_status')}, "
+                    f"score={pick.get('post_score')})"
+                )
+            else:
+                out.notes.append("no post-RL eval traces selected")
+            if base and base.get("hf_traces_link"):
+                out.baseline_eval = base["hf_traces_link"]
+                out.notes.append(
+                    f"baseline_eval ← sandbox_jobs[{base['id']}] "
+                    f"(benchmark={(base.get('benchmark_id') or '')[:8]}, "
+                    f"score={pick.get('baseline_score')})"
+                )
+            else:
+                out.notes.append("no baseline eval traces selected")
+            if pick.get("delta") is not None:
+                out.notes.append(f"chosen-pair score delta: {pick['delta']:+.4f}")
 
     # ---- HF training_logs/ snapshot ----
     if fetch_training_logs:

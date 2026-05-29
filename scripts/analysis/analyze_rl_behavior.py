@@ -349,6 +349,36 @@ def parse_args() -> argparse.Namespace:
         help="When --model-repo is set, skip the HF training_logs/ snapshot step",
     )
     parser.add_argument(
+        "--eval-selection",
+        choices=("largest-delta", "largest-abs-delta", "latest", "benchmark"),
+        default="largest-delta",
+        help=(
+            "How auto-resolve picks among multiple eval-jobs: "
+            "'largest-delta' (default — match post/baseline by benchmark, "
+            "pick the pair with the biggest positive score gain — usually "
+            "the most interesting), 'largest-abs-delta' (rank by |delta|, "
+            "catches regressions too), 'latest' (most recent post-RL job), "
+            "or 'benchmark' (pin to --eval-benchmark)."
+        ),
+    )
+    parser.add_argument(
+        "--eval-benchmark",
+        help="Benchmark UUID or name to pin to (used with --eval-selection=benchmark)",
+    )
+    parser.add_argument(
+        "--eval-score-key",
+        help="Which metrics entry to use for score-delta ranking (default: 'accuracy' then a fallback chain)",
+    )
+    parser.add_argument(
+        "--list-evals",
+        action="store_true",
+        help=(
+            "When set with --model-repo, print all available eval pairs "
+            "(matched + post-only + baseline-only) and exit without running "
+            "the pipeline. Useful for choosing --eval-benchmark."
+        ),
+    )
+    parser.add_argument(
         "--post-training-config",
         help="JSON config for post_training_comparison (Base/SFT/RL stages); see that script's docs",
     )
@@ -389,6 +419,39 @@ def run(args: argparse.Namespace) -> int:
     args.output_dir = Path(args.output_dir).expanduser().resolve()
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
+    # --list-evals mode: print the candidate eval pairs and exit.
+    if args.list_evals:
+        if not args.model_repo:
+            print("[orchestrator] --list-evals requires --model-repo", file=sys.stderr)
+            return 2
+        from scripts.analysis.auto_resolve import list_evals_for_model
+        info = list_evals_for_model(
+            rl_traces=args.rl_traces or "",
+            model_repo=args.model_repo,
+            score_key=args.eval_score_key,
+        )
+        if "error" in info:
+            print(f"[orchestrator] {info['error']}", file=sys.stderr)
+            return 2
+        print(f"model_id={info['model_id']}  base_model_id={info.get('base_model_id')}")
+        if info["matched"]:
+            print(f"\nMatched pairs (sorted by delta desc; pass --eval-benchmark <id> to pin):")
+            print(f"  {'benchmark':<38} {'post':>8} {'base':>8} {'delta':>8}")
+            for r in info["matched"]:
+                ps = "—" if r["post_score"] is None else f"{r['post_score']:.4f}"
+                bs = "—" if r["baseline_score"] is None else f"{r['baseline_score']:.4f}"
+                d = "—" if r["delta"] is None else f"{r['delta']:+.4f}"
+                print(f"  {r['benchmark_id']:<38} {ps:>8} {bs:>8} {d:>8}")
+        if info["post_only"]:
+            print(f"\nPost-RL only ({len(info['post_only'])} benchmark(s); no baseline pair):")
+            for r in info["post_only"]:
+                print(f"  {r['benchmark_id']:<38} score={r['post_score']}")
+        if info["baseline_only"]:
+            print(f"\nBaseline only ({len(info['baseline_only'])} benchmark(s); no post-RL pair):")
+            for r in info["baseline_only"]:
+                print(f"  {r['benchmark_id']:<38} score={r['baseline_score']}")
+        return 0
+
     # Autofill from supabase + HF if --model-repo was provided.
     # CLI-set values win on conflict (resolver only fills blanks).
     if args.model_repo:
@@ -402,6 +465,9 @@ def run(args: argparse.Namespace) -> int:
         resolved = _resolve(
             rl_traces=args.rl_traces or "",
             model_repo=args.model_repo,
+            eval_selection=args.eval_selection,
+            eval_benchmark=args.eval_benchmark,
+            eval_score_key=args.eval_score_key,
             fetch_training_logs=not args.no_fetch_training_logs,
         )
         fills = resolved.as_dict()

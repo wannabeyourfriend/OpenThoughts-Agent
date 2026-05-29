@@ -39,11 +39,22 @@ python -m scripts.analysis.analyze_rl_behavior \
 ```
 
 The resolver:
-- `--post-rl-eval`     ← most recent `sandbox_jobs(model_id = <model>).hf_traces_link`
+- `--post-rl-eval` / `--baseline-eval` ← `sandbox_jobs.hf_traces_link` for the model & its base, with **pair selection** controlled by `--eval-selection`:
+  - **`largest-delta`** (default) — collect all `(post, baseline)` pairs matched by `benchmark_id`, compute the score delta with `--eval-score-key` (default `accuracy`), pick the pair with the largest positive delta. Usually the most interesting benchmark to inspect since it's where RL learned the most.
+  - **`largest-abs-delta`** — same but ranked by `|delta|`; catches large regressions too.
+  - **`latest`** — most recent `sandbox_jobs(model_id).ended_at`; baseline matched by benchmark.
+  - **`benchmark`** — pin to `--eval-benchmark <UUID-or-name>` and pick the latest matching job from each side.
 - `--post-rl-eval-ts`  ← `models.training_end`
-- `--baseline-eval`    ← `sandbox_jobs(model_id = base_model_id).hf_traces_link`
 - `--baseline-eval-ts` ← `models.training_start`
 - `--training-log-dir` ← `huggingface_hub.snapshot_download(<model_repo>, allow_patterns=["training_logs/**"])` if the repo has one, else stays unset
+
+Add `--list-evals` to print all available `(post, baseline)` pairs with their score deltas and exit — useful for picking a specific `--eval-benchmark` to pin to:
+
+```
+python -m scripts.analysis.analyze_rl_behavior \
+    --model-repo https://huggingface.co/laion/<your-rl-model> \
+    --output-dir /tmp/probe --list-evals
+```
 
 Explicit CLI values still win on conflict — the resolver only fills blanks. A trace of what was resolved lands at `--output-dir/auto_resolve.json`. Disable the HF training_logs fetch with `--no-fetch-training-logs`.
 
