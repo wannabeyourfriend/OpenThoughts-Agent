@@ -8,6 +8,7 @@ scripts/beam/helm-chart/charts/localstack-0.6.5.tgz
 
 # database bu
 scripts/database/backups
+datasets/
 
 # C extensions
 *.so
