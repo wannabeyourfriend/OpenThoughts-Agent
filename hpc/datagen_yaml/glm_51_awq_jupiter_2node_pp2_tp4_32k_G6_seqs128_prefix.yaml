@@ -5,7 +5,8 @@
 # (seqs 128, batch-tok 8192, gpu_mem 0.80); keeps max_num_seqs 128 and
 # max-num-batched-tokens 8192, and turns prefix caching ON. Prefix
 # caching is default-OFF via the launcher's _DEFAULT_OFF_BOOLEAN_FLAGS;
-# the top-level `enable_prefix_caching: true` key below overrides that.
+# an explicit `--enable-prefix-caching` in extra_args below overrides that
+# (VLLMServerConfig has no top-level enable_prefix_caching field).
 # G-best so far was seqs 128 + batch-tok 8192 (~390 tok/s, KV 36-39%);
 # G6 tests whether prefix-cache reuse on shared system/tool prompts
 # lifts throughput at the same seqs/batch-tok/gpu_mem point.
@@ -66,9 +67,6 @@ vllm_server:
   time_limit: '11:59:00'
   max_model_len: 32768
   max_num_seqs: 128
-  # Prefix caching ON (G6). Overrides the launcher's default-OFF
-  # (_DEFAULT_OFF_BOOLEAN_FLAGS would otherwise inject --no-enable-prefix-caching).
-  enable_prefix_caching: true
   # 2026-05-29: 0.9 -> 0.80 after 537278 (PP=2/TP=4) crashed at 16:01:18 with a
   # CUDA activation-memory OOM in _model_forward (Worker_PP1_TP3_EP3, node 2):
   # malloc wanted 4.19 GiB, only 2.23 GiB free, when the scheduler admitted two
@@ -94,6 +92,12 @@ vllm_server:
   use_flashinfer_sampler: false
   use_flashinfer_moe_fp16: true
   extra_args:
+  # Prefix caching ON (G6). VLLMServerConfig has no enable_prefix_caching
+  # field, so the override must go through extra_args: an explicit
+  # --enable-prefix-caching here suppresses the launcher's default
+  # --no-enable-prefix-caching injection (_DEFAULT_OFF_BOOLEAN_FLAGS,
+  # hpc/vllm_utils.py:209-220).
+  - --enable-prefix-caching
   - --dtype
   - bfloat16
   - --kv-cache-dtype
