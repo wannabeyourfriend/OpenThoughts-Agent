@@ -1,0 +1,53 @@
+# Qwen3.5-122B-A10B-FP8 — v5p-32 Q12: 32k seqs=64 + bf16 KV (control vs Q11).
+#
+# FP8 KV's effect on throughput shifted from +5% (Q4→Q7, seqs=8) to
+# +13% (Q9→Q10, seqs=32). Q11 vs Q12 tests whether this trend keeps
+# growing at the top of the ladder, or whether memory bandwidth on the
+# bf16 KV is no longer the bottleneck once seqs=64 saturates the
+# scheduler.
+#
+# Risk: at seqs=64 bf16 KV × 32k × DP=2 = 4M tokens × 32 KiB ≈ ~8 GB/chip.
+# Still fits inside ~79 GiB but consumes a much bigger fraction.
+
+env_vars:
+  RUNAI_STREAMER_CONCURRENCY: '4'
+  MODEL_IMPL_TYPE: vllm
+  AWS_ENDPOINT_URL: https://storage.googleapis.com
+
+engine:
+  type: vllm_local
+  model: gs://marin-models-us/ot-agent/models/Qwen/Qwen3.5-122B-A10B-FP8/
+  max_output_tokens: 8192
+  healthcheck_interval: 1800
+  vllm_local: {}
+backend:
+  type: ray
+  wait_for_endpoint: true
+vllm_server:
+  model_path: gs://marin-models-us/ot-agent/models/Qwen/Qwen3.5-122B-A10B-FP8/
+  num_replicas: 1
+  tensor_parallel_size: 8
+  pipeline_parallel_size: 1
+  data_parallel_size: 2
+  time_limit: '48:00:00'
+  max_model_len: 32768
+  max_num_seqs: 64
+  gpu_memory_utilization: 0.85
+  enable_expert_parallel: true
+  enable_auto_tool_choice: true
+  tool_call_parser: qwen3_coder
+  reasoning_parser: qwen3
+  trust_remote_code: true
+  extra_args:
+  - --dtype
+  - bfloat16
+  - --load-format
+  - runai_streamer
+  - --block-size
+  - '64'
+  - --max-num-partial-prefills
+  - '1'
+  - --limit-mm-per-prompt
+  - '{"image":0,"video":0}'
+  - --max-num-batched-tokens
+  - '32768'
