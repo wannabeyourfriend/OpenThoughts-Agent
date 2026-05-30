@@ -7,7 +7,10 @@ metadata DB and inspecting the model repo on the HuggingFace Hub:
   --post-rl-eval     ← sandbox_jobs(model_id = <model>).hf_traces_link
   --post-rl-eval-ts  ← models.training_end (post-RL checkpoint mtime)
   --baseline-eval    ← sandbox_jobs(model_id = base_model_id).hf_traces_link
-  --baseline-eval-ts ← models.training_start  (snapshot the RL forked from)
+  --baseline-eval-ts ← <base_model>.training_end (the base model's own
+                       finish time — the actual checkpoint the RL forked
+                       from). Falls back to <base_model>.creation_time,
+                       then to <model>.training_start, then null.
   --training-log-dir ← <model_repo>/training_logs/* if present
                       (downloaded to a local snapshot dir on demand)
 
@@ -93,6 +96,12 @@ def _supabase_client(use_admin: bool = False):
 def _model_by_name(client, name: str) -> Optional[Dict[str, Any]]:
     """Look up a model row by ``name`` (the HF repo id). Returns None if missing."""
     resp = client.table("models").select("*").eq("name", name).limit(1).execute()
+    return resp.data[0] if resp.data else None
+
+
+def _model_by_id(client, model_id: str) -> Optional[Dict[str, Any]]:
+    """Look up a model row by primary-key ``id``. Returns None if missing."""
+    resp = client.table("models").select("*").eq("id", model_id).limit(1).execute()
     return resp.data[0] if resp.data else None
 
 
@@ -437,7 +446,6 @@ def resolve(
         out.notes.append(f"no row in models table with name={model_name!r}")
     else:
         out.post_rl_eval_ts = model_row.get("training_end") or out.post_rl_eval_ts
-        out.baseline_eval_ts = model_row.get("training_start") or out.baseline_eval_ts
         if not out.post_rl_eval_ts:
             out.notes.append("models.training_end is null; post_rl_eval_ts not set")
 
@@ -454,13 +462,43 @@ def resolve(
 
             base_id = model_row.get("base_model_id")
             base_jobs: List[Dict[str, Any]] = []
+            base_row: Optional[Dict[str, Any]] = None
             if base_id:
                 try:
                     base_jobs = _eval_jobs_for_model(client, base_id)
                 except Exception as exc:
                     out.notes.append(f"sandbox_jobs lookup (baseline) failed: {exc}")
+                try:
+                    base_row = _model_by_id(client, base_id)
+                except Exception as exc:
+                    out.notes.append(f"base-model lookup failed: {exc}")
             else:
                 out.notes.append("models.base_model_id is null; baseline_eval can't be auto-resolved")
+
+            # baseline_eval_ts: prefer the BASE model's training_end
+            # (when the snapshot we forked from finished training), then
+            # its creation_time, then fall back to the current model's
+            # training_start. Documented bug in the original resolver was
+            # that we used model_row.training_start, which on this schema
+            # is often set to the post-RL job-end time → identical to
+            # training_end → overlay markers collapsed onto each other.
+            ts_source = None
+            if base_row:
+                if base_row.get("training_end"):
+                    out.baseline_eval_ts = base_row["training_end"]
+                    ts_source = f"base_model[{base_id}].training_end"
+                elif base_row.get("creation_time"):
+                    out.baseline_eval_ts = base_row["creation_time"]
+                    ts_source = f"base_model[{base_id}].creation_time"
+            if not out.baseline_eval_ts:
+                fallback = model_row.get("training_start")
+                if fallback:
+                    out.baseline_eval_ts = fallback
+                    ts_source = "model.training_start (fallback; no base-model row or all base ts are null)"
+            if ts_source:
+                out.notes.append(f"baseline_eval_ts ← {ts_source} = {out.baseline_eval_ts}")
+            else:
+                out.notes.append("baseline_eval_ts unresolved (no base model and no model.training_start)")
 
             # Resolve a benchmark name → id if the caller passed a name.
             bench_target = eval_benchmark
