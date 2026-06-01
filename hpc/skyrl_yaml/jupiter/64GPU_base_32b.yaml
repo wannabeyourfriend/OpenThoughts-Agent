@@ -227,3 +227,15 @@ generator:
 data:
   train_data: []
   val_data: ["open-thoughts/OpenThoughts-TB-dev"]
+
+# K-actor rollout fan-out (default OFF — behavior-identical to today when off).
+# To enable for the smoke test set rollout.fanout.enabled: true (K=4 below).
+# Per-coordinator derived values at K=4 with n_concurrent_trials: 300:
+#   n_concurrent_trials // 4 = 75 per coordinator
+#   connection_pool_maxsize // 4 (only if environment.kwargs sets it; unset here)
+# cpus_per_coordinator: 8 is comfortable on Jupiter's 288-core GH200 nodes.
+rollout:
+  fanout:
+    enabled: false
+    num_coordinators: 4
+    cpus_per_coordinator: 8
