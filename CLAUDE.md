@@ -477,7 +477,7 @@ cd /lus/eagle/projects/CausalAlign/penfever42/code/OpenThoughts-Agent
 
 **Cluster details**: A100 40GB GPUs, 4/node, 560 nodes, PBS Pro scheduler (not SLURM). Internet via proxy (`proxy.alcf.anl.gov:3128`). User: `penfever42`.
 
-**Important**: The OT-Agent repo is `open-thoughts/OpenThoughts-Agent` (NOT `laude-institute`). Harbor is `laude-institute/harbor`.
+**Important**: The OT-Agent repo is `open-thoughts/OpenThoughts-Agent` (NOT `laude-institute`). Harbor's canonical upstream is now `marin-community/harbor`, active branch **`penfever/working`** (PR #1 merged into `marin/main` 2026-06-01; local + Jupiter + Perlmutter all track `marin/penfever/working`). `laude-institute/harbor` remains as the clusters' legacy `origin` mirror only — push active changes to the `marin` remote.
 
 **Package management**: Use `uv pip install` (not bare `pip`) for all installs on Polaris.
 

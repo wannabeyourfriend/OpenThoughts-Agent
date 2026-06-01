@@ -1,0 +1,59 @@
+# Qwen3.5-122B-A10B-FP8 — v5p-32 R4: 131k seqs=16 stack (next R-ladder step).
+#
+# R3 (seqs=8) landed at 500.1 mean / 724.8 peak with +114% over R2 — the
+# 131k ladder is NOT saturated at seqs=8. At long context, each request's
+# KV reads dominate over scheduler overhead, so concurrency keeps paying.
+# R4 tests whether the seqs=16 step continues the +100% per-doubling
+# pattern (~800-1100 expected) or finally knees out.
+#
+# KV budget: 16 × 131k × DP=2 = 4.19M tokens. FP8 KV at ~16 KiB/token
+# distributed across TP=8 chips/replica: 2.1M tokens/replica / 8 chips
+# = 262k tokens/chip × 16 KiB = ~4 GB KV/chip. Plus 15 GB weights/chip
+# = ~19 GB/chip total → comfortable inside 95 GiB/chip.
+#
+# Companion to: R1 (seqs=2), R2 (seqs=4), R3 (seqs=8).
+
+env_vars:
+  RUNAI_STREAMER_CONCURRENCY: '4'
+  MODEL_IMPL_TYPE: vllm
+  AWS_ENDPOINT_URL: https://storage.googleapis.com
+
+engine:
+  type: vllm_local
+  model: gs://marin-models-us/ot-agent/models/Qwen/Qwen3.5-122B-A10B-FP8/
+  max_output_tokens: 8192
+  healthcheck_interval: 1800
+  vllm_local: {}
+backend:
+  type: ray
+  wait_for_endpoint: true
+vllm_server:
+  model_path: gs://marin-models-us/ot-agent/models/Qwen/Qwen3.5-122B-A10B-FP8/
+  num_replicas: 1
+  tensor_parallel_size: 8
+  pipeline_parallel_size: 1
+  data_parallel_size: 2
+  time_limit: '48:00:00'
+  max_model_len: 131072
+  max_num_seqs: 16
+  gpu_memory_utilization: 0.85
+  enable_expert_parallel: true
+  enable_auto_tool_choice: true
+  tool_call_parser: qwen3_coder
+  reasoning_parser: qwen3
+  trust_remote_code: true
+  extra_args:
+  - --dtype
+  - bfloat16
+  - --kv-cache-dtype
+  - fp8
+  - --load-format
+  - runai_streamer
+  - --block-size
+  - '64'
+  - --max-num-partial-prefills
+  - '1'
+  - --limit-mm-per-prompt
+  - '{"image":0,"video":0}'
+  - --max-num-batched-tokens
+  - '16384'

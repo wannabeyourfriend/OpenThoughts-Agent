@@ -31,6 +31,7 @@ from __future__ import annotations
 import argparse
 import json as _json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -93,6 +94,90 @@ def _gcs_bucket_for_region(region: str) -> Optional[str]:
     """
     prefix = _region_prefix(region)
     return _REGION_PREFIX_TO_BUCKET.get(prefix) if prefix else None
+
+
+_GCS_URI_RE = re.compile(r"gs://(marin-models-(?:us|eu))(?:/|$)")
+
+
+def _scan_yaml_for_gcs_paths(yaml_path: Path) -> List[tuple]:
+    """Return ``[(field_dotted_path, gcs_uri, bucket), ...]`` for every gs://marin-models-{us,eu}/...
+    string in the YAML at ``yaml_path``.
+
+    Walks the parsed YAML recursively. ``field_dotted_path`` is the
+    dotted location ('vllm_server.model_path', 'engine.model', etc.) for
+    error messages. ``bucket`` is the matched bucket name (the part used
+    for region-fit checks). Returns [] if the file isn't readable or
+    isn't valid YAML.
+    """
+    try:
+        import yaml  # PyYAML is already a project dep
+    except ImportError:
+        return []
+    try:
+        text = yaml_path.read_text(encoding="utf-8")
+        doc = yaml.safe_load(text)
+    except (OSError, yaml.YAMLError):
+        return []
+
+    matches: List[tuple] = []
+
+    def walk(node, prefix):
+        if isinstance(node, dict):
+            for k, v in node.items():
+                walk(v, f"{prefix}.{k}" if prefix else str(k))
+        elif isinstance(node, list):
+            for i, v in enumerate(node):
+                walk(v, f"{prefix}[{i}]")
+        elif isinstance(node, str):
+            m = _GCS_URI_RE.search(node)
+            if m:
+                matches.append((prefix, node, m.group(1)))
+
+    walk(doc, "")
+    return matches
+
+
+def assert_yaml_regions_match_pin(yaml_paths: List[Path], pinned_region: str) -> None:
+    """Fail-fast when any YAML hardcodes a GCS bucket in the wrong region.
+
+    Iris pins the job to ``pinned_region`` at submit time. If a YAML
+    points at ``gs://marin-models-us/...`` and the worker will live in
+    ``europe-west4``, every model-weight read crosses continents at GCS
+    egress prices. We refuse to submit in that case and tell the user
+    which path is wrong + which bucket to use.
+
+    The launcher already pins the *output* bucket automatically; weight
+    paths inside config YAMLs are advisory (we don't auto-rewrite them
+    on purpose — silent rewrites mask which mirror is canonical and have
+    failed before when the EU mirror was incomplete). The contract is:
+    keep your YAML's bucket consistent with the variant's natural
+    region, or run with ``--gcs-output-dir`` explicitly to opt out of
+    the region pin entirely.
+    """
+    expected_bucket = _gcs_bucket_for_region(pinned_region)
+    if not expected_bucket:
+        return  # Unmapped region (e.g. asia-*); can't validate.
+    expected_bucket_name = expected_bucket.removeprefix("gs://")  # "marin-models-us"
+    violations: List[str] = []
+    for path in yaml_paths:
+        if not path or not Path(path).is_file():
+            continue
+        for field, uri, bucket in _scan_yaml_for_gcs_paths(Path(path)):
+            if bucket != expected_bucket_name:
+                violations.append(
+                    f"  {path}: {field} = {uri!r}\n"
+                    f"    bucket {bucket!r} but iris pinned region {pinned_region} "
+                    f"expects {expected_bucket_name!r}"
+                )
+    if violations:
+        raise SystemExit(
+            "[iris] YAML model paths point at the wrong region for the iris-pinned "
+            f"worker (region={pinned_region}, expected bucket={expected_bucket_name}). "
+            "Cross-region GCS reads are expensive; refusing to submit.\n\n"
+            + "\n".join(violations)
+            + f"\n\nFix: swap the bucket in the YAML to {expected_bucket!r}, or "
+            "pass --gcs-output-dir explicitly to opt out of the region pin."
+        )
 
 
 def _iris_query(cluster_config: str, sql: str, timeout: int = 30) -> List[dict]:
@@ -477,6 +562,22 @@ class IrisLauncher:
                         f"(bucket {bucket}). Capacity: {summary or 'none reported'}.",
                         flush=True,
                     )
+
+        # Fail-fast on cross-region YAML model paths. Iris just pinned the
+        # job to a region; if a YAML hardcodes a GCS bucket in the wrong
+        # continent (e.g. model_path=gs://marin-models-us/... but pinned
+        # region=europe-west4), every weight read would cross continents.
+        # We don't auto-rewrite — that masks broken mirrors. We refuse to
+        # submit and tell the user exactly which field is wrong.
+        if args._pinned_region:
+            yaml_attrs = ("datagen_config", "harbor_config", "eval_config",
+                          "config", "harbor_yaml")
+            yaml_paths = [
+                Path(getattr(args, attr))
+                for attr in yaml_attrs
+                if getattr(args, attr, None)
+            ]
+            assert_yaml_regions_match_pin(yaml_paths, args._pinned_region)
 
         # --resume-from: look up a previously-submitted job and route the
         # new task's harbor command at the old GCS path. The iris-level
