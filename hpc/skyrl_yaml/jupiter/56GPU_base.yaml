@@ -168,11 +168,16 @@ trainer:
     advantage_estimator: rloo_n
     use_kl_loss: false
     kl_loss_coef: 0.0
+    # Anti-collapse defenses (added 2026-06-02): 2/4 a3 chains (unitsyn 537263,
+    # ghactions 537288) collapsed to exhaustion (entropy -> ~0.007, reward -> ~0,
+    # zero gradient) on the prior no-entropy-reg config. Mirror the validated
+    # 24GPU_shaped_entropy_maxgn09 anti-collapse set: an entropy bonus maintains
+    # exploration pressure, and eps_clip_high tightened 0.05 -> 0.01 caps the
+    # trust-region updates that amplify a collapse once it starts.
+    use_entropy_loss: true
+    entropy_loss_coef: 0.02
     eps_clip_low: 0.2
-    # eps_clip_high=0.05 mirrors 24GPU_base — midpoint between 0.2 default and
-    # 0.01 tight. Engages on collapse-onset ratios without over-clamping
-    # healthy updates. Asymmetric — only tightening upper bound.
-    eps_clip_high: 0.05
+    eps_clip_high: 0.01
     loss_reduction: token_mean
 
   # Training loop settings
