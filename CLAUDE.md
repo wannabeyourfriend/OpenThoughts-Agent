@@ -1416,10 +1416,22 @@ After an RL job terminates (early or completed), follow these steps to preserve 
    # `ModuleNotFoundError: google.cloud.storage`. Same applies to step 9's
    # `parse_skyrl_metrics.py` (needs matplotlib). Both trapped on the
    # 2026-05-26 nl2bash + curriculum-easy cleanups.
+   #
+   # ALWAYS pass --skip_register for RL: RL trace datasets are NOT
+   # Supabase-registered (the RL *model* is registered separately in step 7);
+   # only datagen registers its trace dataset (so datagen step 3 OMITS this
+   # flag). --skip_register controls Supabase registration only.
+   # (Historical note: in the pre-streaming code the no-flag path also routed
+   # the upload through data.commons.upload_traces_to_hf's git-LFS commit,
+   # which ballooned to ~150 GB anon-rss and OOM-cgroup-killed 3 a3-winner
+   # uploads on 2026-06-05. The streaming re-implementation decouples upload
+   # from registration — the upload is memory-safe on BOTH paths now — so the
+   # flag is purely the register toggle; keep passing it for RL.)
    python -m scripts.harbor.make_and_upload_trace_dataset \
      --job_dir "$EXPERIMENTS_DIR/<job_name>/<job_name>" \
      --repo_id penfever/<job_name> \
-     --episodes last
+     --episodes last \
+     --skip_register
    ```
 
    **After upload completes, add a link to the trace dataset in the model
