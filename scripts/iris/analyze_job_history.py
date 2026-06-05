@@ -507,9 +507,19 @@ def list_trial_trajectories(job_name: str) -> list[TrialStatus]:
     """
     root = f"{GCS_ROOT}/{job_name}/{job_name}"
 
-    # (a) all trial dirs
+    # (a) all trial dirs. Tolerate the dir not existing — that happens when
+    # the job has never reached SERVING + harbor never wrote a single trial
+    # (e.g., preempt-storm before first compile finishes). Treat as zero
+    # trials.
     cmd = ["gsutil", "ls", f"{root}/"]
-    proc = subprocess.run(cmd, capture_output=True, text=True, check=True)
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        if "matched no objects" in (proc.stderr or "").lower():
+            return []
+        # Any other gsutil failure (auth, network) — surface it.
+        raise subprocess.CalledProcessError(
+            proc.returncode, cmd, output=proc.stdout, stderr=proc.stderr
+        )
     trial_dirs: list[str] = []
     for line in proc.stdout.splitlines():
         line = line.strip()

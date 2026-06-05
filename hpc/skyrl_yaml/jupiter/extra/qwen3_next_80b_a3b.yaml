@@ -1,0 +1,372 @@
+# =============================================================================
+# Qwen3-Next-80B-A3B-Instruct — RL config for Jupiter (GH200 96GB, 4 GPU/node)
+# =============================================================================
+# Target: Qwen/Qwen3-Next-80B-A3B-Instruct
+#   80B total / ~3B activated params. Hybrid arch: 48 layers laid out as
+#   12 × [ 3×(Gated DeltaNet → MoE) + 1×(Gated Attention → MoE) ]
+#     → 36 Gated-DeltaNet (linear-attention) layers + 12 full-attention layers.
+#   MoE: 512 experts, top-10 routing, moe_intermediate_size=512, 1 shared expert.
+#   hidden_size=2048, head_dim=256, 16 attn heads / 2 KV heads (GQA),
+#   native context 262144 (YaRN-extendable to ~1M), rope_theta=1e7,
+#   partial_rotary_factor=0.25, vocab=151936, bf16.
+#
+# Scaled up from jupiter/56GPU_base.yaml (Qwen3-8B production a3 template).
+# Launch via the standard path:
+#
+#   python -m hpc.launch \
+#     --job_type rl \
+#     --rl_config ./hpc/skyrl_yaml/jupiter/extra/qwen3_next_80b_a3b.yaml \
+#     --model_path Qwen/Qwen3-Next-80B-A3B-Instruct \
+#     --num_nodes 16 \
+#     --train_data '["DCAgent/<dataset>"]' \
+#     --max_restarts 8 \
+#     --time_limit 11:59:00 \
+#     --experiments_dir /e/data1/datasets/playground/ot-baf
+#
+# *** READ qwen3_next_80b_a3b.NOTES.md BEFORE LAUNCHING. ***
+# The Qwen3-Next architecture (Gated DeltaNet linear-attention + 512-expert MoE)
+# is the single biggest risk: it requires vLLM>=0.10.2 (SkyRL pins 0.11.0 — OK)
+# AND transformers>=4.57.0 in BOTH the RL training venv and the vLLM engine
+# (FSDP loads the policy via AutoConfig/AutoModel(trust_remote_code=True)).
+# Confirm the cluster `envs/rl` venv satisfies these before the first launch.
+#
+# -----------------------------------------------------------------------------
+# GPU / NODE SIZING (16 nodes × 4 GH200 = 64 GPUs)  [colocate_all: false]
+# -----------------------------------------------------------------------------
+# Generation (vLLM):  8 engines × TP=4            = 32 GPUs  =  8 nodes
+# Policy/Ref FSDP  :  8 nodes × 4 (shared shard)  = 32 GPUs  =  8 nodes
+#                                                   --------   --------
+#                                          TOTAL =  64 GPUs   16 nodes
+#
+# FSDP memory arithmetic (why 32 policy GPUs, not 8):
+#   bf16 weights        : 80e9 × 2 B            = 160 GB
+#   fp32 grads          : 80e9 × 4 B            = 320 GB   (FSDP2 keeps grads)
+#   Adam m,v (fp32)     : 80e9 × 8 B            = 640 GB
+#   fp32 master copy    : 80e9 × 4 B            = 320 GB
+#                                          TOTAL ≈ 1440 GB of sharded state.
+#   Sharded over 32 GPUs → ~45 GB/GPU of persistent state. GH200 usable is
+#   ~85-90 GB after CUDA/NCCL/system reserve, leaving ~40 GB for activations.
+#   With cpu_offload: true the params+optimizer live in the GH200 node's
+#   coherent LPDDR (480 GB/node, NVLink-C2C to the Hopper die) and only the
+#   active FSDP shard + activations sit in HBM — this is what makes 32k-context
+#   training of an 80B model fit comfortably. cpu_offload is REQUIRED here.
+#   (At 8 GPUs the 1440 GB → 180 GB/GPU even offloaded the per-rank working
+#    set + activation peaks are too tight; 32 GPUs gives real headroom and
+#    cuts step time. fsdp_size: 32 shards across the full policy world.)
+#
+# vLLM memory (per TP=4 engine, 4 GPUs):
+#   80 GB bf16 weights / 4 = 20 GB/GPU for weights. At gpu_memory_utilization
+#   0.75 on 94 GB that leaves ~50 GB/GPU for KV cache + GDN conv/recurrent
+#   state. The Gated-DeltaNet layers use small fixed-size recurrent state
+#   (not a growing KV cache), so only the 12 full-attention layers consume
+#   length-scaling KV — KV pressure is far lower than a 48-layer dense model,
+#   which is why max_model_len=32768 is very safe at TP=4.
+# =============================================================================
+
+entrypoint: examples.terminal_bench.entrypoints.main_tbench
+
+# Hydra config groups (+ prefix in CLI)
+config_groups:
+  terminal_bench_config: terminal_bench
+
+# Terminal bench / agentic environment settings
+terminal_bench:
+  # trials_dir: Directory for Harbor trial artifacts (derived from experiments_dir if null)
+  trials_dir: null
+
+  # Harbor configuration - schema-driven mapping to TrialConfig
+  harbor:
+    # Agent settings
+    name: terminus-2
+    max_episodes: 999999
+    enable_summarize: false
+    store_all_messages: true
+    trajectory_config:
+      raw_content: true
+    enable_episode_logging: false
+    record_terminal_session: false
+    enable_pane_logging: false
+
+    # Strict JSON parser
+    strict_json_parser: true
+
+    # Interleaved Thinking Settings
+    interleaved_thinking: true
+    extra_body:
+      chat_template_kwargs:
+        enable_thinking: true
+    # 900s agent timeout — inherited from 56GPU_base. Boundary-hugging a3
+    # datasets otherwise wait ~1800s on the slowest sample and the generation
+    # buffer never fills. AgentTimeoutError stays PASSTHROUGH (partial
+    # trajectory + reward is meaningful signal).
+    override_timeout_sec: 900
+
+    # Environment settings
+    override_cpus: 1
+    override_memory_mb: 2048
+    override_storage_mb: 2048
+
+    # AUTO SNAPSHOT: hash-based snapshot caching to reduce Daytona rate limits.
+    auto_snapshot: true
+
+    # Verifier settings
+    verifier_override_timeout_sec: 120
+
+    # Retry settings
+    max_retries: 3
+    min_wait_sec: 60.0
+    max_wait_sec: 600.0
+    wait_multiplier: 2.0
+
+    exclude_exceptions:
+      - VerifierTimeoutError
+      - VerifierRuntimeError
+      - RewardFileNotFoundError
+      - RewardFileEmptyError
+      - VerifierOutputParseError
+
+    # 384 concurrent trials. Lower than 56GPU_base's 675 because there are
+    # only 8 inference engines here (vs 48), so the achievable in-flight
+    # generation parallelism is much lower — over-subscribing Daytona just
+    # piles resident trial state in the driver (the host-memory OOM failure
+    # mode documented in 56GPU_base). 384 ≈ 48 trials/engine, comfortable.
+    n_concurrent_trials: 384
+
+    # Logging settings
+    log_level: INFO
+
+    # Reward shaping (disabled - binary rewards)
+    enable_reward_shaping: false
+
+    # RLOO-N error classification (mirrors 56GPU_base production settings)
+    enable_error_classification: true
+    mask_exceptions:
+      - DaytonaError
+      - EnvironmentStartTimeoutError
+      - NetworkError
+      - ConnectionError
+      - RewardFileNotFoundError
+      - RewardFileEmptyError
+      - AgentEnvironmentTimeoutError
+      - ContextLengthExceededError
+    default_error_treatment: zero
+    passthrough_exceptions:
+      - AgentTimeoutError
+    zero_exceptions: []
+
+  # Model info for Harbor's hosted_vllm validation.
+  # 768-token buffer below max_model_len=32768 (matches 56GPU_base): harbor's
+  # litellm token counter runs ~+2 above vLLM's BPE on near-budget prompts, so
+  # a 32767-capped prompt can tokenize to 32769 at the engine and trip the
+  # retry-storm → FD-exhaustion → SIGABRT path. 32000 truncates first.
+  model_info:
+    max_input_tokens: 32000
+    max_output_tokens: 4096
+
+  archiving:
+    enabled: false
+
+  # Post-training trace upload to HuggingFace
+  trace_upload:
+    enabled: true
+    repo_org: DCAgent
+    episodes: last
+    dataset_type: SFT
+    cleanup: true
+
+# =============================================================================
+# Trainer configuration
+# =============================================================================
+trainer:
+  strategy: fsdp2
+  algorithm:
+    advantage_estimator: rloo_n
+    use_kl_loss: false
+    kl_loss_coef: 0.0
+    eps_clip_low: 0.2
+    eps_clip_high: 0.05
+    loss_reduction: token_mean
+
+  # Training loop settings
+  epochs: 2
+  max_steps: 60
+  update_epochs_per_batch: 1
+
+  # Batch sizes — kept at the production 64 (train == mini). With only 3B
+  # active params per token the gradient is cheap; the bottleneck is the
+  # 80B sharded weight all-gather per microbatch, not batch size.
+  train_batch_size: 64
+  policy_mini_batch_size: 64
+  eval_batch_size: 64
+
+  # Micro batch sizes — 1/1. The all-gather of the full 80B shard dominates
+  # the forward/backward, and the MoE expert FFNs are memory-spiky, so we keep
+  # the per-GPU microbatch at 1 (both forward and train) like the 32B configs.
+  micro_forward_batch_size_per_gpu: 1
+  micro_train_batch_size_per_gpu: 1
+
+  max_prompt_length: 999999
+
+  # Evaluation and checkpointing
+  eval_interval: 999999
+  eval_before_train: false
+  # ckpt every step — 80B checkpoints are huge and resume cost is high; saving
+  # every step makes chain-restart auto-resume lose at most one step of work.
+  ckpt_interval: 1
+  resume_mode: latest
+  hf_save_interval: 5
+  hf_hub_repo_id: null
+  hf_hub_private: false
+  hf_hub_revision: main
+
+  enable_db_registration: false
+
+  # Logging
+  project_name: OpenThoughts-Agent
+  log_level: INFO
+  tracker_commit_each_step: true
+  logger: console
+
+  # Paths
+  run_name: null
+  ckpt_path: null
+  export_path: null
+
+  # Policy optimizer.
+  # lr 6e-6 — scaled DOWN from the 8e-6 used for Qwen3-8B. Larger models are
+  # more sensitive to per-step update magnitude; for an 80B MoE with only 3B
+  # active params per token the effective per-expert update is sparse and
+  # spiky, so a slightly smaller LR reduces collapse risk. Tune up later if
+  # grad_norm/log-ratio diagnostics show headroom (healthy ‖g‖ < 1.0).
+  # max_grad_norm 0.9 — same collapse guardrail as 56GPU_base.
+  policy:
+    optimizer_config:
+      lr: 6e-6
+      weight_decay: 0.0
+      adam_betas: [0.9, 0.999]
+      max_grad_norm: 0.9
+    fsdp_config:
+      # REQUIRED: offload params + optimizer to the GH200 node's coherent
+      # LPDDR. Without this the 80B optimizer state will not fit even across
+      # 32 GPUs alongside 32k-context activations. See header arithmetic.
+      cpu_offload: true
+      reshard_after_forward: true
+      # Shard across the full 32-GPU policy world (8 nodes × 4) rather than
+      # the 4-GPU intra-node group used for 8B/32B. An 80B model needs the
+      # wider shard to keep per-GPU resident state low.
+      fsdp_size: 32
+  ref:
+    fsdp_config:
+      cpu_offload: true
+      reshard_after_forward: true
+      fsdp_size: 32
+
+  # Model placement (async training).
+  # Policy and ref SHARE the same 8 nodes / 32 GPUs (they are FSDP-sharded and
+  # time-share the devices, exactly like 56GPU_base shares 2 nodes for 8B).
+  # The 8 generation nodes are allocated separately for the vLLM engines.
+  # NOTE: these hardcoded values OVERRIDE the launcher's num_nodes-based
+  # derivation (rl_config_utils derives placement only when the YAML leaves
+  # it null). So --num_nodes 16 must still be passed for the SLURM allocation,
+  # but the policy/ref footprint is fixed here at 8 nodes.
+  placement:
+    colocate_all: false
+    policy_num_nodes: 8
+    ref_num_nodes: 8
+    policy_num_gpus_per_node: 4
+    ref_num_gpus_per_node: 4
+
+  # Fully async generation.
+  fully_async:
+    max_staleness_steps: 16
+    # ~1/2 of n_concurrent_trials (384), matching the 56GPU_base ratio.
+    # With fewer/larger engines the realistic in-flight worker count is lower
+    # than the 8B config; 192 keeps the trainer fed without over-spawning.
+    num_parallel_generation_workers: 192
+
+# =============================================================================
+# Generator configuration (vLLM)
+# =============================================================================
+generator:
+  backend: vllm
+  timeout_multiplier: 1.0
+  model_dtype: bfloat16
+
+  # TP=4 per engine — the Qwen3-Next model-card recommendation
+  # (`--tensor-parallel-size 4`). Divides 16 attn heads (4/GPU), the 512
+  # experts (128/GPU), and the GDN linear heads cleanly. 8 engines × TP=4 = 32
+  # GPUs = 8 generation nodes.
+  inference_engine_tensor_parallel_size: 4
+  num_inference_engines: 8
+
+  # Expert parallelism: leave at the default (1). With TP=4 the 512 experts are
+  # already sharded 128/GPU, which is plenty for a 3B-active MoE at this engine
+  # count. SkyRL wires EP via `enable_expert_parallel = ep_size > 1` straight
+  # into vLLM, so EP can be enabled later by setting
+  # `generator.inference_engine_expert_parallel_size: 4` if expert-routing load
+  # imbalance becomes the bottleneck — but EP+TP interaction on the Qwen3-Next
+  # MoE in vLLM 0.11 is UNVALIDATED here, so we start with plain TP.
+  inference_engine_expert_parallel_size: 1
+
+  n_samples_per_prompt: 8
+  eval_n_samples_per_prompt: 8
+
+  # 0.75 — Jupiter-standard, consistent with 56GPU_base. The hybrid arch's
+  # linear-attention layers keep KV pressure low (only 12/48 layers grow KV
+  # with length), so 0.75 is conservative and safe at 32k. Bump to 0.85 only
+  # if KV-cache eviction shows up in vllm_stats.
+  gpu_memory_utilization: 0.75
+
+  max_num_seqs: 24
+  max_num_batched_tokens: 65536
+
+  enable_prefix_caching: true
+  enable_chunked_prefill: true
+
+  run_engines_locally: true
+  weight_sync_backend: nccl
+  async_engine: true
+  batched: false
+  enable_http_endpoint: true
+  enable_ray_prometheus_stats: false
+  vllm_stats_interval: 1
+  append_eos_token_after_stop_str_in_multi_turn: true
+  max_turns: 999999
+
+  sampling_params:
+    # 4096 — matches the 56GPU_base production generation budget. Raise to
+    # 8192/16384 if the task distribution needs longer single-turn outputs.
+    max_generate_length: 4096
+    temperature: 0.7
+    top_p: 0.95
+    top_k: 20
+
+  engine_init_kwargs:
+    # 32768 — well within the model's native 262144 context. We do NOT enable
+    # YaRN: the native 256k already exceeds anything our 32k-budget a3 tasks
+    # need, and YaRN would only add rope-scaling risk for no benefit. If a
+    # 131k variant is ever wanted, set max_model_len up to 262144 directly
+    # (no rope_scaling needed below native length).
+    max_model_len: 32768
+    # NOTE: Qwen3-Next ships its OWN chat template with native thinking support
+    # (it is a "thinking-by-default" Instruct model). The qwen3_thinking_acc
+    # jinja2 used for Qwen3-8B is NOT guaranteed compatible with the Qwen3-Next
+    # template's tool-call / thinking block format. Start WITHOUT the custom
+    # template (use the model's bundled one) and only add a custom path after
+    # confirming interleaved-thinking history is preserved correctly.
+    # custom_chat_template_chat_completion_path: chat_templates/qwen3_thinking_acc.jinja2
+
+# Data paths
+data:
+  train_data: []
+  val_data: []
+
+# K-actor rollout fan-out — ON (matches current SkyRL default; breaks the
+# single-event-loop GIL ceiling). cpus_per_coordinator: 8 is comfortable on
+# Jupiter's GH200 nodes. The libuv asyncio-policy fix is already in the
+# coordinator __init__ (SkyRL 2ab513a6), so no extra handling is needed.
+rollout:
+  fanout:
+    enabled: true
+    num_coordinators: 4
+    cpus_per_coordinator: 8

@@ -1,0 +1,347 @@
+# =============================================================================
+# 56GPU_megatron_mvp.yaml  —  UNTESTED MVP: Megatron backend variant of
+#                            jupiter/56GPU_base.yaml
+# =============================================================================
+# *** THIS CONFIG HAS NEVER BEEN LAUNCHED. IT IS A DESIGN ARTIFACT. ***
+#
+# Purpose: demonstrate the minimum set of YAML changes needed to drive the
+# SkyRL **Megatron** training backend (TP/PP/CP/EP/ETP 5D parallelism) instead
+# of the FSDP2 backend that 56GPU_base.yaml uses. It is shaped to be launchable
+# but is intentionally conservative and is NOT validated on Jupiter.
+#
+# It is derived line-for-line from jupiter/56GPU_base.yaml; ONLY the fields
+# required to switch the backend and add Megatron knobs were changed. Everything
+# in the `terminal_bench:` / Harbor / generator sections below is copied
+# verbatim from 56GPU_base.yaml and is NOT Megatron-specific.
+#
+# -----------------------------------------------------------------------------
+# WHAT WAS CHANGED vs 56GPU_base.yaml (and why)
+# -----------------------------------------------------------------------------
+#   1. trainer.strategy: fsdp2  ->  megatron
+#        Selects the Megatron worker. Dispatch happens in SkyRL at
+#        skyrl_train/entrypoints/main_base.py:364-365 and
+#        skyrl_train/utils/utils.py:104 — `strategy == "megatron"` loads
+#        skyrl_train/workers/megatron/megatron_worker.py.
+#
+#   2. trainer.policy.fsdp_config / trainer.ref.fsdp_config
+#        REMOVED (the megatron worker ignores them) and REPLACED with
+#        trainer.policy.megatron_config / trainer.ref.megatron_config.
+#        These map to the Hydra group `megatron_config@trainer.policy...`
+#        (ppo_base_config.yaml:6-7) whose defaults live in
+#        skyrl_train/config/megatron_config/{policy,ref}.yaml.
+#
+#   3. Added Megatron 5D-parallel sizes (TP/PP/CP/EP/ETP). Mirrors the
+#        UPSTREAM, KNOWN-GOOD Qwen3-30B-A3B MoE example
+#        (examples/megatron/run_megatron_qwen3-30b-a3b.sh): TP=2, PP=2, EP=8
+#        on 4x8 H100. We START with a Qwen3-8B-friendly DENSE setting here
+#        (TP=2, PP=1, CP=1, EP=1) because 56GPU_base trains the 8B DENSE model
+#        and there are no experts to shard. See the MoE note at the bottom for
+#        the 80B-A3B EP variant.
+#
+#   4. Added (commented-out) MoE router load-balancing knobs under
+#        transformer_config_kwargs — moe_router_load_balancing_type and
+#        moe_aux_loss_coeff. These are pass-throughs to Megatron's
+#        TransformerConfig (see megatron_config/policy.yaml header comment and
+#        megatron_worker.py:225 `for k,v in transformer_config_kwargs.items()`).
+#        They are LEFT COMMENTED because the dense 8B base has no router; they
+#        become load-bearing only for the MoE variant.
+#
+#   5. trainer.flash_attn / trainer.use_sample_packing: added (the upstream
+#        Megatron examples set these; FSDP path does not require them as
+#        top-level trainer flags). flash_attn requires flash-attn<=2.7.4.post1
+#        with the mcore extra (docs/examples/megatron.rst).
+#
+#   6. generator section: UNCHANGED. Megatron only changes the *training*
+#        backend; generation is still vLLM. Note docs/examples/megatron.rst:
+#        "currently only vllm is supported for megatron".
+#
+# -----------------------------------------------------------------------------
+# OPEN UNKNOWNS / RISKS (why this is an MVP, not a production config)
+# -----------------------------------------------------------------------------
+#   * REQUIRES the Megatron Docker image / `mcore` extra. The Jupiter `envs/rl`
+#     venv is FSDP-only; Megatron-Core + TransformerEngine + the AutoBridge
+#     (`AutoBridge.from_hf_pretrained`, megatron_worker.py:211) are NOT known to
+#     be installed there. This is the single biggest blocker — see checklist.
+#   * placement.colocate_all: 56GPU_base uses false (disaggregated policy/gen).
+#     The upstream Megatron examples use colocate_all=true. Disaggregated
+#     Megatron weight-sync over NCCL is wired (bucketed sync PRs #1324/#1345)
+#     but UNVALIDATED on our fork's penfever/working HEAD for this layout.
+#   * GH200 aarch64 + CUDA 13: the novaskyai megatron Docker image targets
+#     cu12.8 x86. TransformerEngine + Megatron-Core on aarch64/cu13 is unproven.
+#   * No MoE here (8B dense). The EP knobs are inert; this config does NOT
+#     exercise expert parallelism. For the real MoE pre-flight, the
+#     Qwen3-Next-80B-A3B EP variant is what matters (sketched at bottom).
+#   * micro batch sizes / recompute settings are copied from the dense FSDP
+#     config and the upstream example; not memory-profiled for Megatron on GH200.
+# =============================================================================
+
+entrypoint: examples.terminal_bench.entrypoints.main_tbench
+
+config_groups:
+  terminal_bench_config: terminal_bench
+
+# -----------------------------------------------------------------------------
+# Harbor / terminal-bench environment — COPIED VERBATIM from 56GPU_base.yaml.
+# None of this is Megatron-specific.
+# -----------------------------------------------------------------------------
+terminal_bench:
+  trials_dir: null
+  harbor:
+    name: terminus-2
+    max_episodes: 999999
+    enable_summarize: false
+    store_all_messages: true
+    trajectory_config:
+      raw_content: true
+    enable_episode_logging: false
+    record_terminal_session: false
+    enable_pane_logging: false
+    strict_json_parser: true
+    interleaved_thinking: true
+    extra_body:
+      chat_template_kwargs:
+        enable_thinking: true
+    override_timeout_sec: 900
+    override_cpus: 1
+    override_memory_mb: 2048
+    override_storage_mb: 2048
+    auto_snapshot: true
+    verifier_override_timeout_sec: 120
+    max_retries: 3
+    min_wait_sec: 60.0
+    max_wait_sec: 600.0
+    wait_multiplier: 2.0
+    exclude_exceptions:
+      - VerifierTimeoutError
+      - VerifierRuntimeError
+      - RewardFileNotFoundError
+      - RewardFileEmptyError
+      - VerifierOutputParseError
+    n_concurrent_trials: 675
+    log_level: INFO
+    enable_reward_shaping: false
+    enable_error_classification: true
+    mask_exceptions:
+      - DaytonaError
+      - EnvironmentStartTimeoutError
+      - NetworkError
+      - ConnectionError
+      - RewardFileNotFoundError
+      - RewardFileEmptyError
+      - AgentEnvironmentTimeoutError
+      - ContextLengthExceededError
+    default_error_treatment: zero
+    passthrough_exceptions:
+      - AgentTimeoutError
+    zero_exceptions: []
+  model_info:
+    max_input_tokens: 32000
+    max_output_tokens: 4096
+  archiving:
+    enabled: false
+  trace_upload:
+    enabled: true
+    repo_org: DCAgent
+    episodes: last
+    dataset_type: SFT
+    cleanup: true
+
+# =============================================================================
+# Trainer configuration  —  MEGATRON BACKEND
+# =============================================================================
+trainer:
+  # CHANGED: fsdp2 -> megatron. This is the backend switch.
+  strategy: megatron
+
+  # ADDED: the upstream Megatron examples set these as top-level trainer flags.
+  # flash_attn requires flash-attn<=2.7.4.post1 (TransformerEngine 2.7.0 compat,
+  # docs/examples/megatron.rst). sample packing matches run_megatron_*.sh.
+  flash_attn: true
+  use_sample_packing: true
+  gradient_checkpointing: true
+
+  algorithm:
+    advantage_estimator: rloo_n
+    use_kl_loss: false
+    kl_loss_coef: 0.0
+    eps_clip_low: 0.2
+    eps_clip_high: 0.05
+    loss_reduction: token_mean
+
+  epochs: 2
+  max_steps: 80
+  update_epochs_per_batch: 1
+
+  train_batch_size: 64
+  policy_mini_batch_size: 64
+  eval_batch_size: 64
+
+  micro_forward_batch_size_per_gpu: 4
+  micro_train_batch_size_per_gpu: 1
+
+  max_prompt_length: 999999
+
+  eval_interval: 999999
+  eval_before_train: false
+  ckpt_interval: 2
+  resume_mode: latest
+  hf_save_interval: 5
+  hf_hub_repo_id: null
+  hf_hub_private: false
+  hf_hub_revision: main
+  enable_db_registration: false
+
+  project_name: OpenThoughts-Agent
+  log_level: INFO
+  tracker_commit_each_step: true
+  logger: console
+
+  run_name: null
+  ckpt_path: null
+  export_path: null
+
+  # ---------------------------------------------------------------------------
+  # Policy — MEGATRON config (CHANGED from fsdp_config).
+  # The optimizer_config block is identical to 56GPU_base. The fsdp_config block
+  # was REMOVED and replaced by megatron_config (Hydra group default:
+  # skyrl_train/config/megatron_config/policy.yaml).
+  # ---------------------------------------------------------------------------
+  policy:
+    optimizer_config:
+      lr: 8e-6
+      weight_decay: 0.0
+      adam_betas: [0.9, 0.999]
+      max_grad_norm: 0.9
+    megatron_config:
+      # 5D parallel sizes. DENSE 8B starting point (mirrors the small-model
+      # path of the upstream examples). TP=2 keeps per-GPU weight modest;
+      # PP/CP/EP/ETP=1 because 8B dense has no experts to shard and 32k context
+      # at TP=2 does not need CP here.
+      tensor_model_parallel_size: 2
+      pipeline_model_parallel_size: 1
+      context_parallel_size: 1
+      expert_model_parallel_size: 1          # 1 = no EP (dense model)
+      expert_tensor_parallel_size: null
+      ddp_config:
+        grad_reduce_in_fp32: true
+        overlap_grad_reduce: false
+        overlap_param_gather: false
+        average_in_collective: true
+      optimizer_config_kwargs:
+        overlap_cpu_optimizer_d2h_h2d: false
+        use_precision_aware_optimizer: false
+        optimizer_cpu_offload: false
+        optimizer_offload_fraction: 0.0
+      transformer_config_kwargs:
+        recompute_granularity: full
+        recompute_modules: ["core_attn"]
+        recompute_method: uniform
+        recompute_num_layers: 1
+        # ---- MoE ROUTER LOAD BALANCING (inert for dense 8B; uncomment for MoE) ----
+        # These are pass-throughs to Megatron's TransformerConfig and are the
+        # ONLY place an aux/load-balancing loss enters the SkyRL Megatron path
+        # (SkyRL's PPO loss adds no aux term itself — see preflight checklist
+        # Area 2). For an MoE policy, set:
+        #   moe_router_load_balancing_type: aux_loss   # or "seq_aux_loss" / "none"
+        #   moe_aux_loss_coeff: 0.001                  # ROLL/Qwen Megatron use ~0.001-0.01
+        #   moe_z_loss_coeff: 0.0                      # optional router z-loss
+        #   moe_token_dispatcher_type: alltoall        # already forced in worker
+      empty_cuda_cache: true
+
+  ref:
+    megatron_config:
+      tensor_model_parallel_size: 2
+      pipeline_model_parallel_size: 1
+      context_parallel_size: 1
+      expert_model_parallel_size: 1
+      expert_tensor_parallel_size: null
+      ddp_config:
+        grad_reduce_in_fp32: true
+        overlap_grad_reduce: false
+        overlap_param_gather: false
+        average_in_collective: true
+      transformer_config_kwargs:
+        recompute_granularity: full
+        recompute_modules: ["core_attn"]
+        recompute_method: uniform
+        recompute_num_layers: 1
+      empty_cuda_cache: true
+
+  # Placement — UNCHANGED from 56GPU_base (disaggregated). NOTE: the upstream
+  # Megatron examples use colocate_all=true; disaggregated Megatron is an open
+  # unknown (see header). Left as 56GPU_base's disaggregated layout so the SLURM
+  # shape is unchanged; revisit if weight-sync stalls.
+  placement:
+    colocate_all: false
+    policy_num_nodes: 2
+    ref_num_nodes: 2
+    policy_num_gpus_per_node: 4
+    ref_num_gpus_per_node: 4
+
+  fully_async:
+    max_staleness_steps: 16
+    num_parallel_generation_workers: 338
+
+# =============================================================================
+# Generator (vLLM) — UNCHANGED from 56GPU_base. Megatron only changes training.
+# (docs/examples/megatron.rst: "currently only vllm is supported for megatron")
+# =============================================================================
+generator:
+  backend: vllm
+  timeout_multiplier: 1.0
+  model_dtype: bfloat16
+  inference_engine_tensor_parallel_size: 1
+  num_inference_engines: 48
+  n_samples_per_prompt: 8
+  eval_n_samples_per_prompt: 8
+  gpu_memory_utilization: 0.75
+  max_num_seqs: 24
+  max_num_batched_tokens: 65536
+  enable_prefix_caching: true
+  enable_chunked_prefill: true
+  run_engines_locally: true
+  weight_sync_backend: nccl
+  async_engine: true
+  batched: false
+  enable_http_endpoint: true
+  enable_ray_prometheus_stats: false
+  vllm_stats_interval: 1
+  append_eos_token_after_stop_str_in_multi_turn: true
+  max_turns: 999999
+  sampling_params:
+    max_generate_length: 4096
+    temperature: 0.7
+    top_p: 0.95
+    top_k: 20
+  engine_init_kwargs:
+    max_model_len: 32768
+    custom_chat_template_chat_completion_path: chat_templates/qwen3_thinking_acc.jinja2
+
+data:
+  train_data: []
+  val_data: []
+
+# =============================================================================
+# MoE (Qwen3-Next-80B-A3B) EP VARIANT — sketch of deltas, NOT a launch config
+# =============================================================================
+# To make THIS backend exercise expert parallelism on an MoE policy, the
+# deltas (relative to the dense settings above) would be, mirroring the
+# upstream run_megatron_qwen3-30b-a3b.sh (TP2/PP2/EP8) scaled for 80B:
+#
+#   trainer.policy.megatron_config:
+#     tensor_model_parallel_size: 4        # divides 16 attn heads
+#     pipeline_model_parallel_size: 2      # 80B won't fit 1 PP stage easily
+#     expert_model_parallel_size: 8        # 512 experts / 8 = 64 experts/rank
+#     expert_tensor_parallel_size: 1
+#     transformer_config_kwargs:
+#       moe_router_load_balancing_type: aux_loss   # <-- the missing aux loss
+#       moe_aux_loss_coeff: 0.001
+#       moe_grouped_gemm: true                      # throughput on many experts
+#   trainer.placement.colocate_all: true            # per upstream MoE examples
+#
+# This MoE variant is deferred to the preflight checklist because the Qwen3-Next
+# hybrid (Gated-DeltaNet + MoE) arch is NOT among the AutoBridge-supported
+# Megatron model families in the upstream examples (which cover Qwen3-MoE /
+# Moonlight / Qwen3-235B-A22B, all standard-attention MoEs). Whether
+# AutoBridge.from_hf_pretrained can build a Megatron provider for the
+# Gated-DeltaNet linear-attention layers is the key UNKNOWN — see checklist.
