@@ -159,6 +159,17 @@ trainer:
   project_name: OpenThoughts-Agent
   log_level: INFO
   tracker_commit_each_step: true
+  # 80B prod runs use console logging instead of wandb: SkyRL's tracking.py
+  # hardcodes wandb.Settings(mode="shared") for multi-node system-metric
+  # aggregation, and shared mode IGNORES WANDB_MODE=offline — it requires a
+  # live wandb server and wandb.init() times out after 90s through the
+  # compute node's proxychains (CommError). This is what killed attempts
+  # 599463 and 600913 (model/training were fine, telemetry init was not).
+  # logger=console disables the wandb.init path entirely while ConsoleLogger
+  # + the trainer's WANDB_MIRROR stdout lines still emit every per-step
+  # metric to the .out. This is a per-run override; flag-off (a3) runs that
+  # don't set logger stay on wandb and are byte-identical.
+  logger: console
 
   run_name: null
   ckpt_path: null
