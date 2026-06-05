@@ -72,6 +72,16 @@ def build_apptainer_prefix(
     if binds is None:
         binds = DEFAULT_RL_CONTAINER_BINDS
     prefix: List[str] = ["apptainer", "exec", "--nv"]
+    # Writable/RO overlays composed over the read-only SIF rootfs. Sourced from
+    # the RL_CONTAINER_OVERLAYS env var (colon-separated paths, each mounted
+    # read-only via `--overlay <path>:ro`). Used for the 80B Qwen3-Next run,
+    # which stacks the P1 vLLM-HTTP overlay + the Stage-8 fla_tilelang overlay
+    # over skyrl_megatron_vllm.sif. Each overlay is an independent ext3 image;
+    # they compose by stacking `--overlay` flags. Empty/unset => no overlays
+    # (byte-identical to the prior non-overlay path).
+    overlays_env = os.environ.get("RL_CONTAINER_OVERLAYS", "")
+    for ov in (p for p in overlays_env.split(":") if p):
+        prefix.extend(["--overlay", f"{ov}:ro"])
     for b in binds:
         prefix.extend(["--bind", b])
     if pythonpath:
