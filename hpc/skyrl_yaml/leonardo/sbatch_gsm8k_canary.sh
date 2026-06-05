@@ -54,6 +54,14 @@ export FLASHINFER_WORKSPACE_BASE=$SF/vllm_cache/flashinfer
 export CONTAINER_HOME=$SF/canary_home
 mkdir -p "$CKPT_DIR" "$VLLM_CACHE_ROOT" "$TRITON_CACHE_DIR" "$FLASHINFER_WORKSPACE_BASE" "$CONTAINER_HOME"
 
+# C compiler for Triton JIT (the ray base image ships no gcc; we couldn't apt it
+# in without a fakeroot mapping). Reuse the host miniforge gcc 14.3.0 (on $WORK,
+# bind-mounted); verified to compile+run inside the container. CONDA_BIN is added
+# to PATH and CC/CXX are exported into the container below.
+export CONDA_BIN=$WORK/miniforge3/envs/otagent/bin
+# Silence ray usage telemetry (it writes to ~/.ray and spams /leonardo/home RO errors).
+export RAY_USAGE_STATS_ENABLED=0
+
 # Point the run script at the external uv venv python.
 export VENV_PY=$VENV/bin/python
 
@@ -65,8 +73,8 @@ singularity exec --nv \
   --no-home \
   --bind /leonardo_work:/leonardo_work,/leonardo_scratch:/leonardo_scratch \
   --pwd "$MARIN" \
-  --env HOME=$CONTAINER_HOME,PATH=/usr/local/bin:/usr/bin:/bin \
-  --env HF_HUB_OFFLINE=1,TRANSFORMERS_OFFLINE=1,HF_HOME=$HF_HOME,HF_HUB_CACHE=$HF_HUB_CACHE,WANDB_MODE=offline,VLLM_CACHE_ROOT=$VLLM_CACHE_ROOT,TRITON_CACHE_DIR=$TRITON_CACHE_DIR,FLASHINFER_WORKSPACE_BASE=$FLASHINFER_WORKSPACE_BASE,DATA_DIR=$DATA_DIR,MODEL_PATH=$MODEL_PATH,NUM_GPUS=$NUM_GPUS,CKPT_DIR=$CKPT_DIR,LOGGER=console,VENV_PY=$VENV_PY \
+  --env HOME=$CONTAINER_HOME,PATH=$CONDA_BIN:/usr/local/bin:/usr/bin:/bin,CC=$CONDA_BIN/gcc,CXX=$CONDA_BIN/g++ \
+  --env HF_HUB_OFFLINE=1,TRANSFORMERS_OFFLINE=1,HF_HOME=$HF_HOME,HF_HUB_CACHE=$HF_HUB_CACHE,WANDB_MODE=offline,VLLM_CACHE_ROOT=$VLLM_CACHE_ROOT,TRITON_CACHE_DIR=$TRITON_CACHE_DIR,FLASHINFER_WORKSPACE_BASE=$FLASHINFER_WORKSPACE_BASE,RAY_USAGE_STATS_ENABLED=0,DATA_DIR=$DATA_DIR,MODEL_PATH=$MODEL_PATH,NUM_GPUS=$NUM_GPUS,CKPT_DIR=$CKPT_DIR,LOGGER=console,VENV_PY=$VENV_PY \
   "$SANDBOX" bash "$CFG/run_gsm8k_canary.sh"
 
 echo "CANARY_EXIT=$?"
