@@ -60,7 +60,7 @@ Harbor is installed *editable* from a checkout. The eval pipeline
 depends on patches that aren't yet in upstream `main`; pin to:
 
 ```bash
-git clone https://github.com/harbor-framework/harbor.git ~/harbor-fix
+git clone https://github.com/marin-community/harbor.git ~/harbor-fix
 git -C ~/harbor-fix checkout penfever/temp-override
 git -C ~/harbor-fix checkout 9980f967     # tip used in the last validated fire
 pip install -e ~/harbor-fix               # inside each conda env

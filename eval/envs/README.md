@@ -11,7 +11,7 @@ below.
 - [`otagent2-fix.yml`](otagent2-fix.yml) — axolotl/Qwen3.5 + Pattern C
   reasoning-parser-plugin env (transformers 5.x, vLLM 0.17.x).
 
-Both envs install [harbor](https://github.com/harbor-framework/harbor)
+Both envs install [harbor](https://github.com/marin-community/harbor)
 **editable** from the same checkout. The exact commit matters — see
 the next section.
 
@@ -22,7 +22,7 @@ isn't (yet) merged to upstream `main`. Pin your harbor checkout to a
 state that includes them:
 
 ```bash
-git clone https://github.com/harbor-framework/harbor.git ~/harbor-fix
+git clone https://github.com/marin-community/harbor.git ~/harbor-fix
 git -C ~/harbor-fix checkout penfever/temp-override
 git -C ~/harbor-fix checkout 9980f967    # Daytona connection-pool fix (PR #1460)
 ```

@@ -19,7 +19,7 @@ dependencies = [
     "datasets>=2.0.0",
     "supabase>=2.22.3",
     "python-dotenv>=1.0.0",
-    "harbor[daytona] @ git+https://github.com/harbor-framework/harbor.git@penfever/otagent-latest",
+    "harbor[daytona] @ git+https://github.com/marin-community/harbor.git@penfever/otagent-latest",
     "dynamic-semaphore @ git+https://github.com/penfever/dynamic-semaphore",
     "google-cloud-storage",
     "h5py",

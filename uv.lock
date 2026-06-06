@@ -2286,7 +2286,7 @@ wheels = [
 [[package]]
 name = "harbor"
 version = "0.7.0"
-source = { git = "https://github.com/harbor-framework/harbor.git?rev=penfever%2Fotagent-latest#48266487a333d0c29d9f65d9c18f88850e0c41bd" }
+source = { git = "https://github.com/marin-community/harbor.git?rev=penfever%2Fotagent-latest#06cf57cb396ec02dad322d47504c3a7773a26ce2" }
 dependencies = [
     { name = "claude-agent-sdk" },
     { name = "datasets" },
@@ -4910,7 +4910,7 @@ requires-dist = [
     { name = "google-genai", marker = "extra == 'datagen-cpu'", specifier = ">=0.1.0" },
     { name = "google-genai", marker = "extra == 'datagen-tpu'", specifier = ">=0.1.0" },
     { name = "h5py" },
-    { name = "harbor", extras = ["daytona"], git = "https://github.com/harbor-framework/harbor.git?rev=penfever%2Fotagent-latest" },
+    { name = "harbor", extras = ["daytona"], git = "https://github.com/marin-community/harbor.git?rev=penfever%2Fotagent-latest" },
     { name = "huggingface-hub" },
     { name = "huggingface-hub", specifier = ">=0.20.0,<2.0.0" },
     { name = "jinja2", marker = "extra == 'rl'" },

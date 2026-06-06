@@ -8,7 +8,7 @@
 #   conda env create -f eval/envs/otagent-fix.yml
 #   conda activate otagent-fix
 #   # Editable harbor (pin matters — see eval/envs/README.md):
-#   git clone https://github.com/harbor-framework/harbor.git ~/harbor-fix
+#   git clone https://github.com/marin-community/harbor.git ~/harbor-fix
 #   git -C ~/harbor-fix checkout penfever/temp-override   # @ 9980f967 or newer
 #   pip install -e ~/harbor-fix
 #   # Apply the three installed-agent patches documented in eval/envs/README.md.
