@@ -33,6 +33,81 @@ from hpc.launch_utils import get_daytona_api_key_override
 DEFAULT_RL_CONTAINER_BINDS: List[str] = ["/e/scratch", "/e/data1"]
 
 
+# Candidate directory NAMES for the RL training repo, in probe order. The repo
+# was historically always cloned to a dir literally named "SkyRL", but its
+# contents may be replaced by MarinSkyRL while keeping (or changing) the dir
+# name. The Python import name (skyrl_train) is unaffected by the dir name and
+# must NOT be touched — only filesystem PATH resolution. "SkyRL" stays first so
+# any existing SkyRL-named deployment resolves byte-identically.
+RL_REPO_DIR_CANDIDATES: List[str] = ["SkyRL", "MarinSkyRL"]
+
+
+def resolve_rl_repo_dir(parent: str) -> str:
+    """Resolve the RL training repo directory under ``parent``.
+
+    The Jupiter deployment is about to have its RL repo *contents* replaced
+    with MarinSkyRL while keeping the directory NAME ``SkyRL`` (to satisfy
+    hardcoded paths); future setups may instead name the dir ``MarinSkyRL``.
+    This helper lets the launcher consume either, while staying byte-identical
+    for existing ``SkyRL``-only deployments.
+
+    Precedence:
+      (a) explicit override env var ``RL_REPO_DIR`` (full path) if set — honored
+          verbatim, regardless of whether it exists yet;
+      (b) probe ``parent`` for ``SkyRL`` then ``MarinSkyRL`` (``RL_REPO_DIR_CANDIDATES``
+          order) and return the first that exists as a directory;
+      (c) fall back to ``<parent>/SkyRL`` (the historical literal) for
+          byte-identical back-compat when neither candidate exists.
+
+    Args:
+        parent: Parent directory that contains (or will contain) the repo dir.
+
+    Returns:
+        Absolute-or-relative path to the resolved repo directory (joins
+        ``parent`` with the resolved dir name; does not normalize ``parent``).
+    """
+    override = os.environ.get("RL_REPO_DIR")
+    if override:
+        return override
+    for name in RL_REPO_DIR_CANDIDATES:
+        candidate = os.path.join(parent, name)
+        if os.path.isdir(candidate):
+            return candidate
+    # Back-compat fallback: the historical literal, even if it doesn't exist
+    # yet (e.g. setup_rl_env.sh is about to clone into it).
+    return os.path.join(parent, RL_REPO_DIR_CANDIDATES[0])
+
+
+def _resolve_skyrl_home() -> Optional[str]:
+    """Resolve the on-disk RL repo dir for SKYRL_HOME-based path construction.
+
+    Honors ``SKYRL_HOME`` (precedence (a)) when it points at an existing dir.
+    If ``SKYRL_HOME`` is set but missing, or unset, falls back to probing its
+    parent (or CWD's parent) for the ``{SkyRL, MarinSkyRL}`` candidate dirs via
+    :func:`resolve_rl_repo_dir`. Returns None only when nothing is set and no
+    candidate exists (callers then skip adding the path, as before).
+
+    This keeps existing SkyRL-named deployments byte-identical: ``SKYRL_HOME``
+    is set by the dotenv to ``<parent>/SkyRL`` and exists, so it is returned
+    unchanged.
+    """
+    skyrl_home = os.environ.get("SKYRL_HOME")
+    if skyrl_home:
+        if os.path.isdir(skyrl_home):
+            return skyrl_home
+        # SKYRL_HOME set but absent under that exact name — probe its parent for
+        # the alternate dir name (e.g. dotenv hardcoded .../SkyRL but only
+        # .../MarinSkyRL exists on this box).
+        parent = os.path.dirname(skyrl_home.rstrip("/"))
+        if parent:
+            resolved = resolve_rl_repo_dir(parent)
+            if os.path.isdir(resolved):
+                return resolved
+        # Nothing better found; preserve prior behavior (use SKYRL_HOME as-is).
+        return skyrl_home
+    return None
+
+
 def build_apptainer_prefix(
     sif: str,
     binds: Optional[List[str]] = None,
@@ -126,7 +201,9 @@ def _build_container_pythonpath() -> str:
     for p in (x for x in pydeps.split(":") if x):
         parts.append(p)
 
-    skyrl_home = os.environ.get("SKYRL_HOME")
+    # Resolve SKYRL_HOME with {SkyRL, MarinSkyRL} dir-name hardening (honors an
+    # explicit SKYRL_HOME / RL_REPO_DIR override first; see resolve_rl_repo_dir).
+    skyrl_home = _resolve_skyrl_home()
     if skyrl_home:
         parts.append(os.path.join(skyrl_home, "skyrl-train"))
 
@@ -1427,8 +1504,9 @@ class RLJobRunner:
         print(f"  Entrypoint: {self.config.skyrl_entrypoint}", flush=True)
         print(f"  Args: {len(self.config.skyrl_hydra_args)} Hydra arguments", flush=True)
 
-        # Change to SKYRL_HOME if set
-        skyrl_home = os.environ.get("SKYRL_HOME")
+        # Change to SKYRL_HOME if set (resolved with {SkyRL, MarinSkyRL}
+        # dir-name hardening; honors SKYRL_HOME / RL_REPO_DIR override first).
+        skyrl_home = _resolve_skyrl_home()
         cwd = None
         if skyrl_home:
             cwd = os.path.join(skyrl_home, "skyrl-train")

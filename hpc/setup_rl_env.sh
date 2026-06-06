@@ -479,13 +479,35 @@ fi
 SKYRL_REPO="https://github.com/penfever/SkyRL.git"
 SKYRL_BRANCH="penfever/working"
 
+# Resolve the RL repo directory name. The repo is cloned to a dir named
+# "SkyRL" by default, but its contents may be replaced by MarinSkyRL while
+# keeping the dir name, or the dir may be named "MarinSkyRL". Probe {SkyRL,
+# MarinSkyRL} under a parent and return the first that exists; otherwise fall
+# back to the literal "SkyRL" (byte-identical to the historical behavior).
+# Precedence: explicit $RL_REPO_DIR override > probe parent > literal SkyRL.
+_resolve_rl_repo_dir() {
+    local parent="$1"
+    if [[ -n "${RL_REPO_DIR:-}" ]]; then
+        echo "$RL_REPO_DIR"
+        return 0
+    fi
+    local name
+    for name in SkyRL MarinSkyRL; do
+        if [[ -d "$parent/$name" ]]; then
+            echo "$parent/$name"
+            return 0
+        fi
+    done
+    echo "$parent/SkyRL"
+}
+
 # Determine SKYRL_HOME location
 if [[ -n "${SKYRL_HOME:-}" ]]; then
     SKYRL_DIR="$SKYRL_HOME"
 elif [[ -n "${SCRATCH:-}" ]]; then
-    SKYRL_DIR="$SCRATCH/SkyRL"
+    SKYRL_DIR="$(_resolve_rl_repo_dir "$SCRATCH")"
 else
-    SKYRL_DIR="$BASE_DIR/SkyRL"
+    SKYRL_DIR="$(_resolve_rl_repo_dir "$BASE_DIR")"
 fi
 
 echo ""
