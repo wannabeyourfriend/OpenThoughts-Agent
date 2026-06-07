@@ -56,12 +56,20 @@ esac
 [[ ${#WANT[@]} -eq 0 ]] && { echo "no cells given"; exit 1; }
 
 get_overrides() {
-    # print the overrides for cell $1 from SPEC (everything after the first |), or __MISSING__
-    awk -F'|' -v c="$1" '
+    # print the overrides for cell $1 from SPEC (everything after the first |), or __MISSING__.
+    # Operate on the raw line ($0): split name vs rest on the first | WITHOUT mutating $0
+    # (mutating a field rebuilds $0 under OFS and eats the | separator).
+    awk -v c="$1" '
         /^[[:space:]]*#/ {next}
-        {gsub(/^[ \t]+|[ \t]+$/,"",$1)}
-        $1==c {sub(/^[^|]*\|/,""); gsub(/^[ \t]+|[ \t]+$/,""); print; found=1; exit}
-        END{if(!found) print "__MISSING__"}
+        {
+            line=$0
+            p=index(line,"|")
+            if (p==0) { name=line; rest="" } else { name=substr(line,1,p-1); rest=substr(line,p+1) }
+            gsub(/^[ \t]+|[ \t]+$/,"",name)
+            gsub(/^[ \t]+|[ \t]+$/,"",rest)
+            if (name==c) { print rest; found=1; exit }
+        }
+        END{ if(!found) print "__MISSING__" }
     ' "$SPEC"
 }
 
