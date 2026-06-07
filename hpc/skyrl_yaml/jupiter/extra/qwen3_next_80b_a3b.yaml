@@ -317,16 +317,19 @@ trainer:
       # 4-7 FSDP2-EP + router-replay capstone path).
       fsdp_size: 4
       expert_model_parallel_size: 8
-      # moe_router_replay DISABLED (2026-06-07 TIS fix): the rollout routing is
-      # never captured (enable_return_routed_experts=False in the vLLM engine),
-      # so replay would replay SENTINEL/native routing — the broken path that
-      # caused the log_ratio explosion. With it OFF, the train forward uses
-      # native routing consistently (PPO ratio≈1, on-policy at step 1) and TIS
-      # (algorithm.use_tis above) corrects the rollout-vs-train mismatch. The EP
-      # mesh is governed by expert_model_parallel_size (kept at 8) and is
-      # INDEPENDENT of router_replay (fsdp_worker.py:356 vs fsdp_strategy.py
-      # ep_size), so EP=8×FSDP=4 is unchanged.
-      moe_router_replay: false
+      # moe_router_replay RE-ENABLED (2026-06-07 step 4, R3+TIS bring-up): the
+      # earlier log_ratio explosion was caused by replaying SENTINEL routing
+      # because capture was off (enable_return_routed_experts=False). That is now
+      # FIXED — enable_return_routed_experts=true (generator.engine_init_kwargs)
+      # + the vllm_http_overlay serializes real per-token routing over
+      # /chat/completions (verified live probe a965e99f), so replay now recomputes
+      # the EXACT rollout routing → π_old==π_train for the MoE. TIS
+      # (algorithm.use_tis) additionally corrects the residual vLLM↔FSDP bf16
+      # logprob gap (~0.09 nats; hardened exact-token-id alignment, MarinSkyRL
+      # 11285333). Running BOTH R3 and TIS = the intended step-4 config. EP mesh
+      # (expert_model_parallel_size=8) is independent of router_replay, EP=8×FSDP=4
+      # unchanged.
+      moe_router_replay: true
       moe_grouped_gemm: true
       ep_comm_backend: torch
   ref:
@@ -340,9 +343,9 @@ trainer:
       reshard_after_forward: true
       fsdp_size: 4
       expert_model_parallel_size: 8
-      # Disabled to match policy (2026-06-07 TIS fix). Ref is INERT here anyway
-      # (use_kl_loss=false → no RefWorker built), so this is config-consistency.
-      moe_router_replay: false
+      # Re-enabled to match policy (2026-06-07 step 4, R3+TIS). Ref is INERT here
+      # anyway (use_kl_loss=false → no RefWorker built), so this is config-consistency.
+      moe_router_replay: true
       moe_grouped_gemm: true
       ep_comm_backend: torch
 
