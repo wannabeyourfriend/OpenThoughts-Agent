@@ -20,6 +20,7 @@ Usage:
 from __future__ import annotations
 
 import os
+import shlex
 import subprocess
 import sys
 import time
@@ -496,12 +497,26 @@ class RayCluster:
             )
             cmd = apptainer_prefix + cmd
 
+        # Shell-quote each argv token before embedding the command into the
+        # `srun ... bash -c '<string>'` body. Apptainer's `--env PYTHONPATH=<v>`
+        # value can contain spaces, double-quotes, and literal `$(...)`/`${...}`
+        # (e.g. an inherited PYTHONPATH that still carries an unexpanded
+        # `$(resolve_rl_repo_dir "$DCFT")/skyrl-train:${DCFT_PRIVATE:-$DCFT}...`
+        # tail from jupiter.env). A naive `' '.join(cmd)` lets those spaces
+        # re-tokenize under `bash -c`, so apptainer reads the value's tail as a
+        # separate argv element and tries to open it as the SIF image
+        # ("FATAL: could not open image .../OpenThoughts-Agent/\"...\")/skyrl-train:...")
+        # → ray head exits 255 before producing any output. shlex.quote is a
+        # no-op for space/quote-free tokens, so this is byte-identical for all
+        # configs whose PYTHONPATH has no spaces (e.g. the 8B/32B ablations).
+        cmd_str = ' '.join(shlex.quote(c) for c in cmd)
+
         if self.config.proxychains_binary:
             # Wrapped binary approach: unset LD_PRELOAD (avoid double-proxying) and wrap ray command
             # Uses $PROXYCHAINS_CONF_FILE env var (set by SSH tunnel setup script)
             # In container mode the wrap is: proxychains4 -f conf apptainer exec ... ray ...
             unset_proxychains = "unset LD_PRELOAD 2>/dev/null; "
-            ray_cmd_str = ' '.join(cmd)
+            ray_cmd_str = cmd_str
             proxychains_wrap = f'{self.config.proxychains_binary} -f "$PROXYCHAINS_CONF_FILE" '
             if self.config.ray_env_vars:
                 bash_cmd = f"{proxychains_wrap}{ray_cmd_str}"
@@ -511,16 +526,16 @@ class RayCluster:
             # LD_PRELOAD approach: preserve proxychains env vars for external API calls
             # The proxychains config should have localnet exclusions for internal IPs
             if self.config.ray_env_vars:
-                bash_cmd = f"env {self.config.ray_env_vars} {' '.join(cmd)}"
+                bash_cmd = f"env {self.config.ray_env_vars} {cmd_str}"
             else:
-                bash_cmd = ' '.join(cmd)
+                bash_cmd = cmd_str
         else:
             # No proxychains: unset env vars to prevent interference with Ray networking
             unset_proxychains = "unset LD_PRELOAD PROXYCHAINS_CONF_FILE 2>/dev/null; "
             if self.config.ray_env_vars:
-                bash_cmd = f"{unset_proxychains}env {self.config.ray_env_vars} {' '.join(cmd)}"
+                bash_cmd = f"{unset_proxychains}env {self.config.ray_env_vars} {cmd_str}"
             else:
-                bash_cmd = f"{unset_proxychains}{' '.join(cmd)}"
+                bash_cmd = f"{unset_proxychains}{cmd_str}"
 
         srun_cmd = [
             "srun",
