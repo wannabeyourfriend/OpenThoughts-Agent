@@ -323,6 +323,16 @@ trainer:
     # (639939/640384) in the real EP layout. Default false elsewhere -> ablation
     # yamls (arm0/shaped/arm1) are byte-identical and their restart-links safe.
     policy_per_gpu_bundles: true
+    # Deterministic device pin (opt-in, default false elsewhere). Each policy
+    # actor MASKS CUDA_VISIBLE_DEVICES to its single Ray-assigned physical GPU
+    # and forces CUDA_DEVICE_ORDER=PCI_BUS_ID BEFORE any CUDA / EP-mesh init, so
+    # with exactly one visible device set_device(0)/init_device_mesh/FSDP
+    # device_id can ONLY land on that physical GPU → EP=8×FSDP=4 ranks cannot
+    # stack on a shared GPU (node-count-independent by construction). This is the
+    # deterministic replacement for the set_device(LOCAL_RANK)-only pin that
+    # could not reliably prevent the GPU-0-stacking init-OOM. Validated single-
+    # node EP 3/3. Default false → 8B/a3/ablation byte-identical.
+    policy_force_cvd_mask: true
 
   # Fully async generation.
   fully_async:
