@@ -141,13 +141,20 @@ terminal_bench:
     # TIS root-cause fix (2026-06-07, supersedes a7d4193 forward-symmetry fix).
     # -------------------------------------------------------------------------
     # collect_rollout_details=true makes Harbor request + store per-token
-    # ROLLOUT LOGPROBS from vLLM (standard OpenAI `choices[].logprobs`, no
-    # container patch needed — unlike per-token routed_experts, which require
-    # vLLM `enable_return_routed_experts` + a non-standard serving-JSON field
-    # that this SIF's stock vLLM 0.16.0 does NOT emit). These rollout logprobs
-    # are the TRUE generation distribution; trainer.algorithm.use_tis below
-    # uses them to bound the off-policy importance ratio. REQUIRED for use_tis
-    # (the trainer asserts non-null rollout_logprobs when use_tis=true).
+    # ROLLOUT LOGPROBS from vLLM (standard OpenAI `choices[].logprobs`). These
+    # rollout logprobs are the TRUE generation distribution; trainer.algorithm.
+    # use_tis below uses them to bound the off-policy importance ratio. REQUIRED
+    # for use_tis (the trainer asserts non-null rollout_logprobs when use_tis=
+    # true).
+    # NOTE (corrected 2026-06-07, live GPU probe a965e99f): per-token
+    # routed_experts ALSO ride this same /chat/completions path — the
+    # vllm_http_overlay.img the launch already stacks DOES serialize
+    # `routed_experts` (shape [gen_len, num_layers, top_k]) through litellm
+    # provider_specific_fields → Harbor RolloutDetail.extra → SkyRL
+    # extract_routed_experts_from_rollout_details. So R3 capture needs ONLY
+    # `enable_return_routed_experts=true` (set under generator.engine_init_kwargs
+    # below) on the EXISTING SIF — NO container rebuild. The earlier "stock 0.16
+    # cannot emit" claim was wrong (it ignored the overlay).
     collect_rollout_details: true
 
     # RLOO-N error classification (mirrors 56GPU_base production settings)
@@ -479,17 +486,17 @@ generator:
     # bind-mounted /e/scratch, reachable regardless of runtime CWD.
     custom_chat_template_chat_completion_path: ./chat_templates/qwen3_thinking_acc.jinja2
     # R3 ROUTER-REPLAY CAPTURE FLAG (added 2026-06-07, plan step 2). Tells the
-    # vLLM EngineCore to emit per-token expert routing and (with a vLLM that
-    # serializes it over /chat/completions) populate rollout_details[*].extra
-    # ["routed_experts"], which the FSDP2 replay hook consumes so the train
+    # vLLM EngineCore to emit per-token expert routing; the vllm_http_overlay.img
+    # the launch already stacks serializes it over /chat/completions, so it
+    # populates rollout_details[*].extra["routed_experts"] (shape [gen_len,
+    # num_layers, top_k]), which the FSDP2 replay hook consumes so the train
     # forward replays the EXACT sampled experts (π_old == π_train for the MoE).
-    # INERT on the production skyrl_megatron_vllm.sif (stock vLLM 0.16.0 has the
-    # engine emission but not the chat-completions serving serialization), so
-    # leaving it True is byte-safe there — capture simply stays null and the run
-    # falls back to TIS (use_tis below). It becomes LIVE on the rebuilt SIF
-    # (fork vLLM 0.20.2rc0, PR #39917 device-cache capture). At step 4 of the
-    # R3 bring-up, flip fsdp_config.moe_router_replay back to true alongside the
-    # new SIF to run BOTH TIS and R3.
+    # LIVE on the CURRENT production skyrl_megatron_vllm.sif + overlay — NO
+    # rebuild needed (verified by live GPU probe a965e99f, 2026-06-07). With
+    # this flag false, capture stays null and the run falls back to TIS; with it
+    # true + fsdp_config.moe_router_replay=true (currently false from the TIS
+    # stopgap — flip both back at R3 bring-up step 4), the run uses BOTH TIS and
+    # R3 on the existing container.
     enable_return_routed_experts: true
 
 # Data paths
