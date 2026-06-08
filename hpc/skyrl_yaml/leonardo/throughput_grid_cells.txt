@@ -31,6 +31,8 @@ student_gmu085  | 16  | GPU_MEM_UTIL=0.85
 teacher8b       | 18  | TEACHER_MODEL=Qwen/Qwen3-8B
 teacher_fp8     | 16  | +teacher.engine_init_kwargs.quantization=fp8
 chunk_score     | 16  | +teacher.scoring_chunk_size=32
+combo_fast      | 18  | TOPK=16
+combo_balanced  | 18  | TOPK=32
 #  teacher14b: NEEDS Qwen3-14B in offline HF cache (NOT present). Login-node
 #  download required first; uncomment after fetch:
 # teacher14b      | 18  | TEACHER_MODEL=Qwen/Qwen3-14B

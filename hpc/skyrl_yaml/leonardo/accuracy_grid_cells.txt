@@ -56,8 +56,8 @@ entbonus     | trainer.algorithm.use_entropy_loss=true trainer.algorithm.entropy
 base_q3      | trainer.policy.model.path=Qwen/Qwen3-1.7B
 #
 # ============================ HELD (iterate step — filled from Batch-1 winners) ============================
-# combo_acc       | <lr-winner> <n-winner> <gen-winner>
-# combo_acc_stab  | combo_acc + best stabilizer (kl/clip/ent from Batch 2)
+combo_acc       | trainer.policy.optimizer_config.lr=1e-5 generator.sampling_params.max_generate_length=1024
+combo_acc_stab  | trainer.policy.optimizer_config.lr=1e-5 generator.sampling_params.max_generate_length=1024 trainer.algorithm.use_entropy_loss=true trainer.algorithm.entropy_loss_coef=0.01
 #
 # ============================ FLAGGED (needs code, not a hydra knob) ============================
 # rshape | gsm8k reward is utils.compute_score() exact-match in skyrl-gym/skyrl_gym/envs/gsm8k/
