@@ -125,11 +125,22 @@ terminal_bench:
       - VerifierOutputParseError
       - VerifierRuntimeError
 
-    # 300 concurrent trials — the value the working baked sbatch ran. With 16
-    # TP=4 engines this is ~19 trials/engine; over-subscribing Daytona piles
-    # resident trial state in the driver (the host-memory OOM mode documented in
-    # 56GPU_base), so 300 stays comfortably under that ceiling.
-    n_concurrent_trials: 300
+    # 150 concurrent trials (was 300). With R3 routed_experts capture ON, each
+    # resident trial additionally holds per-token [gen_len × ~48 layers × top-10]
+    # routing arrays in host RAM on its RolloutCoordinator — multiplying the
+    # resident-trial-state footprint vs the no-capture runs. Job 659498 (300
+    # trials × 768 gen-workers) drove a CLEAN first training step but then a
+    # RolloutCoordinator (ip .105) was SIGKILL'd by the Linux OOM-killer
+    # (`ray.exceptions.ActorDiedError ... SIGKILL by OOM killer due to high
+    # memory usage`) — a CPU-RAM OOM on the generation actor, distinct from the
+    # disk OOD that the GPFS-spill redirect already fixed (0 OutOfDiskError on
+    # 659498). On GH200 with SKYRL_ENABLE_NUMA_AFFINITY=1 each coordinator is
+    # NUMA-bound to one ~214GB Grace node, so a single actor can OOM even though
+    # node-total RAM (857GB) is free. Halving concurrent trials + cutting the
+    # gen-worker pool (below) reduces the simultaneous resident rollout+R3
+    # working set. This is the documented host-memory OOM ceiling, now lower
+    # because R3 capture inflates per-trial footprint.
+    n_concurrent_trials: 150
 
     # Logging settings
     log_level: INFO
@@ -396,11 +407,15 @@ trainer:
   # Fully async generation.
   fully_async:
     max_staleness_steps: 16
-    # 768 generation workers — the value the working baked sbatch ran. With 16
-    # TP=4 engines the achievable in-flight parallelism is high; 768 keeps the
-    # async generation buffer filled across the 16 engines without starving the
-    # trainer. (Higher than the original 192 estimate; calibrated during bring-up.)
-    num_parallel_generation_workers: 768
+    # 256 generation workers (was 768). 768 kept the async buffer full across the
+    # 16 TP=4 engines, but with R3 routed_experts capture ON the per-worker
+    # in-flight rollout footprint (per-token routing arrays + logprobs +
+    # trajectory) is far larger than the no-capture baseline, and 768 simultaneous
+    # generations contributed to the CPU-RAM OOM-kill of a RolloutCoordinator on
+    # job 659498 (see n_concurrent_trials comment above). 256 still over-subscribes
+    # the 16 engines ~16× (no trainer starvation) while cutting the peak resident
+    # working set ~3×. Pairs with n_concurrent_trials 300→150.
+    num_parallel_generation_workers: 256
 
 # =============================================================================
 # Generator configuration (vLLM)
