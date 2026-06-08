@@ -128,6 +128,45 @@ class _DatasetArtifacts:
     dataset_paths: list[str]
     dataset_path: str
     model_path: str
+    # True when --dataset_dir points at a local LLaMA-Factory registry
+    # (dir with dataset_info.json) and the --dataset values are registry KEYS.
+    # In that mode the caller must keep the keys in base_config["dataset"] +
+    # dataset_dir pointing at the registry, NOT overwrite with local paths
+    # (each registry entry carries its own schema/tags).
+    registry_mode: bool = False
+
+
+def _resolve_dataset_entry_for_download(entry: str, dataset_dir: Optional[str]) -> tuple[str, str]:
+    """Resolve a ``--dataset`` entry for pre-download.
+
+    When ``--dataset_dir`` points at a local LLaMA-Factory registry (a dir
+    containing ``dataset_info.json``), the ``--dataset`` values are registry
+    KEYS (e.g. ``tulu3``), not HF repo ids — so ``snapshot_download("tulu3")``
+    404s. Resolve the key against the registry instead:
+      - ``file_name`` (local data) -> already on disk; nothing to download.
+      - ``hf_hub_url`` / ``ms_hub_url`` -> the real HF repo id to snapshot.
+      - registered but no resolvable remote -> fall back to the key as repo id.
+    Non-registry entries (or no local registry) fall through to the key as-is.
+
+    Returns ``(kind, value)`` where ``kind`` is ``"local"`` or ``"repo"``.
+    """
+    if dataset_dir and dataset_dir != "ONLINE" and os.path.isdir(dataset_dir):
+        info_path = os.path.join(dataset_dir, "dataset_info.json")
+        if os.path.isfile(info_path):
+            try:
+                with open(info_path) as f:
+                    registry = json.load(f)
+            except (OSError, ValueError):
+                registry = {}
+            spec = registry.get(entry)
+            if isinstance(spec, dict):
+                if spec.get("file_name"):
+                    local = os.path.join(dataset_dir, spec["file_name"])
+                    return ("local", os.path.abspath(local) if os.path.exists(local) else entry)
+                hub_id = spec.get("hf_hub_url") or spec.get("ms_hub_url")
+                if hub_id:
+                    return ("repo", hub_id)
+    return ("repo", entry)
 
 
 def _load_base_train_config(train_config_path: str) -> dict:
@@ -207,18 +246,34 @@ def _materialize_dataset_and_model(
         return _DatasetArtifacts(dataset_paths, str(dataset_path), str(model_path))
 
     download_datasets = not exp_args.get("internet_node", False)
+    ds_dir = base_config.get("dataset_dir")
+    registry_mode = bool(
+        ds_dir and ds_dir != "ONLINE" and os.path.isdir(ds_dir)
+        and os.path.isfile(os.path.join(ds_dir, "dataset_info.json"))
+    )
     dataset_paths: list[str] = []
     if dataset_entries:
         if download_datasets:
-            for repo in dataset_entries:
+            for entry in dataset_entries:
+                kind, value = _resolve_dataset_entry_for_download(entry, ds_dir)
+                if kind == "local":
+                    # Registry entry backed by local data (file_name) — already
+                    # on disk under the registry dir; nothing to pre-download.
+                    dataset_paths.append(value)
+                    print(f"Dataset '{entry}' is local registry data ({value}); skipping download")
+                    continue
                 try:
-                    local_path = snapshot_download(repo_id=repo, repo_type="dataset")
+                    local_path = snapshot_download(repo_id=value, repo_type="dataset")
                 except HFValidationError:
-                    if os.path.isdir(repo):
-                        local_path = os.path.abspath(repo)
+                    if os.path.isdir(value):
+                        local_path = os.path.abspath(value)
                     else:
                         raise
                 dataset_paths.append(local_path)
+                if value != entry:
+                    print(f"Dataset '{entry}' -> HF '{value}' (registry) downloaded to {local_path}")
+                else:
+                    print(f"Downloaded dataset to {local_path}")
         else:
             dataset_paths = dataset_entries.copy()
     else:
@@ -243,7 +298,7 @@ def _materialize_dataset_and_model(
         model_path = snapshot_download(repo_id=base_config["model_name_or_path"], repo_type="model")
     print(f"Downloaded model to {model_path}")
 
-    return _DatasetArtifacts(dataset_paths, dataset_path, model_path)
+    return _DatasetArtifacts(dataset_paths, dataset_path, model_path, registry_mode)
 
 
 _COMPLETED_MODEL_FILES = {
@@ -418,7 +473,17 @@ def construct_config_yaml(exp_args):
         base_config["dataset"] = artifacts.dataset_path
         base_config["dataset_dir"] = artifacts.dataset_path
     elif not exp_args["internet_node"]:
-        if artifacts.dataset_paths:
+        if artifacts.registry_mode:
+            # Registry mode (--dataset_dir with dataset_info.json): keep the
+            # registry KEYS in base_config["dataset"] and dataset_dir pointing at
+            # the registry, so LLaMA-Factory resolves each dataset's own
+            # schema/tags. Overwriting with local snapshot paths drops the
+            # per-dataset tags -> KeyError on heterogeneous mixes.
+            print(
+                f"Registry mode: keeping dataset keys '{base_config.get('dataset')}' "
+                f"(dataset_dir={base_config.get('dataset_dir')}); pre-download warmed the cache"
+            )
+        elif artifacts.dataset_paths:
             base_config["dataset"] = ",".join(artifacts.dataset_paths)
 
     base_config = configure_sft_reporting(base_config, exp_args, artifacts.model_path)
