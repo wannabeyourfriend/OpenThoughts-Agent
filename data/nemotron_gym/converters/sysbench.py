@@ -44,6 +44,7 @@ from ..adapter import (
     LLM_JUDGE_TASK_TOML,
     STANDARD_TEST_SH,
     SanitizationError,
+    answer_delivery_guidance,
     render_dockerfile,
     render_metadata,
     sanitize_text,
@@ -315,9 +316,21 @@ def convert_sysbench(row: dict, row_idx: int) -> HarborTask | None:
     det_sig = "|".join(c.get("instruction_id", "") for c in det_constraints)
     task_id = task_id_for("sysbench", f"{id_key}|{det_sig}|{len(judge_questions)}")
 
+    # Delivery guidance is APPENDED LAST (after the system-prompt-heavy prompt,
+    # which is the part `_build_prompt` may truncate at PROMPT_MAX_LEN). This
+    # guarantees the HOW-to-submit heredoc is never cut and is the final thing
+    # the terminal agent reads — the proven fix for the ~32% delivery-miss where
+    # terminus-2 emitted the answer as chat and never wrote /app/answer.txt.
+    # Points at /app/answer.txt, the exact path hybrid_ifeval_judge.py reads.
+    instruction_md = (
+        _INSTRUCTION_HEADER
+        + prompt
+        + answer_delivery_guidance("/app/answer.txt", what="your full response")
+    )
+
     return HarborTask(
         task_id=task_id,
-        instruction_md=_INSTRUCTION_HEADER + prompt,
+        instruction_md=instruction_md,
         dockerfile=render_dockerfile(
             base=_BASE_IMAGE,
             pip_packages=("litellm==1.51.3",),

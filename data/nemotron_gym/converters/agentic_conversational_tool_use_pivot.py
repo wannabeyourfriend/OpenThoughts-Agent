@@ -43,6 +43,7 @@ from ..adapter import (
     LLM_JUDGE_TASK_TOML,
     STANDARD_TEST_SH,
     SanitizationError,
+    answer_delivery_guidance,
     render_dockerfile,
     render_metadata,
     sanitize_text,
@@ -261,8 +262,13 @@ def convert_agentic_conversational_tool_use_pivot(row: dict, row_idx: int) -> Ha
         instr_body = _HEADER_FUNCTION_CALL
         if tools_block:
             instr_body += tools_block + "\n\n---\n\n"
+        delivery = answer_delivery_guidance(
+            "/app/answer.txt", what="the JSON tool-call object"
+        )
         instruction_md = sanitize_text(
-            instr_body + transcript, field_name="instruction_md", max_len=_INSTR_MAX
+            instr_body + transcript + delivery,
+            field_name="instruction_md",
+            max_len=_INSTR_MAX,
         )
         task_id = task_id_for(
             "agconv-tu-fc",
@@ -287,8 +293,11 @@ def convert_agentic_conversational_tool_use_pivot(row: dict, row_idx: int) -> Ha
         if not isinstance(content, str) or not content.strip():
             return None
         gold = sanitize_text(content, field_name="gold_message", max_len=_GOLD_MSG_MAX)
+        delivery = answer_delivery_guidance("/app/response.txt", what="your reply")
         instruction_md = sanitize_text(
-            _HEADER_MESSAGE + transcript, field_name="instruction_md", max_len=_INSTR_MAX
+            _HEADER_MESSAGE + transcript + delivery,
+            field_name="instruction_md",
+            max_len=_INSTR_MAX,
         )
         task_id = task_id_for(
             "agconv-tu-msg",

@@ -35,6 +35,7 @@ from __future__ import annotations
 from ..adapter import (
     HarborTask,
     STANDARD_TEST_SH,
+    answer_delivery_guidance,
     render_dockerfile,
     render_metadata,
     sanitize_text,
@@ -101,9 +102,12 @@ def convert_qa_abstention(row: dict, row_idx: int) -> HarborTask | None:
         "qa-abstention",
         (uuid or prompt[:128]) + "||" + expected,
     )
+    instruction_md = _INSTRUCTION_HEADER + prompt + answer_delivery_guidance(
+        "/app/answer.txt", what="your answer in \\boxed{...} form"
+    )
     return HarborTask(
         task_id=task_id,
-        instruction_md=_INSTRUCTION_HEADER + prompt,
+        instruction_md=instruction_md,
         dockerfile=render_dockerfile(base=_BASE_IMAGE),
         test_sh=STANDARD_TEST_SH,
         verifier_py=QA_BOXED_MATCH_VERIFIER_PY,

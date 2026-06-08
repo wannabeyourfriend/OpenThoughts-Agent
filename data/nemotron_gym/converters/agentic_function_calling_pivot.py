@@ -35,6 +35,7 @@ from ..adapter import (
     HarborTask,
     LLM_JUDGE_TASK_TOML,
     STANDARD_TEST_SH,
+    answer_delivery_guidance,
     render_dockerfile,
     render_metadata,
     sanitize_text,
@@ -237,6 +238,8 @@ def convert_agentic_function_calling_pivot(row: dict, row_idx: int) -> HarborTas
             _TOOLCALL_HEADER + body,
             field_name="instruction_md",
             max_len=_INSTR_MAX,
+        ) + answer_delivery_guidance(
+            "/app/answer.txt", what="the JSON tool-call object"
         )
         task_id = task_id_for(
             "agentic-fc-pivot",
@@ -276,6 +279,8 @@ def convert_agentic_function_calling_pivot(row: dict, row_idx: int) -> HarborTas
             _MESSAGE_HEADER + body,
             field_name="instruction_md",
             max_len=_INSTR_MAX,
+        ) + answer_delivery_guidance(
+            "/app/response.txt", what="your reply"
         )
         task_id = task_id_for(
             "agentic-msg-pivot",

@@ -35,6 +35,7 @@ import json
 from ..adapter import (
     HarborTask,
     STANDARD_TEST_SH,
+    answer_delivery_guidance,
     render_dockerfile,
     render_metadata,
     sanitize_text,
@@ -89,6 +90,15 @@ _INSTRUCTION_HEADER_TMPL = (
     "`/app/answer.txt`.\n{note}\n\n---\n\n"
 )
 
+# Per-format `what=` phrasing for the answer-delivery guidance block.
+_DELIVERY_WHAT = {
+    "json": "your JSON document",
+    "yaml": "your YAML document",
+    "toml": "your TOML document",
+    "xml": "your XML document",
+    "csv": "your CSV data",
+}
+
 
 @register(_REPO)
 def convert_structured_outputs_v2(row: dict, row_idx: int) -> HarborTask | None:
@@ -113,6 +123,13 @@ def convert_structured_outputs_v2(row: dict, row_idx: int) -> HarborTask | None:
 
     note = _FORMAT_NOTE[schema_type]
     instruction = _INSTRUCTION_HEADER_TMPL.format(note=note) + prompt
+    # Append the canonical terminal-agent delivery guidance LAST so it is never
+    # truncated and the agent is told HOW to write /app/answer.txt (the path the
+    # STRUCTURED_FORMAT_VERIFIER reads). Fixes the ~64% "answer.txt missing"
+    # delivery bug where terminus-2 emitted its doc as chat instead of a file.
+    instruction += answer_delivery_guidance(
+        "/app/answer.txt", what=_DELIVERY_WHAT[schema_type]
+    )
 
     task_id = task_id_for(
         "if-structured-v2",

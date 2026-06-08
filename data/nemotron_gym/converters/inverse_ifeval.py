@@ -29,6 +29,7 @@ from ..adapter import (
     HarborTask,
     LLM_JUDGE_TASK_TOML,
     STANDARD_TEST_SH,
+    answer_delivery_guidance,
     render_dockerfile,
     render_metadata,
     sanitize_text,
@@ -114,9 +115,20 @@ def convert_inverse_ifeval(row: dict, row_idx: int) -> HarborTask | None:
         (rid or prompt[:128]) + "|" + str(len(criteria)) + "|" + str(row_idx),
     )
 
+    # Delivery contract: terminus-2 emits its answer as a chat reply by default
+    # and never writes the file, so ~34% of trials failed with "Agent response
+    # not found at /app/response.txt". Append the canonical heredoc HOW-to-write
+    # guidance AFTER the (already-sanitized) prompt so it can never be truncated
+    # away, and point at the EXACT path the judge reads (/app/response.txt).
+    instruction_md = (
+        _INSTRUCTION_HEADER
+        + prompt
+        + answer_delivery_guidance("/app/response.txt", what="your full response")
+    )
+
     return HarborTask(
         task_id=task_id,
-        instruction_md=_INSTRUCTION_HEADER + prompt,
+        instruction_md=instruction_md,
         dockerfile=render_dockerfile(
             base=_BASE_IMAGE,
             pip_packages=("litellm==1.51.3",),

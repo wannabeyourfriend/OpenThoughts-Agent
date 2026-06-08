@@ -50,6 +50,7 @@ import json
 from ..adapter import (
     HarborTask,
     STANDARD_TEST_SH,
+    answer_delivery_guidance,
     render_dockerfile,
     render_metadata,
     sanitize_text,
@@ -145,8 +146,16 @@ def convert_agentic_swe_pivot(row: dict, row_idx: int) -> HarborTask | None:
         body = body[:_TRANSCRIPT_MAX] + "\n\n[... transcript truncated ...]"
 
     expected = [{"name": name, "arguments": args}]
+    # Teach the TERMINAL agent HOW to deliver the answer (write the JSON
+    # tool-call object to /app/answer.txt via a shell heredoc). The existing
+    # answer-format spec in _HEADER says WHAT to write; this says HOW. Appended
+    # after transcript truncation so the delivery guidance is always present.
+    delivery = answer_delivery_guidance(
+        "/app/answer.txt",
+        what="the JSON tool-call object (name + arguments)",
+    )
     instruction = sanitize_text(
-        _HEADER + body,
+        _HEADER + body + delivery,
         field_name="instruction_md",
         max_len=_INSTR_MAX,
     )

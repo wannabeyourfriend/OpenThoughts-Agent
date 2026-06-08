@@ -37,6 +37,7 @@ from __future__ import annotations
 from ..adapter import (
     HarborTask,
     STANDARD_TEST_SH,
+    answer_delivery_guidance,
     render_dockerfile,
     render_metadata,
     task_id_for,
@@ -52,11 +53,19 @@ _TRANSDUCTIVE_HEADER = (
     "You are solving an ARC-AGI puzzle. Read the problem below, work out the "
     "rule that maps each input grid to its output grid, then write your final "
     "answer to the path `/app/answer.txt`.\n\n"
-    "Format requirement: the answer file must contain `\\boxed{solution}` where "
-    "`solution` is the output grid — one row per line, cell values separated by "
-    "spaces (single-digit values 0-9). The verifier extracts the last "
-    "`\\boxed{...}` it finds and compares the grid cell-by-cell to the gold "
-    "output. JSON list-of-lists is also accepted.\n\n"
+    "## Output grid format (REQUIRED — read carefully)\n"
+    "Write the output grid as plain text: **one grid row per line**, and within "
+    "each row the **cell values separated by single spaces** (each cell is a "
+    "single digit 0-9). Do NOT use JSON, brackets, commas, or markdown fences. "
+    "Do NOT concatenate the digits of a row together.\n\n"
+    "For example, the 2-row by 3-column grid whose first row is 2,9,2 and "
+    "second row is 0,1,0 must be written EXACTLY as:\n\n"
+    "    2 9 2\n"
+    "    0 1 0\n\n"
+    "That is the entire content of `/app/answer.txt` for that example — two "
+    "lines, three space-separated digits each. The grader parses this exact "
+    "format and compares your grid to the gold output cell-by-cell; an extra "
+    "row, a missing cell, or any wrong value scores 0.\n\n"
     "---\n\n"
 )
 
@@ -101,7 +110,13 @@ def _convert_transductive(row: dict, row_idx: int) -> HarborTask | None:
     expected = _coerce_grid(row.get("expected_output"))
     if expected is None:
         return None
-    instruction_md = _TRANSDUCTIVE_HEADER + prompt
+    # Delivery guidance MUST be appended after the (possibly long) prompt so
+    # the heredoc submission instructions are never cut by upstream truncation.
+    instruction_md = (
+        _TRANSDUCTIVE_HEADER
+        + prompt
+        + answer_delivery_guidance("/app/answer.txt", what="the output grid")
+    )
     dockerfile = render_dockerfile(base=_BASE_IMAGE)
     pid = row.get("problem_id") if isinstance(row.get("problem_id"), str) else str(row_idx)
     task_id = task_id_for("arc-trans", f"{pid}|{row_idx}|" + repr(expected))

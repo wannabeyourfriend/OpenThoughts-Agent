@@ -1,0 +1,87 @@
+### 4k-context instruction-following SFT for the Delphi RL scaling-laws series (marin #6279)
+#
+# Dataset-agnostic by design: the SFT dataset is supplied at launch as a CLI flag (see below), so
+# this config is not named for any one dataset. The intended dataset for #6279 is Tulu3
+# (allenai/tulu-3-sft-mixture).
+#
+# Purpose: give each of the 27 Delphi midtrained checkpoints (and their base models) basic
+# instruction-following + chat formatting before RL on MATH-500. NOT a math-teaching stage.
+# One shared config across ALL scales (447M @ 3e18 -> 9.7B @ 1e22) and mixes (p33m67/p50m50/p67m33)
+# so runs are directly comparable. Only `model_name_or_path` and `hub_model_id` vary per run
+# (both overridden at launch via `python -m hpc.launch --model_path ... --hub_model_id ...`).
+#
+# Template = llama3 (VERIFIED, not an assumption): the Delphi tokenizer is the Llama-3 tokenizer
+# (vocab 128256). It ships NO chat_template and NO ChatML tokens (`<|im_start|>`/`<|im_end|>` are
+# absent), but DOES carry the Llama-3 control tokens `<|start_header_id|>` (128006),
+# `<|end_header_id|>` (128007), `<|eot_id|>` (128009). `template: qwen3` would emit tokens that are
+# not in this vocab and silently shred every example, so it MUST be llama3. (This is a tokenizer
+# compatibility choice, not a data-lineage claim — Delphi shares no pretraining data with Llama-3.)
+#
+# cutoff_len = 4096 = the Delphi pretrain/midtrain sequence length (config max_position_embeddings).
+# The rope_scaling(original_max_position_embeddings=8192) in the checkpoint config is Llama-3.1
+# carryover and inert at <=4096; 4096 is the in-distribution context. Tulu3 samples >4096 are
+# truncated (LLaMA-Factory truncates, does not drop) — acceptable for instruction-following SFT.
+#
+# Dataset is supplied at launch as a CLI flag (matches the qwen3 base-config pattern), e.g.:
+#   --dataset allenai/tulu-3-sft-mixture \
+#   --role_tag role --user_tag user --assistant_tag assistant --content_tag content
+# (Tulu3 is ShareGPT-style `messages:[{role,content}]`; without these tags LLaMA-Factory finds 0
+# assistant turns. Tulu3 is NOT registered in dataset_info.json, so it cannot be named in `dataset:`
+# here; the launcher registers it from the CLI flags.)
+#
+# LR = 2e-5: one conventional, shared SFT LR for all 27 (comparability + low divergence risk). The
+# README's per-checkpoint *midtraining* LRs (0.83/0.67/0.50/0.33 x base-peak-LR, ~1e-3 scale) are a
+# "don't exceed" reference only — they are 50-100x a normal SFT LR and would diverge if used here.
+# Override --learning_rate only for a deliberate, separately-labeled LR ablation; keep it fixed for
+# the controlled 27-run set.
+
+### HPC Launch Settings
+global_batch_size: 16
+# gradient_accumulation_steps = global_batch_size // (num_nodes * gpus_per_node)
+
+### model
+model_name_or_path: laion/delphi-3e18-p33m67-k0p20-lr83-a003   # PLACEHOLDER — overridden per run via --model_path
+trust_remote_code: true
+attn: fa2
+enable_liger_kernel: true
+optim: adamw_torch_fused
+
+### method
+stage: sft
+do_train: true
+finetuning_type: full
+deepspeed: sft/lf_configs/deepspeed/ds_z3_accelerate.json
+include_mfu: true
+
+### dataset
+# dataset + ShareGPT tags are passed at launch (see header). Do NOT hardcode a `dataset:` here.
+template: llama3
+cutoff_len: 4096
+overwrite_cache: true
+preprocessing_num_workers: 16
+dataloader_persistent_workers: true
+dataloader_pin_memory: true
+dataloader_num_workers: 4
+
+### output
+logging_steps: 5
+save_strategy: "steps"
+save_steps: 1500
+save_total_limit: 1
+load_best_model_at_end: false
+logging_strategy: "steps"
+plot_loss: true
+report_to: wandb
+
+### train
+learning_rate: 2.0e-5
+num_train_epochs: 1.0
+max_grad_norm: 1.0
+adam_beta2: 0.98
+lr_scheduler_type: cosine
+warmup_ratio: 0.1
+bf16: true
+pure_bf16: false
+gradient_checkpointing: true
+ddp_timeout: 180000000
+push_to_hub: true

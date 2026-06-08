@@ -22,6 +22,13 @@ CLI::
 Heartbeat: each poll cycle writes the current UTC timestamp to
 ``~/.ot-agent/state/daemon.heartbeat``. ``status`` shows how stale it is.
 
+Hang watchdog: each poll, every actively-RUNNING job is checked for the
+severed-Daytona dead-hang (RUNNING but harbor's result.json ``updated_at``
+frozen past a threshold despite having served trials). Hung jobs are
+``iris job kill``-ed and marked FAILED. Tuned via ``OT_AGENT_WATCHDOG``
+(kill | log_only | off), ``OT_AGENT_WATCHDOG_HANG_SECONDS`` (default 7200),
+``OT_AGENT_WATCHDOG_PREFIX`` (default empty = all jobs).
+
 Design doc: ``notes/marin/flows/iris-outputs-redesign.md``.
 """
 
@@ -86,6 +93,27 @@ _IRIS_TERMINAL_FAILURE = {"JOB_STATE_FAILED", "JOB_STATE_CANCELLED", "JOB_STATE_
                           "JOB_STATE_TIMEOUT", "JOB_STATE_PREEMPTED"}
 _IRIS_RUNNING = {"JOB_STATE_PENDING", "JOB_STATE_RUNNING", "JOB_STATE_SCHEDULED",
                  "JOB_STATE_QUEUED", "JOB_STATE_SUBMITTED", "JOB_STATE_ASSIGNED"}
+
+# ---------------------------------------------------------------------
+# Hang watchdog
+# ---------------------------------------------------------------------
+# Iris jobs occasionally dead-hang after a preempt-restart: iris keeps the
+# job RUNNING, but harbor's connection to Daytona is silently severed and it
+# stops making progress indefinitely (see memory
+# `iris-datagen-severed-daytona-hang`). harbor stamps a wall-clock
+# `updated_at` into its GCS result.json on every status flush; when the job
+# hangs, that timestamp freezes. The watchdog kills a RUNNING job whose
+# result.json shows it has served (`n_completed_trials > 0`) but whose
+# `updated_at` has been stale longer than the threshold.
+#
+# The `n_completed_trials > 0` guard means a job still in cold compile (no
+# result.json, or zero completed trials) is NEVER auto-killed — only jobs
+# that were demonstrably alive and then went silent. Cold-compile stalls are
+# the engine healthcheck's job, not the watchdog's.
+WATCHDOG_MODE = os.environ.get("OT_AGENT_WATCHDOG", "kill")  # kill | log_only | off
+WATCHDOG_HANG_SECONDS = int(os.environ.get("OT_AGENT_WATCHDOG_HANG_SECONDS", "7200"))
+# Empty = police every registered RUNNING job; else only job_names with this prefix.
+WATCHDOG_PREFIX = os.environ.get("OT_AGENT_WATCHDOG_PREFIX", "")
 
 
 # ---------------------------------------------------------------------
@@ -269,6 +297,118 @@ def fetch_record(record: JobRecord) -> bool:
 
 
 # ---------------------------------------------------------------------
+# Hang watchdog implementation
+# ---------------------------------------------------------------------
+
+def _parse_harbor_iso(ts: str) -> Optional[datetime]:
+    """Parse harbor's result.json ``updated_at`` (ISO-8601 UTC, trailing Z)."""
+    try:
+        return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return None
+
+
+def _is_hung(updated_at: Optional[datetime], n_completed: Optional[int],
+             now: datetime, threshold_seconds: int) -> bool:
+    """Pure hang predicate (no I/O — unit-tested directly).
+
+    Hung iff harbor has served at least one trial (``n_completed > 0``) and
+    its last status flush (``updated_at``) is older than ``threshold_seconds``.
+    A job with no result.json / no completed trials (falsy ``updated_at`` or
+    ``n_completed``) is never hung — that's a cold compile, owned by the
+    engine healthcheck, not the watchdog.
+    """
+    if updated_at is None or not n_completed or n_completed <= 0:
+        return False
+    return (now - updated_at).total_seconds() > threshold_seconds
+
+
+def _harbor_liveness(record: JobRecord) -> tuple[Optional[datetime], Optional[int]]:
+    """Read ``(updated_at, n_completed_trials)`` from the job's result.json.
+
+    result.json lives at ``<gcs_output_dir>/<job_name>/result.json`` and is
+    rewritten by harbor on every status flush. Retries briefly on a
+    truncated/racing read; returns ``(None, None)`` on any persistent failure
+    (absent file, unreadable, parse error) so the caller treats the job as
+    "can't tell → don't kill".
+    """
+    path = f"{record.gcs_output_dir.rstrip('/')}/{record.job_name}/result.json"
+    for attempt in range(3):
+        try:
+            proc = subprocess.run(
+                [GCLOUD_CLI, "storage", "cat", path],
+                capture_output=True, text=True, timeout=120,
+            )
+        except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+            _log(f"watchdog: result.json read failed for {record.job_id}: {e}", err=True)
+            return None, None
+        if proc.returncode == 0:
+            try:
+                data = json.loads(proc.stdout)
+            except json.JSONDecodeError:
+                data = None
+            if data is not None:
+                updated_at = _parse_harbor_iso(data.get("updated_at") or "")
+                n_completed = data.get("stats", {}).get("n_completed_trials")
+                return updated_at, n_completed
+        if attempt < 2:
+            time.sleep(1)
+    # result.json absent (cold compile / never served) or persistently unreadable.
+    return None, None
+
+
+def _watchdog_kill(record: JobRecord) -> bool:
+    """``iris job kill`` the hung job. Returns True on success."""
+    cmd = [IRIS_CLI, "--config", record.cluster_config, "job", "kill", record.job_id]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+        _log(f"watchdog: kill subprocess failed for {record.job_id}: {e}", err=True)
+        return False
+    if proc.returncode != 0:
+        _log(f"watchdog: kill rc={proc.returncode} for {record.job_id}: "
+             f"{(proc.stderr or '').strip()[:200]}", err=True)
+        return False
+    return True
+
+
+def watchdog_check(record: JobRecord, now: datetime) -> bool:
+    """Detect + act on a hung RUNNING job.
+
+    Returns True iff the job was auto-killed (caller should stop treating it
+    as RUNNING — the registry row is already marked FAILED). Honors
+    ``OT_AGENT_WATCHDOG`` (kill | log_only | off) and ``OT_AGENT_WATCHDOG_PREFIX``.
+    """
+    if WATCHDOG_MODE == "off":
+        return False
+    if WATCHDOG_PREFIX and not record.job_name.startswith(WATCHDOG_PREFIX):
+        return False
+
+    updated_at, n_completed = _harbor_liveness(record)
+    if not _is_hung(updated_at, n_completed, now, WATCHDOG_HANG_SECONDS):
+        return False
+
+    stale_h = (now - updated_at).total_seconds() / 3600.0
+    detail = (f"harbor result.json stale {stale_h:.1f}h "
+              f"(threshold {WATCHDOG_HANG_SECONDS / 3600:.1f}h), n_completed={n_completed}")
+
+    if WATCHDOG_MODE == "log_only":
+        _log(f"watchdog: WOULD KILL {record.job_id} — {detail}")
+        return False
+
+    _log(f"watchdog: KILL {record.job_id} — {detail}")
+    if not _watchdog_kill(record):
+        return False  # kill failed; leave RUNNING, retry next cycle
+    update_status(
+        record.job_id, status=STATUS_FAILED,
+        last_polled_at_iso=_now_iso(),
+        error_msg=f"watchdog: hung {stale_h:.1f}h, auto-killed",
+    )
+    _log(f"watchdog: killed {record.job_id}, marked FAILED")
+    return True
+
+
+# ---------------------------------------------------------------------
 # Poll loop
 # ---------------------------------------------------------------------
 
@@ -315,6 +455,14 @@ def poll_once() -> None:
             now_iso = _now_iso()
 
             if state in _IRIS_RUNNING:
+                # Hang watchdog: only actively-RUNNING jobs can be hung
+                # (PENDING/QUEUED have no harbor result.json yet). If it
+                # auto-kills, the row is already marked FAILED — skip the
+                # RUNNING re-stamp so the job flows to fetch next cycle.
+                if state == "JOB_STATE_RUNNING" and watchdog_check(
+                    r, datetime.now(timezone.utc)
+                ):
+                    continue
                 update_status(
                     r.job_id, status=STATUS_RUNNING,
                     last_polled_at_iso=now_iso,
@@ -496,6 +644,11 @@ def _build_plist(*, interval: int) -> dict:
             "PATH": ":".join(path_ordered),
             "OT_AGENT_IRIS_CLI": IRIS_CLI,
             "OT_AGENT_GCLOUD_CLI": GCLOUD_CLI,
+            # Bake the watchdog config resolved at install time so the
+            # launchd agent enforces the same policy as the foreground CLI.
+            "OT_AGENT_WATCHDOG": WATCHDOG_MODE,
+            "OT_AGENT_WATCHDOG_HANG_SECONDS": str(WATCHDOG_HANG_SECONDS),
+            "OT_AGENT_WATCHDOG_PREFIX": WATCHDOG_PREFIX,
         },
     }
 

@@ -58,6 +58,7 @@ from ..adapter import (
     HarborTask,
     DEFAULT_TASK_TOML,
     STANDARD_TEST_SH,
+    answer_delivery_guidance,
     render_dockerfile,
     render_metadata,
     sanitize_text,
@@ -291,6 +292,15 @@ def convert_agentic_indirect_prompt_injection(row: dict, row_idx: int) -> Harbor
         _HEADER + body,
         field_name="instruction_md",
         max_len=_INSTR_MAX,
+    )
+    # Teach the TERMINAL agent HOW to deliver its answer (write a file via shell).
+    # Without this, terminus emits the JSON as its chat reply, no file is written,
+    # and the verifier scores 0 ("missing -> no well-formed action") regardless of
+    # whether the agent resisted the injection. Trusted fixed string -> appended
+    # AFTER sanitization (it intentionally contains a heredoc shell snippet).
+    instruction = instruction + answer_delivery_guidance(
+        "/app/answer.txt",
+        what="the JSON object describing your next action (a tool call, OR a refusal/clarification message)",
     )
 
     task_id = task_id_for(

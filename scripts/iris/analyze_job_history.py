@@ -25,6 +25,7 @@ import re
 import statistics
 import subprocess
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -43,6 +44,12 @@ PATCH_APPLIED_RE = re.compile(r"\[tpu-inference-patch\] APPLIED:")
 # Rendezvous polling has an embedded epoch-seconds timestamp:
 # "[start_vllm_iris_controller] Polling for rendezvous ... min written_at <epoch>)..."
 RENDEZVOUS_RE = re.compile(r"min written_at (\d+)\)")
+
+# result.json is harbor's large, continuously-updated status file; a `gsutil cat`
+# that races a mid-write (or a truncated transfer) yields a JSONDecodeError. The
+# read is the reader's only handle, so retry briefly before degrading gracefully.
+HARBOR_FETCH_ATTEMPTS = 3
+HARBOR_FETCH_BACKOFFS = (1, 2)
 
 # Throughput line from vLLM's logger has an embedded MM-DD HH:MM:SS:
 # "(APIServer pid=N) INFO 05-30 07:07:36 [loggers.py:271] Engine ...: Avg prompt
@@ -575,14 +582,30 @@ def list_trial_trajectories(job_name: str) -> list[TrialStatus]:
 
 
 def fetch_harbor_result(job_name: str) -> dict | None:
-    """Cat <root>/<job_name>/<job_name>/result.json."""
+    """Cat <root>/<job_name>/<job_name>/result.json.
+
+    result.json is mutated in place by harbor on a remote worker; a `gsutil cat`
+    that races a write can return a truncated payload that fails to parse. Retry
+    briefly on the transient failure modes (gsutil non-zero exit, JSONDecodeError)
+    and return None on persistent failure so the caller degrades without harbor
+    stats rather than aborting the whole run.
+    """
     path = f"{GCS_ROOT}/{job_name}/{job_name}/result.json"
-    proc = subprocess.run(
-        ["gsutil", "cat", path], capture_output=True, text=True
+    for attempt in range(HARBOR_FETCH_ATTEMPTS):
+        proc = subprocess.run(["gsutil", "cat", path], capture_output=True, text=True)
+        if proc.returncode == 0:
+            try:
+                return json.loads(proc.stdout)
+            except json.JSONDecodeError:
+                pass
+        if attempt < len(HARBOR_FETCH_BACKOFFS):
+            time.sleep(HARBOR_FETCH_BACKOFFS[attempt])
+    print(
+        f"[{job_name}] WARNING: result.json unreadable after {HARBOR_FETCH_ATTEMPTS} "
+        "attempts (truncated/mid-update read or gsutil failure); skipping harbor stats",
+        file=sys.stderr,
     )
-    if proc.returncode != 0:
-        return None
-    return json.loads(proc.stdout)
+    return None
 
 
 # ---------- Stats helpers ----------

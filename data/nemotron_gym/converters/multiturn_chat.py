@@ -42,6 +42,7 @@ from ..adapter import (
     HarborTask,
     LLM_JUDGE_TASK_TOML,
     STANDARD_TEST_SH,
+    answer_delivery_guidance,
     render_dockerfile,
     render_metadata,
     sanitize_text,
@@ -143,9 +144,21 @@ def convert_multiturn_chat(row: dict, row_idx: int) -> HarborTask | None:
 
     md = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
 
+    # Canonical delivery guidance appended AFTER the (possibly large, possibly
+    # truncated) transcript so the HOW-to-submit heredoc is never cut. This is
+    # the proven fix for terminus-2 emitting the answer as chat and never
+    # writing the file — the verifier reads /app/response.txt only.
+    instruction_md = (
+        _INSTRUCTION_HEADER
+        + conversation
+        + answer_delivery_guidance(
+            "/app/response.txt", what="your final response in the conversation"
+        )
+    )
+
     return HarborTask(
         task_id=task_id,
-        instruction_md=_INSTRUCTION_HEADER + conversation,
+        instruction_md=instruction_md,
         dockerfile=render_dockerfile(
             base=_BASE_IMAGE,
             pip_packages=("litellm==1.51.3",),

@@ -7,6 +7,7 @@ import re
 from ..adapter import (
     HarborTask,
     STANDARD_TEST_SH,
+    answer_delivery_guidance,
     render_dockerfile,
     render_metadata,
     sanitize_text,
@@ -338,7 +339,14 @@ def convert_math_v3(row: dict, row_idx: int) -> HarborTask | None:
     if not expected:
         return None
     expected = sanitize_text(expected, field_name="expected_answer", max_len=8 * 1024)
-    instruction_md = _INSTRUCTION_HEADER + prompt
+    instruction_md = (
+        _INSTRUCTION_HEADER
+        + prompt
+        + answer_delivery_guidance(
+            "/app/answer.txt",
+            what="your solution, ending with the final answer in \\boxed{...}",
+        )
+    )
     dockerfile = render_dockerfile(
         base=_BASE_IMAGE,
         pip_packages=("sympy==1.13.3", "antlr4-python3-runtime==4.11"),

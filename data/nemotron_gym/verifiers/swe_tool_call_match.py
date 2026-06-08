@@ -51,6 +51,9 @@ import sys
 
 REWARD = pathlib.Path("/logs/verifier/reward.txt")
 ANSWER = pathlib.Path("/app/answer.txt")
+# Fallback: a terminal agent may write its tool-call JSON to /app/response.txt
+# instead of /app/answer.txt. Read both, prefer answer.txt.
+RESPONSE = pathlib.Path("/app/response.txt")
 DATA = pathlib.Path("/tests/verifier_data.json")
 
 # Argument keys to ignore on BOTH sides (volatile / advisory, not semantic).
@@ -112,10 +115,14 @@ def main() -> int:
     if not isinstance(expected, list) or not expected:
         print("expected calls missing", file=sys.stderr)
         return 0
-    if not ANSWER.exists():
-        print("/app/answer.txt missing", file=sys.stderr)
+    if ANSWER.exists():
+        raw = ANSWER.read_text(errors="replace")
+    elif RESPONSE.exists():
+        print("/app/answer.txt missing; falling back to /app/response.txt")
+        raw = RESPONSE.read_text(errors="replace")
+    else:
+        print("/app/answer.txt and /app/response.txt both missing", file=sys.stderr)
         return 0
-    raw = ANSWER.read_text(errors="replace")
     fence = re.search(r"```(?:json)?\s*(.*?)```", raw, flags=re.DOTALL)
     candidate = fence.group(1) if fence else raw
     try:

@@ -57,6 +57,7 @@ from ..adapter import (
     LLM_JUDGE_TASK_TOML,
     STANDARD_TEST_SH,
     SanitizationError,
+    answer_delivery_guidance,
     render_dockerfile,
     render_metadata,
     sanitize_text,
@@ -201,7 +202,14 @@ def convert_multichallenge(row: dict, row_idx: int) -> HarborTask | None:
 
     return HarborTask(
         task_id=task_id,
-        instruction_md=_INSTRUCTION_HEADER + prompt,
+        # Append the canonical delivery guidance AFTER the conversation context
+        # (prompt), so the HOW-to-write-the-file heredoc is never lost to the
+        # 64KB prompt truncation that can trim the middle/end of `prompt`.
+        instruction_md=(
+            _INSTRUCTION_HEADER
+            + prompt
+            + answer_delivery_guidance("/app/response.txt", what="your final response")
+        ),
         dockerfile=render_dockerfile(
             base=_BASE_IMAGE,
             pip_packages=("litellm==1.51.3",),

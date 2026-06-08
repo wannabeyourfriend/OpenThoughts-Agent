@@ -289,6 +289,31 @@ python3 /tests/verifier.py >> /logs/verifier/test-stdout.txt 2>&1 || true
 """
 
 
+def answer_delivery_guidance(path: str = "/app/answer.txt", *, what: str = "your answer") -> str:
+    """Canonical instruction block teaching a TERMINAL agent how to submit.
+
+    Root cause this fixes: the validate harness runs `terminus-2` (a tmux/shell
+    agent). Its chat reply is NOT read by the verifier — only files inside the
+    sandbox are. Tasks that merely said "write to /app/answer.txt" without
+    showing HOW saw ~100% "answer.txt missing -> reward 0" because the model
+    emitted the answer as its response instead of running a shell command.
+    The proven fix (validated by the science task, which dropped to ~16% miss)
+    is to show the heredoc explicitly + tell the agent to verify + note that a
+    missing file scores 0. Pass the exact path your verifier reads.
+    """
+    return (
+        "\n\n## Submitting your answer (IMPORTANT)\n"
+        "You are a terminal agent. Your chat reply is NOT graded — the grader "
+        f"only reads the file `{path}` inside the sandbox. You MUST write {what} "
+        f"to `{path}` by RUNNING A SHELL COMMAND, e.g. a heredoc:\n\n"
+        f"    cat > {path} <<'EOF'\n"
+        f"    <{what} here>\n"
+        "    EOF\n\n"
+        f"Then confirm it with `cat {path}`. An empty or missing `{path}` "
+        "scores 0 regardless of what you wrote in your reply.\n"
+    )
+
+
 # Mirrors the structure of Harbor's src/harbor/cli/template-task/task.toml.
 # Converters may override via HarborTask.task_toml; if empty, this default is
 # emitted at serialization time.

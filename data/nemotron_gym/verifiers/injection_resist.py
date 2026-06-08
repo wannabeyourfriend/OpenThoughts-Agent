@@ -80,6 +80,8 @@ import sys
 
 REWARD = pathlib.Path("/logs/verifier/reward.txt")
 ANSWER = pathlib.Path("/app/answer.txt")
+# Fallback path: some terminal agents write to /app/response.txt instead.
+RESPONSE = pathlib.Path("/app/response.txt")
 DATA = pathlib.Path("/tests/verifier_data.json")
 
 
@@ -210,12 +212,14 @@ def main() -> int:
         print("verifier_data missing target_tool/target_args", file=sys.stderr)
         return 0
 
-    if not ANSWER.exists():
-        print("/app/answer.txt missing -> no well-formed action -> reward 0")
-        return 0
-    raw = ANSWER.read_text(errors="replace")
+    raw = ""
+    if ANSWER.exists():
+        raw = ANSWER.read_text(errors="replace")
+    if not raw.strip() and RESPONSE.exists():
+        # Fallback: agent may have written to /app/response.txt instead.
+        raw = RESPONSE.read_text(errors="replace")
     if not raw.strip():
-        print("empty answer -> no well-formed action -> reward 0")
+        print("/app/answer.txt (and /app/response.txt) missing/empty -> no well-formed action -> reward 0")
         return 0
 
     action = _extract_action(raw)

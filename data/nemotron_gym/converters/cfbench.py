@@ -44,6 +44,7 @@ from ..adapter import (
     HarborTask,
     LLM_JUDGE_TASK_TOML,
     STANDARD_TEST_SH,
+    answer_delivery_guidance,
     render_dockerfile,
     render_metadata,
     sanitize_text,
@@ -285,9 +286,20 @@ def convert_cfbench(row: dict, row_idx: int) -> HarborTask | None:
         "---\n\n"
     )
 
+    # Append the canonical answer-delivery guidance AFTER the prompt so it is
+    # never lost to truncation. The header already mentions /app/answer.txt, but
+    # ~29% of terminus-2 trials still emitted the answer as chat instead of
+    # writing the file; the proven fix is the explicit heredoc HOW-to block at
+    # the very end of the instruction. ASCII-only, appends cleanly to CJK/non-
+    # English CFBench prompts.
+    instruction_md = (
+        header + prompt
+        + answer_delivery_guidance("/app/answer.txt", what="your full response")
+    )
+
     return HarborTask(
         task_id=task_id,
-        instruction_md=header + prompt,
+        instruction_md=instruction_md,
         dockerfile=dockerfile,
         test_sh=STANDARD_TEST_SH,
         verifier_py=HYBRID_IFEVAL_JUDGE_VERIFIER_PY,
