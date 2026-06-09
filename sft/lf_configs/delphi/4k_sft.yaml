@@ -62,8 +62,14 @@ dataloader_num_workers: 4
 ### output
 logging_steps: 5
 save_strategy: "steps"
-save_steps: 1500
-save_total_limit: 1
+# save_steps = S* = ceil(N_min / global_batch_size) = ceil(385700 / 16) = 24107
+# (N_min = smallest dataset, wildchat_386k). Saving at S* preserves the
+# compute-matched checkpoint for every cell (grid protocol). save_total_limit=4
+# keeps S* + later multiples + final for the largest dataset (~70k steps -> 3
+# save points) without pruning S*. These are checkpointing-cadence knobs only —
+# they do NOT affect the optimization, so the LR x dataset comparison is unaffected.
+save_steps: 24107
+save_total_limit: 4
 load_best_model_at_end: false
 logging_strategy: "steps"
 plot_loss: true
@@ -80,4 +86,7 @@ bf16: true
 pure_bf16: false
 gradient_checkpointing: true
 ddp_timeout: 180000000
-push_to_hub: true
+# push_to_hub: false — Leonardo compute nodes hit the unreachable hub at run
+# start (canary fix §9.5); model saves locally, upload from the login node
+# post-run via the sbatch-tunnel pattern (SFT_LEONARDO_INSTRUCTIONS §7).
+push_to_hub: false
