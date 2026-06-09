@@ -19,7 +19,7 @@ dependencies = [
     "datasets>=2.0.0",
     "supabase>=2.22.3",
     "python-dotenv>=1.0.0",
-    "harbor[daytona] @ git+https://github.com/marin-community/harbor.git@penfever/otagent-latest",
+    "harbor[daytona] @ git+https://github.com/marin-community/harbor.git@penfever/working",
     "dynamic-semaphore @ git+https://github.com/penfever/dynamic-semaphore",
     "google-cloud-storage",
     "h5py",
@@ -80,7 +80,7 @@ datagen-swesmith = [
 #   jax==0.9.2, jaxlib==0.9.2, libtpu==0.0.39  (pulled transitively)
 #   torch==2.10.0+cpu, torchvision==0.25.0+cpu, triton==3.6.0
 #   transformers==5.5.3, huggingface-hub==1.16.0, accelerate==1.12.0
-#   harbor==0.7.0 (@penfever/otagent-latest), daytona>=0.180.0
+#   harbor==0.7.0 (@penfever/working), daytona>=0.180.0
 #   ray==2.55.1, google-genai==2.5.0
 # Stage C smoke: Qwen/Qwen3.5-4B (hybrid GDN, 24 mamba + 8 attn layers) on tp=4,
 #   bf16, max_model_len=1024, max_num_seqs=2, gpu_memory_utilization=0.70,
