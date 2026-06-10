@@ -279,10 +279,11 @@ trainer:
   # Evaluation and checkpointing
   eval_interval: 999999
   eval_before_train: false
-  # ckpt every 3 steps — 80B checkpoints are huge (write cost is high); every-3
-  # bounds chain-restart auto-resume loss to <=3 steps while keeping the write
-  # overhead tolerable. Matches the working baked sbatch.
-  ckpt_interval: 3
+  # ckpt_interval=1: each 80B step ~4.5h, job dies in step-2/walltime before step-3 → must bank step-1 to avoid resume-from-0 (2026-06-10).
+  # (was 3 — every-3 never banked a checkpoint because the job never reached
+  # step 3, so every chain link resumed from global_step 0 → zero cumulative
+  # progress. 80B checkpoints are huge but step-1 is reliably reachable in ~4.5h.)
+  ckpt_interval: 1
   resume_mode: latest
   hf_save_interval: 5
   hf_hub_repo_id: null
