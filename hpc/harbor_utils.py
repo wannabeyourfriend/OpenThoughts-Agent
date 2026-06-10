@@ -725,6 +725,13 @@ def build_harbor_command(
         harbor_binary,
         "jobs",
         "start",
+        # Non-interactive: suppress harbor's host-env confirmation prompt
+        # (`_confirm_host_env_access` console.input, jobs.py, added in PR #1195).
+        # Verified configs declare host-env vars (OPENAI_API_KEY/JUDGE_MODEL for
+        # the LLM judge) which trigger the prompt; under SLURM there is no TTY so
+        # console.input() blocks forever → 12h TIMEOUT, zero output (datagen #22
+        # 2026-06-10). The launcher is always non-interactive, so always confirm.
+        "--yes",
         "--config",
         temp_config_path,
         "--job-name",
