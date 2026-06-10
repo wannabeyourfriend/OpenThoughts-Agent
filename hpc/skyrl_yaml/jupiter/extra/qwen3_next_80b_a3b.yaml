@@ -326,9 +326,12 @@ trainer:
       # expert FFN. ep_comm_backend=torch = stock torch all-to-all (DeepEP off
       # for first bring-up). All four match the working baked sbatch (the Stage
       # 4-7 FSDP2-EP + router-replay capstone path).
-      # fsdp_size 4->6 (2026-06-08): EP=8 x FSDP=6 = 48 policy GPUs (12 nodes),
-      # up from 32, to clear the step-2 policy-backward GPU CUDA-OOM.
-      fsdp_size: 6
+      # fsdp_size ->8 (2026-06-10): 6 was INVALID — 64/6 uneven → optimizer dim-0
+      # 10≠9 crash at the step-1 Adam step (job 674574). EP=8 shards 512 experts to
+      # 64/EP-rank; FSDP then shards those 64, so fsdp_size MUST divide 64. 8 divides
+      # 64 cleanly (8 experts/FSDP-rank) AND adds OOM headroom over the 6 that was
+      # meant to clear the step-2 OOM. EP=8 x FSDP=8 = 64 policy GPUs (16 nodes).
+      fsdp_size: 8
       expert_model_parallel_size: 8
       # moe_router_replay RE-ENABLED (2026-06-07 step 4, R3+TIS bring-up): the
       # earlier log_ratio explosion was caused by replaying SENTINEL routing
@@ -354,7 +357,7 @@ trainer:
     fsdp_config:
       cpu_offload: true
       reshard_after_forward: true
-      fsdp_size: 6
+      fsdp_size: 8
       expert_model_parallel_size: 8
       # Re-enabled to match policy (2026-06-07 step 4, R3+TIS). Ref is INERT here
       # anyway (use_kl_loss=false → no RefWorker built), so this is config-consistency.
@@ -372,12 +375,13 @@ trainer:
   # but the policy/ref footprint is fixed here at 8 nodes.
   placement:
     colocate_all: false
-    # 2026-06-08: 8->12 policy nodes (32->48 GPUs, EP=8 x FSDP=6) to clear the
-    # step-2 policy-backward GPU CUDA-OOM. Step 1 passed clean; step 2 OOM'd once
-    # the optimizer state was resident — more FSDP shards = less per-GPU HBM.
-    # LAUNCH MUST PASS --num_nodes 28 (12 policy + 16 vLLM-engine nodes).
-    policy_num_nodes: 12
-    ref_num_nodes: 12
+    # 2026-06-10: 12->16 policy nodes (48->64 GPUs, EP=8 x FSDP=8). FSDP6 was
+    # invalid (64/6 uneven → step-1 Adam dim-0 10≠9, job 674574); FSDP8 divides
+    # 64 cleanly AND gives more sharding than 6 → also clears the step-2
+    # policy-backward GPU CUDA-OOM that motivated the FSDP6 bump.
+    # LAUNCH MUST PASS --num_nodes 32 (16 policy + 16 vLLM-engine nodes).
+    policy_num_nodes: 16
+    ref_num_nodes: 16
     policy_num_gpus_per_node: 4
     ref_num_gpus_per_node: 4
     # Reserve the 8 policy nodes (STRICT_SPREAD, whole-node bundles) BEFORE the
