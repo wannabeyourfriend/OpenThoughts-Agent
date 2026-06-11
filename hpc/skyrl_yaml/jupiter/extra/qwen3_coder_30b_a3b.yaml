@@ -239,19 +239,18 @@ trainer:
       # experts/EP-rank; FSDP=4 divides 32 (8 experts/FSDP-rank) → optimizer
       # dim-0 is clean (no 10≠9 uneven-shard crash). moe_grouped_gemm = fused
       # grouped-GEMM expert FFN. ep_comm_backend=torch = stock torch all-to-all.
-      # GROUPED-GEMM OFF + EP=1 (pure FSDP). The grouped-GEMM/R3 stack
-      # (GroupedMoEShim) was only validated on Qwen3-Next; on plain qwen3_moe the
-      # shim returns a 2-tuple but the baked transformers' Qwen3Moe decoder
-      # expects a bare tensor → TypeError at the first train-step forward
-      # (modeling_qwen3_moe.py:352). Disabling grouped-GEMM routes through the
-      # stock HF Qwen3MoeSparseMoeBlock, which matches the bare-tensor contract.
-      # EP=1 removes the expert-parallel grouped path entirely; FSDP=16 shards
-      # the 30B over the full 16-GPU policy world (4 nodes × 4) with cpu_offload.
-      # Divisibility: EP=1 → 128 experts/EP-rank; fsdp_size=16 | 128 ✓.
-      fsdp_size: 16
-      expert_model_parallel_size: 1
+      # GROUPED-GEMM ON. Grouped-GEMM must stay ON because only the grouped
+      # weight-sync path (_remap_grouped_state_dict / _extract_weights_streamed)
+      # produces the per-expert vLLM-loadable names; the ungrouped path raised
+      # KeyError: 'layers.0.mlp.experts.gate_up_proj' at weight-sync (job 849258).
+      # The qwen3_moe train-forward TypeError (job 848097) is now fixed in the
+      # shim itself: GroupedMoEShim returns a BARE TENSOR for Qwen3MoeSparseMoeBlock
+      # (matches the stock decoder's residual + self.mlp(h)) and the 2-tuple only
+      # for Qwen3-Next (MarinSkyRL penfever/working 2ce0a32).
+      fsdp_size: 4
+      expert_model_parallel_size: 4
       moe_router_replay: false
-      moe_grouped_gemm: false
+      moe_grouped_gemm: true
       ep_comm_backend: torch
   ref:
     # INERT (use_kl_loss=false → SkyRL builds no RefWorker, path never loaded).
@@ -261,12 +260,12 @@ trainer:
     fsdp_config:
       cpu_offload: true
       reshard_after_forward: true
-      # Mirror the policy: grouped-GEMM OFF + EP=1 + FSDP=16 (see policy
+      # Mirror the policy: grouped-GEMM ON + EP=4 + FSDP=4 (see policy
       # fsdp_config). Ref is INERT (use_kl_loss=false) but kept config-consistent.
-      fsdp_size: 16
-      expert_model_parallel_size: 1
+      fsdp_size: 4
+      expert_model_parallel_size: 4
       moe_router_replay: false
-      moe_grouped_gemm: false
+      moe_grouped_gemm: true
       ep_comm_backend: torch
 
   # Model placement (async training, disaggregated).
