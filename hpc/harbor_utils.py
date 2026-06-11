@@ -638,6 +638,7 @@ def build_harbor_command(
     dataset_path: Optional[str] = None,
     jobs_dir: Optional[str] = None,
     extra_agent_kwargs: Optional[Dict[str, Any]] = None,
+    export_hf_repo: Optional[str] = None,
 ) -> List[str]:
     """Build the harbor jobs start command.
 
@@ -850,6 +851,18 @@ def build_harbor_command(
         extra_args.append("--export-verifier-metadata")
     if not _flag_present("--export-episodes"):
         extra_args.extend(["--export-episodes", "last"])
+
+    # Push the exported traces to HF directly from harbor's (gs://-aware)
+    # export path. Without --export-push/--export-repo, `harbor jobs start`
+    # builds the dataset in memory and discards it — the historical reason
+    # datagen jobs produced no HF repo on a clean completion. harbor reads the
+    # token from HF_TOKEN/HUGGINGFACE_TOKEN (forwarded to the worker via
+    # --secrets-env). This supersedes the OT-Agent post_harbor_hook upload,
+    # which silently no-op'd on a gs:// jobs_dir.
+    if export_hf_repo and not _flag_present("--export-repo"):
+        if not _flag_present("--export-push"):
+            extra_args.append("--export-push")
+        extra_args.extend(["--export-repo", export_hf_repo])
 
     for extra in extra_args:
         cmd.append(extra)

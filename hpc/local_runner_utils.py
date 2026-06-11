@@ -1025,6 +1025,7 @@ class LocalHarborRunner:
                 dataset_slug=dataset_slug,
                 dataset_path=dataset_path,
                 extra_agent_kwargs=getattr(args, "_extra_agent_kwargs", None),
+                export_hf_repo=getattr(args, "upload_hf_repo", None),
             )
             print("Harbor command:", " ".join(harbor_cmd))
 

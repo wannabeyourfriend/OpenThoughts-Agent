@@ -17,7 +17,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
 from typing import Optional, Tuple
 
 from hpc.launch_utils import PROJECT_ROOT
@@ -130,35 +129,22 @@ class TracegenRunner(LocalHarborRunner):
         print("==============================")
 
     def post_harbor_hook(self) -> None:
-        """Upload traces to HuggingFace after Harbor completes."""
-        args = self.args
-        hf_repo = args.upload_hf_repo
-        if not hf_repo:
-            print("[upload] No --upload-hf-repo specified, skipping HuggingFace upload.")
-            return
+        """HF upload is now handled by harbor's own export.
 
-        job_name = self._harbor_job_name
-        jobs_dir_path = getattr(args, "_jobs_dir_path", None)
-        if not job_name or jobs_dir_path is None:
-            print("[upload] Unable to determine job directory; upload skipped.")
-            return
-
-        run_dir = Path(jobs_dir_path) / job_name
-
-        # Use shared upload function from launch_utils
-        from hpc.launch_utils import upload_traces_to_hf
-
-        try:
-            upload_traces_to_hf(
-                job_dir=run_dir,
-                hf_repo_id=hf_repo,
-                hf_private=args.upload_hf_private,
-                hf_token=args.upload_hf_token,
-                hf_episodes=args.upload_hf_episodes,
-                dry_run=args.dry_run,
+        When ``--upload_hf_repo`` is set, ``build_harbor_command`` passes
+        ``--export-push --export-repo <repo>`` to ``harbor jobs start``, so
+        harbor exports AND pushes from the (gs://-aware) job dir in one pass.
+        This hook used to do a second upload via ``upload_traces_to_hf``, but
+        it resolved the jobs dir from the YAML's relative ``jobs_dir`` (→ a
+        nonexistent local ``/app/trace_jobs/<job>``) and silently skipped on a
+        gs:// job dir — so it never actually uploaded. Delegating to harbor's
+        push removes that dead, misleading path.
+        """
+        if self.args.upload_hf_repo:
+            print(
+                "[upload] HF push delegated to harbor --export-push "
+                f"(repo {self.args.upload_hf_repo})."
             )
-        except Exception as e:
-            print(f"[upload] HuggingFace upload failed: {e}")
 
 
 def main() -> None:
