@@ -394,6 +394,20 @@ container:
     APPTAINERENV_VLLM_USE_FLASHINFER_SAMPLER: 0
     APPTAINERENV_VLLM_ATTENTION_BACKEND: FLASH_ATTN
     APPTAINERENV_TRITON_LIBCUDA_PATH: /.singularity.d/libs
+    # --- Cross-node NCCL fix for the 0.20.2rc0 SIF (job 852308 died at
+    # fsdp_strategy.py:435 torch::cuda::nccl::scatter with "NCCL Error 2:
+    # unhandled system error" on the 2-node IB policy state-dict load).
+    # NCCL log showed NET/IB : Using mlx5_0..3:1/IB/SHARP → SHARP/CollNet
+    # active inside Apptainer, the classic NCCL-Error-2 source when the SHARP
+    # daemon/libs are not wired through the container. Disable SHARP (CollNet)
+    # and NVLS; keep DEBUG=INFO so a recurrence surfaces the exact transport
+    # line. Config-local (this SIF only) — does NOT touch shared infra. ---
+    NCCL_COLLNET_ENABLE: 0
+    NCCL_NVLS_ENABLE: 0
+    NCCL_DEBUG: INFO
+    APPTAINERENV_NCCL_COLLNET_ENABLE: 0
+    APPTAINERENV_NCCL_NVLS_ENABLE: 0
+    APPTAINERENV_NCCL_DEBUG: INFO
     # --- HF offline on compute nodes (model pre-staged to HF cache) ---
     HF_HUB_OFFLINE: 1
     TRANSFORMERS_OFFLINE: 1
