@@ -42,7 +42,12 @@ BUILD_DEPS_WHEELS=/e/scratch/jureap59/feuer1/sif_build/build_deps_wheels
 RUNTIME_DEPS_WHEELS=/e/scratch/jureap59/feuer1/sif_build/runtime_deps_wheels
 
 STAMP=$(date +%Y%m%d_%H%M%S)
-BUILD=/e/scratch/jureap59/feuer1/sif_build/login_$STAMP
+# Stage the ENTIRE build on the LOGIN-LOCAL /tmp (1.3TB, ~90M free inodes, NO
+# project quota). The exa_scratch project quota is near its inode hard-limit
+# (8.8M, ~1.67M free) -- a sandbox unpacks ~270k+ small files (cutlass docs etc.)
+# and the first login attempt hit "Disk quota exceeded" mid-extraction on GPFS.
+# Only the final OUT_SIF (a single ~10GB file) lands on the GPFS containers dir.
+BUILD=/tmp/sifbuild0202_$STAMP
 SANDBOX=$BUILD/sandbox
 mkdir -p "$BUILD"
 export APPTAINER_TMPDIR=$BUILD/aptmp
@@ -60,7 +65,7 @@ echo "CUTLASS_SRC=$CUTLASS_SRC ($(cd $CUTLASS_SRC && git describe --tags 2>/dev/
 [ -d "$CUTLASS_SRC/include/cutlass" ] || { echo "FATAL: cutlass v4.4.2 src not found at $CUTLASS_SRC"; exit 2; }
 ls "$BUILD_DEPS_WHEELS"/*.whl   >/dev/null 2>&1 || { echo "FATAL: no build-dep wheels in $BUILD_DEPS_WHEELS"; exit 4; }
 ls "$RUNTIME_DEPS_WHEELS"/*.whl >/dev/null 2>&1 || { echo "FATAL: no runtime-dep wheels in $RUNTIME_DEPS_WHEELS"; exit 5; }
-df -h /e/scratch | tail -1
+echo "BUILD (login-local /tmp)=$BUILD"; df -h /tmp | tail -1; df -i /tmp | tail -1
 
 # Quick internet sanity (login node should reach github + pytorch).
 echo "=== internet sanity ==="
@@ -300,6 +305,6 @@ PYEOF
 
 echo "=== $(date) BUILD COMPLETE ==="
 echo "OUT_SIF=$OUT_SIF"
-echo "=== removing sandbox + scratch ==="
-rm -rf "$SANDBOX" "$APPTAINER_TMPDIR" "$APPTAINER_CACHEDIR" "$LOCAL" 2>/dev/null || true
+echo "=== removing login-local build scratch ($BUILD) ==="
+rm -rf "$BUILD" 2>/dev/null || true
 echo "=== done ==="

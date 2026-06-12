@@ -423,6 +423,7 @@ _DCFT_DEFAULT = os.path.abspath(os.path.join(_SCRIPT_DIR, ".."))
 os.environ.setdefault("DCFT", _DCFT_DEFAULT)
 
 from database.unified_db.utils import get_supabase_client, load_supabase_keys
+from eval.presets import load_presets
 
 
 # ---------------------------------------------------------------------------
@@ -936,7 +937,9 @@ def scan_jobs_dir_for_resume(
 
 
 # ---------- Preset Definitions ----------
-# Each preset can configure:
+# Presets are defined as one YAML per preset in eval/presets/ and loaded here
+# via the shared eval.presets catalog (the same catalog the Iris launcher
+# consumes). Each preset is a flat mapping that can configure:
 #   - datasets: list of HF dataset repos
 #   - sbatch_script: sbatch script to use (default: unified_eval_harbor_v4.sbatch)
 #   - log_suffix: suffix for log file
@@ -948,111 +951,8 @@ def scan_jobs_dir_for_resume(
 #   - vllm_max_retries: VLLM startup retries (default: 5)
 #   - agent_parser: Agent parser type (default: "", use "xml" for swebench)
 #   - slurm_time: SLURM time limit (default: "24:00:00")
-PRESETS: Dict[str, Dict] = {
-    "aider": {
-        "datasets": ["DCAgent2/aider_polyglot"],
-        "log_suffix": "aider",
-        "n_concurrent": 32,
-        "error_threshold": 20,
-        "vllm_max_retries": 10,
-        "enable_thinking": True,
-        "auto_snapshot": True,
-        "config_yaml": "dcagent_eval_config_no_override.yaml",
-    },
-    "bfcl": {
-        "datasets": ["DCAgent2/bfcl-parity"],
-        "log_suffix": "bfcl",
-        "n_concurrent": 32,
-        "error_threshold": 20,
-        "vllm_max_retries": 20,
-        "enable_thinking": True,
-        "auto_snapshot": True,
-        "config_yaml": "dcagent_eval_config_no_override.yaml",
-    },
-    "medagentbench": {
-        "datasets": ["DCAgent/medagentbench"],
-        "log_suffix": "medagent",
-        "n_concurrent": 32,
-        "error_threshold": 10,
-        "vllm_max_retries": 20,
-        "enable_thinking": True,
-        "auto_snapshot": True,
-        "config_yaml": "dcagent_eval_config_no_override.yaml",
-    },
-    "gaia": {
-        "datasets": ["DCAgent/gaia_127"],
-        "log_suffix": "gaia",
-        "n_concurrent": 32,
-        "error_threshold": 10,
-        "vllm_max_retries": 20,
-        "enable_thinking": True,
-        "auto_snapshot": True,
-        "config_yaml": "dcagent_eval_config_no_override.yaml",
-    },
-    "financeagent": {
-        "datasets": ["DCAgent/financeagent_terminal"],
-        "log_suffix": "finance",
-        "n_concurrent": 16,
-        "error_threshold": 10,
-        "vllm_max_retries": 20,
-        "enable_thinking": True,
-        "auto_snapshot": True,
-        "agent_envs": "SERPAPI_API_KEY,SEC_EDGAR_API_KEY,MODEL_FOR_TOOLS=openai/gpt-5.2,MODEL_API_KEY=OPENAI_API_KEY",
-        "config_yaml": "dcagent_eval_config_no_override.yaml",
-    },
-    # NOTE: all OOD presets + swebench/tb2 use dcagent_eval_config_no_override.yaml
-    "swebench": {
-        "datasets": ["DCAgent2/swebench-verified-random-100-folders"],
-        "log_suffix": "swebench",
-        "n_concurrent": 32,
-        "error_threshold": 20,
-        "agent_parser": "xml",
-        "vllm_max_retries": 10,
-        "enable_thinking": True,
-        "config_yaml": "dcagent_eval_config_no_override.yaml",
-        "auto_snapshot": True,
-    },
-    "swebench_full": {
-        "datasets": ["DCAgent/swebench-verified"],
-        "log_suffix": "swebench_full",
-        "n_concurrent": 32,
-        "error_threshold": 20,
-        "agent_parser": "xml",
-        "vllm_max_retries": 10,
-        "enable_thinking": True,
-        "config_yaml": "dcagent_eval_config_no_override.yaml",
-        "slurm_time": "48:00:00",
-        "auto_snapshot": True,
-    },
-    "v2": {
-        "datasets": ["DCAgent/dev_set_v2"],
-        "log_suffix": "v2",
-        "n_concurrent": 32,
-        "error_threshold": 10,
-        "vllm_max_retries": 10,
-        "enable_thinking": True,
-        "config_yaml": "dcagent_eval_config_no_override.yaml",
-        "auto_snapshot": True,
-    },
-    "tb2": {
-        "datasets": ["DCAgent2/terminal_bench_2"],
-        "log_suffix": "tb2",
-        "n_concurrent": 32,
-        "error_threshold": 10,
-        "enable_thinking": True,
-        "vllm_max_retries": 10,
-        "config_yaml": "dcagent_eval_config_no_override.yaml",
-        "auto_snapshot": True,
-    },
-    "v1": {
-        "datasets": ["DCAgent/dev_set_71_tasks"],
-        "log_suffix": "v1",
-        "n_concurrent": 32,
-        "error_threshold": 10,
-        "vllm_max_retries": 10,
-        "enable_thinking": True,
-    },
-}
+# To add/edit a preset, change the YAML in eval/presets/ — no code change here.
+PRESETS: Dict[str, Dict] = load_presets()
 
 # ---------- Cluster Config ----------
 _CLUSTER_CONFIG_REQUIRED_KEYS = ["cluster_name", "slurm_partition", "paths"]

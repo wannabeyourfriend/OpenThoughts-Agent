@@ -40,6 +40,37 @@ from hpc.arg_groups import (
 from hpc.harbor_utils import load_harbor_config
 from hpc.datagen_config_utils import parse_datagen_config
 from hpc.launch_utils import PROJECT_ROOT
+from eval.presets import load_presets
+
+# Preset fields with no Iris analog (SLURM orchestrator / vLLM-serve only).
+# Listed explicitly so the applied/ignored split is transparent and a newly
+# added preset field fails loudly here rather than being silently dropped.
+_PRESET_IGNORED_FIELDS = frozenset({
+    "slurm_time",
+    "vllm_max_retries",
+    "gpu_memory_util",
+    "sbatch_script",
+    "check_hf_exists",
+    "log_suffix",
+    "error_threshold",
+    "config_yaml",
+    "agent_envs",
+    "auto_snapshot",
+})
+
+
+def _cli_has(*flags: str) -> bool:
+    """Whether any of the given flags was passed on the command line.
+
+    Used to honor "CLI overrides preset" for args that carry a non-None
+    default (e.g. --n_concurrent), where the parsed value alone can't
+    distinguish an explicit pass from the default.
+    """
+    for arg in sys.argv[1:]:
+        token = arg.split("=", 1)[0]
+        if token in flags:
+            return True
+    return False
 
 
 class EvalIrisLauncher(IrisLauncher):
@@ -72,6 +103,15 @@ class EvalIrisLauncher(IrisLauncher):
                             help="Optional datagen config to seed defaults.")
         parser.add_argument("--datagen-config", dest="datagen_config", help=argparse.SUPPRESS)
 
+        parser.add_argument(
+            "--preset",
+            choices=sorted(load_presets().keys()),
+            default=None,
+            help="Eval preset from eval/presets/ (shared with the SLURM listener). "
+                 "Seeds --dataset_path, --n_concurrent, agent parser, and enable_thinking; "
+                 "explicit CLI flags always override preset values.",
+        )
+
         parser.add_argument("--dataset",
                             help="Harbor dataset slug (exclusive with --dataset_path).")
         parser.add_argument("--dataset_path",
@@ -87,7 +127,72 @@ class EvalIrisLauncher(IrisLauncher):
         add_hf_upload_args(parser)
         add_database_upload_args(parser)
 
+    def _apply_preset(self, args: argparse.Namespace) -> None:
+        """Resolve a named preset onto the launcher args.
+
+        CLI flags always win over preset values. Result-affecting fields
+        (agent parser, enable_thinking) become harbor agent-kwargs so the built
+        harbor command carries them. SLURM/serve-only fields are ignored with a
+        one-line transparency log.
+        """
+        if not args.preset:
+            return
+
+        preset = load_presets()[args.preset]
+        applied: dict[str, object] = {}
+        ignored: dict[str, object] = {}
+
+        # --dataset_path from datasets[0], only if the user gave no dataset.
+        datasets = preset.get("datasets") or []
+        if datasets and not args.dataset and not args.dataset_path:
+            args.dataset_path = datasets[0]
+            applied["dataset_path"] = datasets[0]
+            if len(datasets) > 1:
+                print(
+                    f"[eval-iris] preset {args.preset}: using first of "
+                    f"{len(datasets)} datasets; skipped {datasets[1:]}"
+                )
+        elif datasets:
+            ignored["datasets"] = datasets
+
+        # --n_concurrent, only if not explicitly passed on the CLI.
+        if "n_concurrent" in preset:
+            if not _cli_has("--n_concurrent", "--n-concurrent"):
+                args.n_concurrent = preset["n_concurrent"]
+                applied["n_concurrent"] = preset["n_concurrent"]
+            else:
+                ignored["n_concurrent"] = preset["n_concurrent"]
+
+        # Result-affecting agent kwargs → harbor --agent-kwarg, replicating how
+        # unified_eval_harbor.sbatch maps them (parser=<v>, enable_thinking=true).
+        existing_kwarg_keys = {kw.split("=", 1)[0] for kw in (args.agent_kwarg or [])}
+
+        agent_parser = preset.get("agent_parser")
+        if agent_parser:
+            if "parser" in existing_kwarg_keys:
+                ignored["agent_parser"] = agent_parser
+            else:
+                args.agent_kwarg.append(f"parser={agent_parser}")
+                applied["agent_parser"] = f"parser={agent_parser}"
+
+        if preset.get("enable_thinking"):
+            if "enable_thinking" in existing_kwarg_keys:
+                ignored["enable_thinking"] = True
+            else:
+                args.agent_kwarg.append("enable_thinking=true")
+                applied["enable_thinking"] = "enable_thinking=true"
+
+        for key, value in preset.items():
+            if key in _PRESET_IGNORED_FIELDS:
+                ignored[key] = value
+
+        print(
+            f"[eval-iris] preset {args.preset}: applied {applied}; "
+            f"ignored (SLURM/serve-only or CLI-overridden) {ignored}"
+        )
+
     def normalize_paths(self, args: argparse.Namespace) -> None:
+        self._apply_preset(args)
         if args.dataset and args.dataset_path:
             raise ValueError("Specify either --dataset or --dataset-path (not both).")
         if not args.dataset and not args.dataset_path:
@@ -141,8 +246,8 @@ class EvalIrisLauncher(IrisLauncher):
                 file=sys.stderr,
             )
 
-        # Load --secrets-env into os.environ on the launch host BEFORE
-        # the snapshot pre-build hook (see tracegen launcher for rationale).
+        # Load --secrets-env into os.environ on the launch host (these also
+        # reach the worker via the iris submit's --secrets-env).
         loaded = self.load_secrets_env_into_os_environ(getattr(args, "secrets_env", None))
         if loaded:
             print(
@@ -151,47 +256,17 @@ class EvalIrisLauncher(IrisLauncher):
                 flush=True,
             )
 
-        # Pre-build Daytona snapshots on the launch host so harbor's
-        # `auto_snapshot=true` short-circuits to an existing ACTIVE snapshot
-        # at trial time. Without this, every trial dies with "Sandbox not
-        # found. Please build the environment first." (See the matching hook
-        # in data/cloud/launch_tracegen_iris.py and SLURM's
-        # hpc/eval_launch_utils.py:195.) Only --dataset_path goes through
-        # this path; --dataset (harbor slug) is managed by harbor itself.
-        # No-op when harbor_env != "daytona" or DAYTONA_API_KEY is unset.
-        if args.harbor_env == "daytona" and args.dataset_path:
-            from hpc.hf_utils import is_raw_tasks_directory, resolve_dataset_path
-            from hpc.launch_utils import (
-                convert_parquet_to_tasks,
-                get_daytona_api_key_override,
-                maybe_prebuild_daytona_snapshots,
-            )
-            from hpc.snapshot_manager import OrgConfig
-            api_key = get_daytona_api_key_override(vars(args))
-            orgs = [OrgConfig(name="cli", api_key=api_key)] if api_key else []
-            if not orgs:
-                print(
-                    "[eval-iris] WARNING: harbor_env=daytona but DAYTONA_API_KEY unset on "
-                    "launch host; skipping snapshot pre-build. Expect 'Sandbox not found' "
-                    "at trial time unless snapshots are already warm in Daytona.",
-                    file=sys.stderr, flush=True,
-                )
-            else:
-                resolved_tasks = resolve_dataset_path(args.dataset_path, verbose=True)
-                if not is_raw_tasks_directory(resolved_tasks):
-                    resolved_tasks = convert_parquet_to_tasks(
-                        snapshot_dir=resolved_tasks,
-                        dataset_identifier=args.dataset_path,
-                    )
-                print(
-                    f"[eval-iris] Pre-building Daytona snapshots from {resolved_tasks} ...",
-                    flush=True,
-                )
-                maybe_prebuild_daytona_snapshots(
-                    [resolved_tasks],
-                    harbor_env=args.harbor_env,
-                    orgs=orgs,
-                )
+        # Eval deliberately does NOT pre-build Daytona snapshots and does NOT
+        # call hpc.snapshot_manager.ensure_snapshots (the shared-org 60-snapshot
+        # cap). The eval harbor configs in hpc/harbor_yaml/eval/ set
+        # `environment.force_build: true`, so harbor builds each task's sandbox
+        # at runtime on the worker, in the MAIN Daytona org (DAYTONA_API_KEY,
+        # forwarded via --secrets-env). The worker's run_eval.py resolves an
+        # HF-id `--dataset_path` itself (snapshot_download + parquet convert).
+        # This is the eval exception to the snapshot-cap discipline: agent
+        # benchmarks legitimately need one env per task (100+), which the cap is
+        # wrong for. (Datagen uses force_build: false and DOES pre-build, via
+        # data/cloud/launch_tracegen_iris.py.)
 
     def build_task_command(self, args: argparse.Namespace, remote_output_dir: str) -> List[str]:
         cmd: List[str] = [
