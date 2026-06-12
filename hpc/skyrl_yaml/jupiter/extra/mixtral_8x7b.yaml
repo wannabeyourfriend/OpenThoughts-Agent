@@ -372,8 +372,16 @@ container:
   binds:
     - /e/scratch
     - /e/data1
-    - /e/scratch/jureap59/feuer1/tmp/r3repro/gmr_fix.py:/usr/local/lib/python3.12/dist-packages/vllm/v1/worker/gpu_model_runner.py:ro
-    - /e/scratch/jureap59/feuer1/tmp/r3repro/capturer_fix.py:/usr/local/lib/python3.12/dist-packages/vllm/model_executor/layers/fused_moe/routed_experts_capturer.py:ro
+    # NOTE: the gmr_fix / capturer_fix R3-capture single-file binds are
+    # DELIBERATELY OMITTED for this SIF. In the 0.20.2rc0 SIF vLLM lives at
+    # /opt/vllm_build/vllm/ (NOT /usr/local/lib/python3.12/dist-packages/vllm/).
+    # Binding a file into the non-existent dist-packages/vllm/... path makes
+    # apptainer CREATE an empty dist-packages/vllm/ namespace dir that SHADOWS
+    # the real /opt/vllm_build/vllm → `import vllm` resolves to the empty
+    # namespace → `cannot import name 'SamplingParams' from 'vllm' (unknown
+    # location)` and the run dies at inference-engine setup (job 852262).
+    # R3 capture is OFF here (enable_return_routed_experts=false,
+    # moe_router_replay=false) so these patches are inert anyway — drop them.
   pydeps: /e/scratch/jureap59/feuer1/sif_pydeps
   extra_env:
     SKYRL_GDN_MASK_FLA: 1
