@@ -129,6 +129,31 @@ mkdir -p "$DCFT/{experiments_dir}"
 mkdir -p "$DCFT/{experiments_dir}/logs"
 mkdir -p "$DCFT/{experiments_dir}/tmp"
 
+# --- /tmp-exhaustion guard: redirect scratch/cache dirs OFF node-local /tmp ---
+# Some compute nodes ship a tiny node-local /tmp (Leonardo: ~9.6G LV). HF-datasets
+# arrow_writer spill (TMPDIR), Triton/TorchInductor caches, and Ray all default
+# there and can blow it out with OSError [Errno 28] during dataset.map (observed
+# on Leonardo, job 46313225). Redirect them onto the (large) work area under the
+# per-job experiment tmp dir. DSFS (data_shared_file_system=true) serializes the
+# dataset-cache writes to rank-0, so the NFS arrow-cache race noted in
+# jupiter.env is not a concern. Opt out with SFT_KEEP_TMPDIR_LOCAL=1 if a cluster
+# specifically needs node-local TMPDIR.
+_TMPROOT="$DCFT/{experiments_dir}/tmp/${SLURM_JOB_ID:-$$}"
+export TRITON_CACHE_DIR="$_TMPROOT/triton_cache"
+export TORCHINDUCTOR_CACHE_DIR="$_TMPROOT/inductor_cache"
+export RAY_TMPDIR="$_TMPROOT/ray"
+mkdir -p "$TRITON_CACHE_DIR" "$TORCHINDUCTOR_CACHE_DIR" "$RAY_TMPDIR"
+if [ "${SFT_KEEP_TMPDIR_LOCAL:-0}" != "1" ]; then
+  export TMPDIR="$_TMPROOT/tmp"
+  export TMP="$TMPDIR"
+  export TEMP="$TMPDIR"
+  export XDG_CACHE_HOME="$_TMPROOT/xdg_cache"
+  export HF_DATASETS_CACHE="$_TMPROOT/hf_datasets_cache"
+  mkdir -p "$TMPDIR" "$XDG_CACHE_HOME" "$HF_DATASETS_CACHE"
+fi
+echo "[tmpfix] TMPDIR=${TMPDIR:-<node-local>} TRITON_CACHE_DIR=$TRITON_CACHE_DIR RAY_TMPDIR=$RAY_TMPDIR"
+# --- end /tmp-exhaustion guard ---
+
 # --- Supabase environment variables for DB registration ---
 for _supabase_var in SUPABASE_URL SUPABASE_ANON_KEY SUPABASE_SERVICE_ROLE_KEY; do
     if [[ -n "${!_supabase_var:-}" ]]; then
