@@ -155,3 +155,27 @@ flag is eval-only — a no-op for SFT here); HF upload is the login-node `hf upl
 Uploads default PUBLIC to `laion/`. Live
 status: tail the `.out` for `{'loss':…, 'grad_norm':…}` step lines (trainer_log.jsonl is unreliable mid-run, per
 `feedback_sft_status_via_out_not_jsonl`).
+
+## 11. Trap: `AF_UNIX path too long` at dataset format-conversion (TMPDIR path-doubling)
+Symptom: every rank dies ~2-3 min in, BEFORE the first `{'loss':…}` step, during HF
+`datasets` format conversion (`dataset.map(num_proc=…)`). The map spins a `SyncManager`
+that binds an **AF_UNIX socket under `$TMPDIR`**; the kernel caps `sun_path` at **108 bytes**,
+so an over-long TMPDIR → `OSError: AF_UNIX path too long` → all ranks crash. (Killed jobs
+860080 SIGTERM + 860229 exit 1, swesmith #223 stage 2.)
+
+Root cause (fixed 2026-06-14): `hpc/sbatch_sft/universal_sft.sbatch` prepended `$DCFT/` to
+`{experiments_dir}`, but the launcher (`hpc/launch_utils.py:708`, via `resolve_workspace_path`)
+already substitutes `{experiments_dir}` as an **absolute** path. So `$DCFT/{abs}` doubled the
+path (~172 chars) → `_TMPROOT` / `TMPDIR` / `WANDB_DIR` / the `mkdir`s all doubled. Fix removed
+the `$DCFT/` prefix at lines 121/128/129/130/141 (the `#SBATCH --output=` line 6 and the RL
+template already treat it as absolute).
+
+Two levers if you ever see it again:
+- **`SFT_KEEP_TMPDIR_LOCAL=1`** — template escape hatch (line 146): keeps TMPDIR on node-local
+  `/tmp` (short socket path). Pass by exporting it in the launch shell BEFORE `python -m hpc.launch`
+  (sbatch inherits the submit env via default `--export=ALL`): `export SFT_KEEP_TMPDIR_LOCAL=1`.
+- Confirm the **rendered** sbatch (`<exp_dir>/sbatch/*.sbatch`) shows an un-doubled, short
+  `_TMPROOT=` / `TMPDIR=` before it runs.
+
+(Note: `hpc/sbatch_consolidate/capella_consolidate.sbatch:50-51` still has the same `$DCFT/{experiments_dir}`
+prepend — harmless for consolidate, no `dataset.map`, but the same latent doubling.)

@@ -118,16 +118,16 @@ export NUM_GPUS=$((NUM_GPUS_PER_NODE*SLURM_NNODES))
 
 # --- HuggingFace/WandB paths ---
 export HF_HOME="${HF_HOME:-${HF_HUB_CACHE:-/tmp/hf_home}}"
-export WANDB_DIR="${DCFT_WANDB_DIR:-$DCFT/{experiments_dir}/wandb}"
+export WANDB_DIR="${DCFT_WANDB_DIR:-{experiments_dir}/wandb}"
 
 # --- Triton/TorchInductor cache settings (node-local to avoid shared FS issues) ---
 export TRITON_CACHE_VERBOSE=1
 source "$WORKDIR/hpc/shell_utils/triton_cache.sh"
 
 # --- Create experiment directories ---
-mkdir -p "$DCFT/{experiments_dir}"
-mkdir -p "$DCFT/{experiments_dir}/logs"
-mkdir -p "$DCFT/{experiments_dir}/tmp"
+mkdir -p "{experiments_dir}"
+mkdir -p "{experiments_dir}/logs"
+mkdir -p "{experiments_dir}/tmp"
 
 # --- /tmp-exhaustion guard: redirect scratch/cache dirs OFF node-local /tmp ---
 # Some compute nodes ship a tiny node-local /tmp (Leonardo: ~9.6G LV). HF-datasets
@@ -138,7 +138,7 @@ mkdir -p "$DCFT/{experiments_dir}/tmp"
 # dataset-cache writes to rank-0, so the NFS arrow-cache race noted in
 # jupiter.env is not a concern. Opt out with SFT_KEEP_TMPDIR_LOCAL=1 if a cluster
 # specifically needs node-local TMPDIR.
-_TMPROOT="$DCFT/{experiments_dir}/tmp/${SLURM_JOB_ID:-$$}"
+_TMPROOT="{experiments_dir}/tmp/${SLURM_JOB_ID:-$$}"
 export TRITON_CACHE_DIR="$_TMPROOT/triton_cache"
 export TORCHINDUCTOR_CACHE_DIR="$_TMPROOT/inductor_cache"
 export RAY_TMPDIR="$_TMPROOT/ray"
