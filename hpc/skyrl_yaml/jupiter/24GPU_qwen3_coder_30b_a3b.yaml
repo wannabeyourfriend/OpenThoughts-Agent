@@ -397,21 +397,74 @@ rollout:
 # =============================================================================
 # Apptainer runtime container
 # =============================================================================
-# Same baked SkyRL+vLLM SIF as the 80B run (vLLM 0.16.0 — supports qwen3_moe
-# natively). The gmr_fix / capturer_fix single-file bind mounts are R3-capture
-# patches; they are HARMLESS with capture OFF (capturer_fix is only exercised on
-# the routed_experts path), so they are kept for SIF-consistency. SKYRL_GDN_MASK_FLA
-# is irrelevant here (no GatedDeltaNet) but harmless. The Daytona key is sourced
-# from the environment / --daytona_api_key at launch, never baked here.
+# torch-2.11 / vLLM-0.20.2rc0 SIF + torchtitan-0.2.2 overlay (2026-06-13).
+# CORRECTED RUNTIME: commit cdacec7 ("align EP grouped-mm with torchtitan 0.2.2
+# API") rewrote the EP forward (moe.py::_run_experts_grouped_mm) to delegate
+# token dispatch to torchtitan 0.2.2's ExpertParallel._token_dispatch. That API
+# requires torch>=2.10 (torchtitan 0.2.2's __init__ imports
+# torch.nn.attention.varlen, absent on the torch-2.9 baked SIF). Running this on
+# skyrl_megatron_vllm_r3baked.sif (torch 2.9 / torchtitan 0.1.0) produced the
+# `matrix batch sizes have to match` grouped-mm crash on the policy forward, and
+# installing torchtitan 0.2.2 onto the 2.9 SIF GATE-FAILED at import (varlen).
+#   FIX = the existing torch-2.11 SIF, where torchtitan 0.2.2 imports cleanly:
+#     * sif: skyrl_megatron_vllm0202rc0_r3.sif  (vLLM 0.20.2rc0, torch 2.11.0)
+#     * overlays: skyrl_titan_overlay.img       (provides torchtitan 0.2.2)
+#   Probed + confirmed 2026-06-13: with this SIF+overlay (and the sif_pydeps
+#   0.1.0 torchtitan moved aside so PYTHONPATH falls through to the overlay's
+#   0.2.2), `import torchtitan`==0.2.2 + `from torchtitan.distributed.
+#   expert_parallel import ExpertParallel` succeed; torch==2.11.0+cu130.
+#
+# Runtime wiring mirrors the Mixtral-8x7B run (#216), the first MoE multi-node
+# run on this SIF — the three torch-2.11 multi-node fixes (reference_new_sif_
+# torch211_multinode_fixes) live in extra_env below:
+#   * VLLM_USE_FLASHINFER_SAMPLER=0  — this SIF ships no flashinfer; vLLM
+#     0.20.2rc0 defaults the sampler ON and top-imports FlashInferBackend → crash
+#     before fallback. (ENVIRONMENT_MAP §2d gotcha.)
+#   * VLLM_ATTENTION_BACKEND=FLASH_ATTN + TRITON_LIBCUDA_PATH=/.singularity.d/libs
+#     — Triton JIT linker stub dir on GH200/aarch64. (§2d gotcha.)
+#   * NCCL_P2P_DISABLE=1 (+ collnet/nvls off) — cross-node scatter/all_reduce on
+#     this SIF's NCCL 2.28.9 IB P2P path fails Error 3 without it.
+# The vLLM-bind-removal (gmr_fix/capturer_fix DROPPED): on this SIF vLLM lives at
+# /opt/vllm_build/vllm/ (NOT dist-packages/vllm); binding into the non-existent
+# dist-packages path makes apptainer create an empty namespace dir that SHADOWS
+# the real vLLM → `cannot import name SamplingParams`. R3 capture is OFF here
+# anyway (enable_return_routed_experts=false, moe_router_replay=false), so these
+# patches are inert — drop them.
 container:
-  sif: /e/scratch/jureap59/feuer1/containers/skyrl_megatron_vllm_r3baked.sif
+  sif: /e/scratch/jureap59/feuer1/containers/skyrl_megatron_vllm0202rc0_r3.sif
+  overlays:
+    - /e/scratch/jureap59/feuer1/containers/skyrl_titan_overlay.img
   binds:
     - /e/scratch
     - /e/data1
-    - /e/scratch/jureap59/feuer1/tmp/r3repro/gmr_fix.py:/usr/local/lib/python3.12/dist-packages/vllm/v1/worker/gpu_model_runner.py:ro
-    - /e/scratch/jureap59/feuer1/tmp/r3repro/capturer_fix.py:/usr/local/lib/python3.12/dist-packages/vllm/model_executor/layers/fused_moe/routed_experts_capturer.py:ro
+    # gmr_fix / capturer_fix R3-capture single-file binds DELIBERATELY OMITTED on
+    # this SIF (would shadow /opt/vllm_build/vllm → import failure; see header).
   pydeps: /e/scratch/jureap59/feuer1/sif_pydeps
   extra_env:
     SKYRL_GDN_MASK_FLA: 1
     PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
     APPTAINERENV_PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+    # --- vLLM 0.20.2rc0 SIF env fixes (REQUIRED on this SIF, not model-specific) ---
+    VLLM_USE_FLASHINFER_SAMPLER: 0
+    VLLM_ATTENTION_BACKEND: FLASH_ATTN
+    TRITON_LIBCUDA_PATH: /.singularity.d/libs
+    APPTAINERENV_VLLM_USE_FLASHINFER_SAMPLER: 0
+    APPTAINERENV_VLLM_ATTENTION_BACKEND: FLASH_ATTN
+    APPTAINERENV_TRITON_LIBCUDA_PATH: /.singularity.d/libs
+    # --- Cross-node NCCL fix for the 0.20.2rc0 SIF (NCCL 2.28.9 IB P2P path:
+    # cross-node scatter/all_reduce FAIL Error 3 without P2P_DISABLE; root-caused
+    # on the Mixtral run, jobs 852358/368/369). Keep SHARP/NVLS disables
+    # (harmless) + DEBUG=INFO. Correctness-safe; config-local (this SIF only). ---
+    NCCL_COLLNET_ENABLE: 0
+    NCCL_NVLS_ENABLE: 0
+    NCCL_P2P_DISABLE: 1
+    NCCL_DEBUG: INFO
+    APPTAINERENV_NCCL_COLLNET_ENABLE: 0
+    APPTAINERENV_NCCL_NVLS_ENABLE: 0
+    APPTAINERENV_NCCL_P2P_DISABLE: 1
+    APPTAINERENV_NCCL_DEBUG: INFO
+    # --- HF offline on compute nodes (model pre-staged to HF cache) ---
+    HF_HUB_OFFLINE: 1
+    TRANSFORMERS_OFFLINE: 1
+    APPTAINERENV_HF_HUB_OFFLINE: 1
+    APPTAINERENV_TRANSFORMERS_OFFLINE: 1
