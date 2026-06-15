@@ -4,6 +4,10 @@
 ```bash
 ssh Leonardo    # Complete 2FA once; socket persists 8h
 ```
+> **Host keys ROTATE (benign — NOT an anomaly).** The round-robin login nodes rotate host keys, so a fresh
+> connection (esp. `-o ControlPath=none` / `-o ControlMaster=no`) can hit `REMOTE HOST IDENTIFICATION HAS
+> CHANGED` / a `known_hosts` mismatch. This is expected, not a compromise — just use the standard `ssh Leonardo`
+> (ControlMaster socket), which works. Do NOT flag it as a failure or block on a `known_hosts` refresh.
 
 **Pre-launch preamble** (run before launching any new job):
 ```bash
