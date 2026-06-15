@@ -5,6 +5,12 @@ description: Launch, monitor, and clean up a LLaMA-Factory SFT job on the CINECA
 
 # sft-launch-leonardo
 
+> **⚠ Local clone = ground truth (CLAUDE.md §Always).** ALL code/config/sbatch edits go in the local Mac
+> checkout (`~/Documents/OpenThoughts-Agent`) → commit → push → `git pull` on the cluster. **NEVER** hand-edit,
+> `git commit`, or leave divergent/untracked changes on a cluster; no patch-by-rsync. If launching/fixing a run
+> needs a new or changed config (e.g. a `_dsfs` variant), author it locally + sync — never on the cluster.
+> Bake this rule into every subagent you dispatch from this skill.
+
 End-to-end SFT on CINECA Leonardo via `python -m hpc.launch --train_config_path …`.
 Leonardo is **no-internet-on-compute-nodes** + a **login-node process killer** +
 **24h max wall** — three constraints that drive almost every quirk below. Read

@@ -14,6 +14,13 @@ description: >-
 
 Deploy this each cron sweep to produce ONE comprehensive update across all active clusters.
 
+> **⚠ Local clone = ground truth (CLAUDE.md §Always).** Any code/config fix this sweep performs — or
+> dispatches a subagent to perform (reactive relaunches, cleanups, eval-grid fixes) — is edited in the local
+> Mac checkout → commit → push → `git pull` on the cluster. **NEVER** hand-edit, `git commit`, or leave
+> divergent/untracked changes on a cluster; no patch-by-rsync (vLLM excepted — built from source per-cluster).
+> **Bake this rule into EVERY subagent prompt you dispatch** — the recurring Leonardo-clone divergence came from
+> in-cluster edits/commits during reactive relaunches.
+
 > **Formats** (the exact per-type tables + which metrics to pull + per-type red-flags) live in
 > **`/Users/benjaminfeuer/Documents/notes/ot-agent/job_monitor_table.md`** — read it; this skill is the
 > *process* that fills it. **Cluster particulars** (ssh invocation, code/experiments/log paths, the RL
@@ -54,6 +61,14 @@ ONE table.** Extraction pointers:
   2. **upload completes → `eval-standard-launch`** for the newly-uploaded cell(s).
   3. **eval completes → record scores** in the experiment tracker (Delphi: append to `/Users/benjaminfeuer/Documents/experiments/delphi/rl-scaling-laws-6279/main_sft_evals/SCORES.md`).
   Each sweep, advance whichever leg is pending (catch up backlog: completed-SFT-not-uploaded, uploaded-not-evaled, evaled-not-in-SCORES). Idempotent — skip done legs.
+- **Standalone eval-grid trackers (self-describing — harvest pending rows every sweep, no asking):** any tracker
+  markdown that holds `⏳ pending` rows with a recorded `eval job` id — e.g.
+  `experiments/delphi/rl-scaling-laws-6279/baseline_evals/grid.md` (the Qwen3 dense-family baseline grid) and
+  `…/main_sft_evals/SCORES.md`. For each pending row: `sacct -j <jobid> --format=State` → on `COMPLETED`, harvest
+  per the convention's §5.2 D/E (rsync the per-task `results_*.json` to the tracker's `<RUN>/` dir, **verify the
+  JSON has numeric scores — a COMPLETED job can carry an empty `results:{}`**, extract MATH500/AIME24-mean±se/gsm8k,
+  fill the row, flip to ✅). On a failure state, diagnose per §3.3 of `EVAL_CONVENTION.md` + log. The tracker file
+  carries the jobids, so no run-state needs to live here — just read the grid each sweep and advance pending rows.
 - **Chain-restart TIMEOUT** (12h/24h wall) with a successor RUNNING/PENDING → **normal, not a failure** —
   note the successor.
 - **Genuine FAILED** (exit≠0, not a wall TIMEOUT) → diagnose (read the first real traceback, often masked by

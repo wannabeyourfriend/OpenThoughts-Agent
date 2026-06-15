@@ -13,6 +13,11 @@ description: >-
 
 # rl-agentic-launch-jupiter
 
+> **⚠ Local clone = ground truth (CLAUDE.md §Always).** ALL code/config/sbatch edits (OpenThoughts-Agent +
+> MarinSkyRL) go in the local Mac checkouts → commit → push → `git pull` on the cluster. **NEVER** hand-edit,
+> `git commit`, or leave divergent/untracked changes on a cluster; no patch-by-rsync (vLLM is the only
+> exception — built from source per-cluster). Bake this into every subagent you dispatch from this skill.
+
 Agentic RL on Jupiter runs through **`python -m hpc.launch --job_type rl`** (SkyRL framework, GRPO,
 FSDP2 or Megatron). Each rollout is a real **Harbor** agent episode against a **Daytona** sandbox
 (the `terminal_bench` generator), with a colocated vLLM rollout engine. GH200 96GB, **4 GPUs/node**.

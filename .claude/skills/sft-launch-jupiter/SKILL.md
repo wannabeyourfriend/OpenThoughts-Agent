@@ -11,6 +11,11 @@ description: >-
 
 # sft-launch-jupiter
 
+> **⚠ Local clone = ground truth (CLAUDE.md §Always).** ALL code/config/sbatch edits go in the local Mac
+> checkout (`~/Documents/OpenThoughts-Agent`) → commit → push → `git pull` on the cluster. **NEVER** hand-edit,
+> `git commit`, or leave divergent/untracked changes on a cluster; no patch-by-rsync. New/changed configs are
+> authored locally + synced, never on the cluster. Bake this into every subagent you dispatch from this skill.
+
 SFT on Jupiter runs through **`python -m hpc.launch --job_type sft`** (LLaMA-Factory backend; `accelerate`
 launcher, multi-node via DeepSpeed ZeRO-3). Conda env **`otagent`** for everything except Qwen3.5
 (→ `sft-qwen35`). GH200, 4 GPUs/node.
