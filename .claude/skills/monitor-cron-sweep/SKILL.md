@@ -59,12 +59,12 @@ ONE table.** Extraction pointers:
 - **HF-only / non-agentic SFT (Delphi #6279 + any `enable_db_registration: false` series) — "move the chains" (3 legs, autonomous, every sweep, no asking):**
   1. **SFT completes → HF upload** via `sft-cleanup-hf-only` (NOT `sft-job-cleanup`; upload, **no DB**).
   2. **upload completes → `eval-standard-launch`** for the newly-uploaded cell(s).
-  3. **eval completes → record scores** in the experiment tracker (Delphi: append to `/Users/benjaminfeuer/Documents/experiments/delphi/rl-scaling-laws-6279/main_sft_evals/SCORES.md`).
-  Each sweep, advance whichever leg is pending (catch up backlog: completed-SFT-not-uploaded, uploaded-not-evaled, evaled-not-in-SCORES). Idempotent — skip done legs.
+  3. **eval completes → record scores** in the experiment tracker — Delphi midtrained-cell grid → `main_sft_evals/SCORES.md`; **base-model SFT grid (#6279 rows 2&4) → `base_sft_evals/grid.md`** (one row per base×recipe cell).
+  Each sweep, advance whichever leg is pending (catch up backlog: completed-SFT-not-uploaded, uploaded-not-evaled, evaled-not-recorded). Idempotent — skip done legs. **This chain applies to BOTH the `main_sft_evals` (27 midtrained cells) AND the `base_sft_evals` (9 base × 2 recipes = 18 cells) series** — both are HF-only `enable_db_registration: false`.
 - **Standalone eval-grid trackers (self-describing — harvest pending rows every sweep, no asking):** any tracker
   markdown that holds `⏳ pending` rows with a recorded `eval job` id — e.g.
-  `experiments/delphi/rl-scaling-laws-6279/baseline_evals/grid.md` (the Qwen3 dense-family baseline grid) and
-  `…/main_sft_evals/SCORES.md`. For each pending row: `sacct -j <jobid> --format=State` → on `COMPLETED`, harvest
+  `experiments/delphi/rl-scaling-laws-6279/baseline_evals/grid.md` (Qwen3 dense-family baseline), `…/base_sft_evals/grid.md`
+  (the 18-cell base-model SFT grid, #6279 rows 2&4), `…/pass_at_k_sft_evals/grid.md`, and `…/main_sft_evals/SCORES.md`. For each pending row: `sacct -j <jobid> --format=State` → on `COMPLETED`, harvest
   per the convention's §5.2 D/E (rsync the per-task `results_*.json` to the tracker's `<RUN>/` dir, **verify the
   JSON has numeric scores — a COMPLETED job can carry an empty `results:{}`**, extract MATH500/AIME24-mean±se/gsm8k,
   fill the row, flip to ✅). On a failure state, diagnose per §3.3 of `EVAL_CONVENTION.md` + log. The tracker file
