@@ -233,7 +233,10 @@ def _merge_launch_overrides(base_config: dict, exp_args: dict) -> dict:
     # not `conversations` -> KeyError in dataset preprocessing). Skip these schema
     # keys unless the user EXPLICITLY set them on the CLI. (Same registry detection
     # as _materialize_dataset_and_model.)
-    _ds_dir = base_config.get("dataset_dir")
+    # NOTE: --dataset_dir arrives in exp_args and has NOT been merged into
+    # base_config yet at this point (that merge happens in the loop below), so
+    # read it from exp_args first or the guard is a silent no-op.
+    _ds_dir = exp_args.get("dataset_dir") or base_config.get("dataset_dir")
     _registry_mode = bool(
         _ds_dir and _ds_dir != "ONLINE" and os.path.isdir(_ds_dir)
         and os.path.isfile(os.path.join(_ds_dir, "dataset_info.json"))
