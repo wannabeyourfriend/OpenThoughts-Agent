@@ -36,6 +36,28 @@ ops notes first.
 - **Benchmark** = a `--preset` (`tb2`=terminal_bench_2, `v2`=dev_set_v2, `dev`=dev_set_71_tasks,
   `swebench`, `bfcl`, `aider`) OR explicit `--datasets` — **use one, not both**. 32k vs 131k models take
   different harbor configs (`--harbor-config hpc/harbor_yaml/eval/eval_ctx{32k,131k}_non_it*.yaml`).
+  - Note: `--preset swebench` is the **random-100 subset** (`DCAgent/swebench_verified_eval_set` is
+    aliased to `swebench-verified-random-100-folders` in every cluster's `unified_eval_harbor.sbatch`,
+    n_concurrent 32) — NOT the full SWE-bench-verified set.
+
+### "ID evals" — the in-distribution shorthand (launch all three)
+**"ID evals" = launch these three presets** (each a separate listener invocation — they have different
+`n_concurrent`/harbor-config, so they don't combine into one `--datasets`):
+
+| shorthand leg | `--preset` | dataset (post-alias) | n_concurrent |
+|---|---|---|---|
+| SWE-bench-verified random-100 | `swebench` | `swebench-verified-random-100-folders` | 32 |
+| dev_set_v2 | `v2` | `DCAgent/dev_set_v2` | 128 |
+| terminal_bench_2 | `tb2` | `DCAgent2/terminal_bench_2` | 64 |
+
+When asked to "run the ID evals" on a model/list, fire one `unified_eval_listener.py` per leg (§3) with the
+shared flags, then run the §4 infra check on each. (Full SWE-bench-verified and other benchmarks are **OOD**.)
+
+> **Terminology caveat:** `crud-otagent-supabase` defines the DB/scoring **ID** set as the **2-member**
+> `{swebench-verified-random-100-folders, terminal_bench_2}` (dev_set_v2 is excluded there — it's
+> partial-credit with no clean SE, see `analyze-rl-behavior`). This **launch** shorthand is the **3-member**
+> `{swebench, v2, tb2}`. Same name, different membership by design (what to *launch* ≠ what to *score on*) —
+> don't reconcile them silently.
 
 ## 2. Wire the pinggy served-model tunnel
 The served model is exposed to Daytona cloud sandboxes via a **pinggy** persistent tunnel — pass
