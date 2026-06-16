@@ -89,6 +89,12 @@ lack of it) IS the experiment.
 ```
 Columns: Job, Step (`cur/total`), Loss, Grad Norm, Trend. **No reward.**
 
+**For multi-cell SFT grids (e.g. Delphi 54-SFT), ALSO give a grid-completion rollup each sweep** (the "how close to done" view), alongside or instead of per-job health:
+- Per RUNNING cell: **progress % = step/total** + rough ETA (`remaining_steps × s/it`, or just near/mid/early). Plus a one-line **running / pending-unique / done** tally.
+- **Dedupe the PENDING count — it's ~3× inflated.** The `afterany` restart-chain lists each cell ~3× (the +2 `--max_restarts` resume copies share the cell's job name), AND every RUNNING cell also has its own resume-backup sitting in PD. True cell count: `squeue -u $USER -h -o '%j|%t' | grep '^sft__' | grep '|PD' | cut -d'|' -f1 | sort -u | wc -l`, then subtract the running cells' backups. Report *distinct* cells remaining, not raw squeue PD.
+- **Long-pole call-out:** name the slow cohort gating grid completion — for Delphi that's the **`1e22` 9.7B cells** (4-node, ~34.7k steps, 24h wall → each needs 1–2 checkpoint-resume cycles, run ≤8 concurrent). Small/medium cells (≤3e20) clear fast; the finish line is set by the 1e22 tail (days, not hours).
+- **Gotcha — grep the TRAINING tqdm, not the packing bar.** `grep -aoE '[0-9]+%\|[^|]*\| [0-9]+/[0-9]+ '` can catch the dataset-tokenization/packing tqdm (also hits 100%, e.g. a `555519/555519` *examples* bar) instead of the training-step bar — verify the denominator matches the cell's total optimization steps (e.g. 26788 / 34720), not an example count.
+
 **Pull live status from the `.out`, NOT `trainer_log.jsonl`.** The `.out` carries LLaMA-Factory's per-step
 dicts — strictly richer (live grad_norm, per-rank loss spread, token coverage, epoch):
 ```
