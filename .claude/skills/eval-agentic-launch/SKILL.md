@@ -34,8 +34,14 @@ ops notes first.
   # needs SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY
   ```
 - **Benchmark** = a `--preset` (`tb2`=terminal_bench_2, `v2`=dev_set_v2, `dev`=dev_set_71_tasks,
-  `swebench`, `bfcl`, `aider`) OR explicit `--datasets` — **use one, not both**. 32k vs 131k models take
-  different harbor configs (`--harbor-config hpc/harbor_yaml/eval/eval_ctx{32k,131k}_non_it*.yaml`).
+  `swebench`, `bfcl`, `aider`) OR explicit `--datasets` — **use one, not both**.
+  - **Harbor config: do NOT override `--harbor-config` for standard terminus-2 evals.** Omit it — the
+    sbatch defaults to the clean canonical `eval/jupiter/dcagent_eval_config.yaml` (terminus-2, n_attempts 3;
+    listener sets timeout_multiplier 2.0 at runtime). The old `eval_ctx{32k,131k}_non_it*.yaml` /
+    `ctx32k_non_it_16x_eval_.yaml` configs are **deprecated** (they carried `penfever/temp-override`-era
+    `mean-drop-ei`/`accuracy-drop-ei` metrics that no Marin-branch harbor supports → JobConfig
+    ValidationError). Only pass `--harbor-config` for a genuine non-default need (131k context window,
+    `openhands_*` installed-harness, etc.), and only after confirming that config has no stale metrics.
   - Note: `--preset swebench` is the **random-100 subset** (`DCAgent/swebench_verified_eval_set` is
     aliased to `swebench-verified-random-100-folders` in every cluster's `unified_eval_harbor.sbatch`,
     n_concurrent 32) — NOT the full SWE-bench-verified set.
@@ -131,4 +137,4 @@ auto-upload fails → the **`eval-agentic-cleanup`** skill.
 
 ## Operating notes (folded from memory 2026-06-14)
 
-- **Eval-job submission defaults** (apply automatically unless the user overrides): `--require-priority-list` (always), `--n-concurrent 48` (always), `--harbor-config hpc/harbor_yaml/eval/eval_ctx32k_non_it.yaml` for 32k models / `eval_ctx131k_non_it.yaml` for 131k. (Prevents evaluating non-priority models and uses the correct non-instruct configs.)
+- **Eval-job submission defaults** (apply automatically unless the user overrides): `--require-priority-list` (always), `--n-concurrent 48` (always). **Do NOT pass `--harbor-config`** for standard terminus-2 evals — let the sbatch use its clean canonical default (`eval/jupiter/dcagent_eval_config.yaml`). (Overriding it with the deprecated `eval_ctx*_non_it*`/`ctx32k_non_it_16x_eval_` configs injects the stale `*-drop-ei` metrics → JobConfig ValidationError; those were removed from the configs 2026-06-16 but the canonical default remains the right choice.) Use `--harbor-config` ONLY for 131k context or installed-harness (`openhands_*`) needs.
