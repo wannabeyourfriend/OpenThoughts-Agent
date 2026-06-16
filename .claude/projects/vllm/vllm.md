@@ -12,6 +12,17 @@ capture** and the in-progress **DCP GQA-LSE fix**.
 > or hand-patch a cluster (no patch-by-rsync). Every cluster keeps at least one env with our fork built for
 > it; some envs may run **vanilla** vLLM, which is fine. Version-bump the fork only when necessary.
 
+> ### ⭐ CANONICAL BRANCH = `penfever/working` (set 2026-06-16)
+> The single branch the clusters' builds/SIFs should track — the vLLM analogue of OT-Agent's
+> `penfever/working`. It is the union of the prior mainline **`v2-migration`** (0.20.2rc0 / torch-2.11 + R3)
+> and the **`feuer/dcp-gqa-lse-fix`** line (fp32 DCP combine fix `5d7319dd1` + DCP>1 R3 guard-lift
+> `17c7c70a5` + env-gated DCP debug instrumentation, all off by default). `v2-migration` is a strict
+> ancestor, so `penfever/working` contains everything. New fork work branches from here and merges back here;
+> `v2-migration`/`feuer/dcp-gqa-lse-fix` are retained for history but are no longer the integration target.
+> **Cluster-deploy state:** the prod SIF `skyrl_megatron_vllm0202rc0_r3.sif` is still base-`v2-migration`
+> (no DCP fix) — rebuilding/baking it from `penfever/working` is tracked separately (the DCP fix only
+> activates for DCP>1 runs, so non-DCP production is unaffected until then).
+
 ---
 
 ## Version lines we run
@@ -37,20 +48,38 @@ Lets RL replay MoE routing: vLLM serializes which experts each token routed to, 
 
 ---
 
-## DCP GQA-LSE fix (active — branch `feuer/dcp-gqa-lse-fix`)
+## DCP GQA-LSE fix (LANDED 2026-06-16 — on `penfever/working`, commit `5d7319dd1`)
 
-Decode-Context-Parallel shards the decode KV cache across ranks to cut KV memory; there's a genuine math
-defect recombining multi-rank attention outputs + log-sum-exp (LSE) **under grouped-query attention (GQA)**.
+Decode-Context-Parallel shards the decode KV cache across ranks to cut KV memory; under GQA the multi-rank
+attention-output + log-sum-exp (LSE) recombination diverged from `dcp=1`.
 
-- **Signature:** ~0.1 max|logprob Δ| + argmax flips after a short matching prefix; error grows as sharded KV history grows; **GQA-specific** (MHA/MLA unaffected); identical across runtimes (so it's the math, not a version mismatch).
-- **Suspected locus:** the query all-gather (`dim=1`) + LSE all-gather (`dim=0`) + reduce-scatter (`dim=1`) orientation/head-accounting in `v1/attention/backends/flash_attn.py` (`_forward_with_dcp`, the `context_lse.transpose(0,1)` handoff) and the cross-rank LSE math in `v1/attention/ops/common.py` (`cp_lse_ag_out_rs`, the Triton rescale kernel). Anchors drift — reconfirm at impl time.
-- **Staged plan** (`notes/vllm/stage{0..6}_*.md`): 0 repro harness → 1 root-cause → 2 the fix → 3 unit parity (`dcp=N`==`dcp=1`) → 4 e2e rollout parity (Qwen2.5-1.5B tp4 dcp2 vs dcp1 → greedy **bit-identical**, logprobs atol 1e-2 — the ship gate) → 5 regression (MLA + GSM8K unaffected) → **6 merge to `v2-migration` + build-from-source deploy on each cluster, NO upstream PR** (per the 2026-06-13 revision). Invariants: G1 `dcp=1` byte-identical, G2 the parity gate, G3 no MLA/GSM8K regression, G4 minimal diff.
-- After it lands, resume the MarinSkyRL **rollout-DCP** workstream (task #222): Stage-3 parity should flip to PASS, then long-ctx OOM→OK.
+- **Root cause = precision, not math/indexing.** The kernel `_correct_attn_cp_out_kernel` and head-slot
+  indexing were correct. The AG+RS combine (`cp_lse_ag_out_rs`) did its per-rank rescale **and** the
+  cross-rank `reduce_scatter` SUM in **bf16**, then re-quantized at the `merge_attn_states` boundary — the
+  only DCP combine not accumulating in fp32 (the A2A sibling `_dcp_a2a_unpack_combine_kernel` already used an
+  fp32 register). Under GQA the per-shard context partials are close in magnitude, so the ~3–4e-2 loss flips
+  the (e.g. 128-expert top-8) router and then greedy tokens vs `dcp=1`.
+- **Fix:** `v1/attention/ops/common.py` — accumulate rescale + cross-rank reduce in **fp32** in both
+  `cp_lse_ag_out_rs` and `cp_lse_ag_out_ar`; add opt-in `out_fp32` (default keeps the bf16 return contract for
+  FlashInfer/MLA callers). `v1/attention/backends/flash_attn.py` — `_forward_with_dcp` requests `out_fp32=True`
+  (AG+RS only) and runs the context+self `merge_attn_states` in fp32, downcasting **once** at the final attn
+  output (matching `dcp=1`'s single fp32-accumulated FA call). Env-gated debug instrumentation left intact (off).
+- **Validated** (Qwen3-Coder-30B-A3B, 2-node tp=8, dcp=1 vs dcp=2, greedy temp=0, jobs 905658→905677→905726):
+  token mismatch **24.31% → 6.94%**, prompts identical **3/6 → 5/6**.
+- **Known floor (accepted):** strict routed-expert bit-exactness is **architecturally impossible** on the FA
+  backend — `dcp=2` emits a separate **bf16** context partial (FA rejects an fp32 `out` with bf16 q/k/v),
+  whereas `dcp=1` folds context+self into one fp32 FA call. Residual is provably bf16 tie-noise: ~99% of
+  routed-expert disagreements are a single top-k expert swapped at a routing boundary. **Decision 2026-06-16:
+  proceed with DCP+R3 at this parity** (same magnitude as existing bf16 rollout nondeterminism; TIS already
+  corrects small train/inference routing mismatch).
+- **Next:** the 30B-A3B long-ctx RL (task #232) uses DCP+R3 on this branch; resume MarinSkyRL rollout-DCP
+  (task #222) — long-ctx OOM→OK. Cluster SIF must be rebuilt/baked from `penfever/working` before a DCP>1 run
+  (the running bind-mount smokes are validation-only, not a production deploy).
 
 ---
 
 ## Build + branches
 
 - **From-source build env:** `SETUPTOOLS_SCM_PRETEND_VERSION=<ver>` (required when building from a source tree without `.git` — setuptools-scm can't derive `_version.py`), `MAX_JOBS=<N>`, `TORCH_CUDA_ARCH_LIST="9.0"` (GH200/H100) / `8.0` (A100), built against the SIF's own torch for ABI match (~60–75 min compile). Full recipe + the GCC/PATH scrubbing gotchas are in `.claude/ops/jupiter/ENVIRONMENT_MAP.md` §2c (the `skyrl_megatron_vllm.sif` build notes).
-- **Branches on the fork:** `v2-migration` (the 0.20.2rc0/torch-2.11 mainline; R3 present; the DCP-fix merge target), `feuer/dcp-gqa-lse-fix` (active, Stage 0–2 instrumentation commits), plus older debug branches (`penfever-debug-layer-split-v0.16.0`, `dp1-debug-instrumentation-*`). Local tree currently on `feuer/dcp-gqa-lse-fix`.
+- **Branches on the fork:** **`penfever/working` = CANONICAL** (integration target; v2-migration + DCP fp32 fix — see the starred banner up top). `v2-migration` (0.20.2rc0/torch-2.11 mainline + R3; now a strict ancestor of canonical), `feuer/dcp-gqa-lse-fix` (the DCP fix line, merged into canonical; retained for history), plus older debug branches (`penfever-debug-layer-split-v0.16.0`, `dp1-debug-instrumentation-*`). Push fork work to `penfever/working`; build clusters from it.
 - **0.20.2rc0 SIF gotchas** (run-time, from the env map): set `VLLM_USE_FLASHINFER_SAMPLER=0` (SIF has no flashinfer), `LIBRARY_PATH=/.singularity.d/libs` for tp>1 Triton linking, and `VLLM_ATTENTION_BACKEND` is ignored on 0.20.2rc0.
