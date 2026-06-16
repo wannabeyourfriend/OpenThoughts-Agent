@@ -424,6 +424,7 @@ declare -A BENCHMARK_NAME_MAP=(
     ["DCAgent_dev_set_71_tasks"]="dev_set_71_tasks"
     ["DCAgent2_terminal_bench_2"]="terminal_bench_2"
     ["DCAgent_swebench_verified_eval_set"]="swebench-verified-random-100-folders"
+    ["DCAgent2_swebench-verified-random-100-folders"]="swebench-verified-random-100-folders"
     ["DCAgent2_bfcl-parity"]="bfcl-parity"
 )
 BENCHMARK_NAME="${BENCHMARK_NAME_MAP[$SAFE_REPO]:-$SAFE_REPO}"

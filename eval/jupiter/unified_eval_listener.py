@@ -92,8 +92,10 @@ PRESETS: Dict[str, Dict] = {
         "gpu_memory_util": 0.95,
     },
     "swebench": {
-        "datasets": ["DCAgent/swebench_verified_eval_set"],
-        "description": "SWE-bench verified eval",
+        # The random-100 ID subset (the old DCAgent/swebench_verified_eval_set repo 404s).
+        # Benchmark NAME stays canonical via unified_eval_harbor.sbatch BENCHMARK_NAME_MAP.
+        "datasets": ["DCAgent2/swebench-verified-random-100-folders"],
+        "description": "SWE-bench verified (random-100 subset) eval",
         "n_concurrent": 32,
         "gpu_memory_util": 0.95,
     },
