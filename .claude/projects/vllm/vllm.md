@@ -19,9 +19,14 @@ capture** and the in-progress **DCP GQA-LSE fix**.
 > `17c7c70a5` + env-gated DCP debug instrumentation, all off by default). `v2-migration` is a strict
 > ancestor, so `penfever/working` contains everything. New fork work branches from here and merges back here;
 > `v2-migration`/`feuer/dcp-gqa-lse-fix` are retained for history but are no longer the integration target.
-> **Cluster-deploy state:** the prod SIF `skyrl_megatron_vllm0202rc0_r3.sif` is still base-`v2-migration`
-> (no DCP fix) — rebuilding/baking it from `penfever/working` is tracked separately (the DCP fix only
-> activates for DCP>1 runs, so non-DCP production is unaffected until then).
+> **Cluster-deploy state (Jupiter DONE 2026-06-16):** the prod SIF `skyrl_megatron_vllm0202rc0_r3.sif` was
+> rebuilt+baked from `penfever/working` and **swapped into the canonical path** (old base-`v2-migration` SIF
+> backed up as `skyrl_megatron_vllm0202rc0_r3_v2migration.sif`). DCP fp32 fix verified baked
+> (`common.py` out_fp32, `flash_attn.py` out_fp32=True, guard-lift env), vllm 0.20.2rc0 / torch 2.11.0+cu130.
+> **Gold no-bind-mount DCP parity smoke (job 905835) reproduced token_mismatch 6.94%** standalone (vs 24.31%
+> pre-fix) — confirms the fix is in the SIF, not just bind-mounted. (Harness prints "NO-GO" on its old strict
+> routed≈100% gate / flatten artifact; the accepted bf16-tie criterion = token≈6.94% is met.) Leonardo twin
+> build is gated on a torch-2.8 fallback decision (see version table + `.claude/ops/leonardo/sif_build`).
 
 ---
 
