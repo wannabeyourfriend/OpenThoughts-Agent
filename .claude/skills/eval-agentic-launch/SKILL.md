@@ -60,10 +60,18 @@ shared flags, then run the §4 infra check on each. (Full SWE-bench-verified and
 > model-vs-model ranking (rank on a binary benchmark — swebench-100 or tb2). The launch shorthand fires all
 > three regardless.
 
-## 2. Wire the pinggy served-model tunnel
-The served model is exposed to Daytona cloud sandboxes via a **pinggy** persistent tunnel — pass
-`--pinggy_persistent_url <URL> --pinggy_token <TOKEN>`. Standing rule: **use pairs 8/9/10 by default** (the
-user keeps 1–7 for sibling experiments; confirm before borrowing 1–7).
+## 2. Wire the pinggy served-model tunnel — ONLY for installed agent harnesses (NOT terminus-2)
+> **Skip this whole section for the default `terminus-2` agent.** pinggy is needed **only for installed
+> agent harnesses** (e.g. `openhands` — the `openhands_*` harbor configs) that run inside the Daytona
+> sandbox and must call back out to the served model over a public tunnel. The default **`terminus-2`**
+> agent (every standard `eval_ctx*`/`*_non_it*` config; the listener's hardcoded default) does **NOT** use
+> pinggy — do not pass `--pinggy_*`, do not consume a pinggy pair. The `--preset {swebench,v2,tb2,dev,...}`
+> presets are terminus-2 → no pinggy. Only reach for it when you've deliberately selected an
+> `openhands_*` (or other installed-harness) harbor config.
+
+For an installed-harness launch only: the served model is exposed to Daytona via a **pinggy** persistent
+tunnel — pass `--pinggy_persistent_url <URL> --pinggy_token <TOKEN>`. Standing rule: **use pairs 8/9/10 by
+default** (the user keeps 1–7 for sibling experiments; confirm before borrowing 1–7).
 
 > **The actual URL+token bank is privileged — NOT stored in this committable skill.** Read the pairs from
 > **`.claude/secret.md`** (untracked) or the canonical source of truth
@@ -89,10 +97,15 @@ engine). **After launching, schedule a 15-min (`ScheduleWakeup delaySeconds: 900
 re-arm it each pass until the eval terminates / you have a verdict / the user says stop. The four checks
 (infra, not results):
 
-1. **Pinggy tunnel** — `grep` `experiments/<run>/logs/*pinggy.log`: `You are authenticated as …` = live;
+> **Checks 1–2 are pinggy-path (installed-harness) ONLY** — skip them for the default `terminus-2` agent
+> (it doesn't use a pinggy tunnel). For terminus-2, served-model reachability is proven by **check 3**
+> (POSTs arriving from the sandboxes) — if check 3 is healthy and trials progress (check 4), the model is
+> reachable. Checks 3–4 apply to every launch.
+
+1. **Pinggy tunnel** (installed-harness only) — `grep` `experiments/<run>/logs/*pinggy.log`: `You are authenticated as …` = live;
    `A tunnel with the same token … is already active` = server-side lock → cancel + relaunch on a
    DIFFERENT pair; long silence after auth → confirm the traffic counter (`RB:/SB:/TC:`) is growing.
-2. **Daytona → cluster** — a trial's `config.json` `api_base` MUST be the public `https://*.a.pinggy.link/v1`,
+2. **Daytona → cluster** (installed-harness only) — a trial's `config.json` `api_base` MUST be the public `https://*.a.pinggy.link/v1`,
    NOT an internal IP (`10.*.*.*`). Internal IP = the launcher didn't wire pinggy → relaunch with `--pinggy_*`.
 3. **vLLM serving** — `POST /v1/chat/completions` count grows ≥ a few/min, `200 OK` dominates. `400` ratio
    > 15% → context overflow (`VLLMValidationError: input tokens …` → lower `max_input_tokens`/`max_output_tokens`
