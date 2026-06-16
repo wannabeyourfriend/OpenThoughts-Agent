@@ -53,11 +53,12 @@ ops notes first.
 When asked to "run the ID evals" on a model/list, fire one `unified_eval_listener.py` per leg (§3) with the
 shared flags, then run the §4 infra check on each. (Full SWE-bench-verified and other benchmarks are **OOD**.)
 
-> **Terminology caveat:** `crud-otagent-supabase` defines the DB/scoring **ID** set as the **2-member**
-> `{swebench-verified-random-100-folders, terminal_bench_2}` (dev_set_v2 is excluded there — it's
-> partial-credit with no clean SE, see `analyze-rl-behavior`). This **launch** shorthand is the **3-member**
-> `{swebench, v2, tb2}`. Same name, different membership by design (what to *launch* ≠ what to *score on*) —
-> don't reconcile them silently.
+> **Scoring note:** `crud-otagent-supabase` now uses the **same 3-member** ID set
+> `{swebench-verified-random-100-folders, terminal_bench_2, dev_set_v2}` (unified 2026-06-16). One caveat
+> carries over: `dev_set_v2` is **partial-credit** (no clean binomial SE, see `analyze-rl-behavior`), so on
+> the scoring side it counts toward the ID **mean** but is **excluded from the ID SE** and from any
+> model-vs-model ranking (rank on a binary benchmark — swebench-100 or tb2). The launch shorthand fires all
+> three regardless.
 
 ## 2. Wire the pinggy served-model tunnel
 The served model is exposed to Daytona cloud sandboxes via a **pinggy** persistent tunnel — pass

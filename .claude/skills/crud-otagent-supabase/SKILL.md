@@ -121,13 +121,20 @@ table numbers). Use exactly this:
 |---|---|---|
 | **ID (Core)** | `swebench-verified-random-100-folders` | 100 |
 | | `terminal_bench_2` | 89 |
+| | `dev_set_v2` (**partial-credit** — see SE note below) | — (excluded from binomial SE) |
 | **OOD** | `swebench-verified` (the **full** 500-task set) | 500 |
 | | `aider_polyglot` | 225 |
 | | `bfcl-parity` | 123 |
 | | `financeagent_terminal` | 50 |
 | | `gaia_127` | 127 |
 | | `medagentbench` | 300 |
-| **neither** | `dev_set_v2` (dev set — excluded from both) | — |
+
+> **`dev_set_v2` is ID as of 2026-06-16** (3-member ID set, matching the `eval-agentic-launch` "ID evals"
+> launch shorthand `{swebench, v2, tb2}`). BUT `dev_set_v2` is **partial-credit** (no clean binomial `N`,
+> see `analyze-rl-behavior`): it contributes to the ID **mean** but is **EXCLUDED from the pooled binomial
+> SE** (SE pools only over the binary ID benchmarks: `swebench-verified-random-100-folders` + `terminal_bench_2`).
+> For any **model-vs-model ranking**, still compare on a shared **binary** benchmark (swebench-100 or tb2),
+> never on `dev_set_v2`.
 
 **The #1 trap:** `swebench-verified` (full, 500) is **OOD**, while the
 `swebench-verified-random-100-folders` subset (100) is **ID**. They are different
@@ -138,9 +145,11 @@ full-swebench (OOD) eval is still running. Always check **which** swebench row i
 `Finished`.
 
 ```python
-ID  = {"swebench-verified-random-100-folders", "terminal_bench_2"}
+ID  = {"swebench-verified-random-100-folders", "terminal_bench_2", "dev_set_v2"}
 OOD = {"swebench-verified", "aider_polyglot", "bfcl-parity",
        "financeagent_terminal", "gaia_127", "medagentbench"}
+# dev_set_v2 is partial-credit → in ID for the MEAN, but NOT in NTASK / the binomial SE.
+ID_SE_BENCHMARKS = {"swebench-verified-random-100-folders", "terminal_bench_2"}  # SE pools over these only
 NTASK = {"swebench-verified-random-100-folders": 100, "terminal_bench_2": 89,
          "swebench-verified": 500, "aider_polyglot": 225, "bfcl-parity": 123,
          "financeagent_terminal": 50, "gaia_127": 127, "medagentbench": 300}
@@ -151,7 +160,9 @@ NTASK = {"swebench-verified-random-100-folders": 100, "terminal_bench_2": 89,
 Per set (ID or OOD): the cell **mean** is the unweighted average of the
 per-benchmark averaged accuracies; the **SE** is a pooled **binomial** over the
 total tasks of the *present* benchmarks. (Verified: this reproduces the existing
-`rl_ablation_table.tex` rows.)
+`rl_ablation_table.tex` rows.) **For ID, the SE pools over `ID_SE_BENCHMARKS` only**
+(swebench-100 + tb2) — `dev_set_v2` is in the ID **mean** but partial-credit, so it
+has no clean binomial `N` and is excluded from the SE pool.
 
 ```python
 import math
