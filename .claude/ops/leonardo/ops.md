@@ -170,5 +170,15 @@ minimum-driver floor; confirm 535 is within cu13's floor by running a cu13 kerne
    torch/CUDA floor; same fork commit, R3, DCP fix, SkyRL/Megatron/TE, arch 8.0.
 3. A CINECA driver upgrade (→≥580.65 for native CUDA-13) is **NOT** required; the fallback is acceptable.
 
-Build not yet run (the forward-compat test+build agent was repeatedly killed by an API outage on
-2026-06-16; re-run when it clears).
+**✅ FORWARD-COMPAT GATE PASSED → taking path (1), the true cu13/torch-2.9 twin (2026-06-16).** Built
+the cu13 base as a writable sandbox (`$WORK/containers/pytorch_2509_sbx`, NGC `pytorch:25.09-py3`, 19 G)
+and ran a real CUDA-13 fp32 matmul on an A100 under the 535.274.02 driver: `torch 2.9.0a0+…nv25.09`,
+`cuda 13.0`, cap `(8,0)`, real result; `/proc/self/maps` confirms torch loaded the bundled
+`cuda-compat-13` `libcuda.so.580.82.07`, not a host 535 libcuda. So the 535 branch is within cu13's
+forward-compat floor — the fallback is **not** needed. A packed `.sif` pull FATAL'd at
+`while creating squashfs: create command failed: signal: killed` (login mksquashfs OOM/kill +
+`lustre.lov` xattr) → use `singularity build --sandbox` with `TMPDIR`/`SINGULARITY_TMPDIR` forced onto
+GPFS WORK (default `TMPDIR=/scratch_local` is Lustre → xattr storm). The cu13 build recipe is
+`sif_build/recipes/{README_vllm0202rc0_r3_leonardo_cu13.md, build_vllm0202rc0_r3_leonardo_cu13.sbatch}`;
+the torch-2.8 recipe is retained as the documented fallback. Run convention:
+`SINGULARITYENV_LD_LIBRARY_PATH=/usr/local/cuda-13.0/compat/lib.real singularity exec --nv …`.
