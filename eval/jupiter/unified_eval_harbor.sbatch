@@ -340,11 +340,21 @@ if [ $? -ne 0 ]; then
 fi
 
 echo "Starting vLLM server for model: $MODEL"
+
+# Restore CUDA toolkit (nvcc) for inductor-AOT compile + flashinfer JIT.
+# The hpc.launch path gets this via `module load nvidia-compilers/25.9-CUDA-13`; the standalone
+# eval path must set it explicitly, else vLLM's aot_compile and flashinfer's runtime JIT both fail
+# ("Could not find nvcc and default cuda_home='/usr/local/cuda' doesn't exist"). The module exports
+# CUDA_HOME on compute nodes; the explicit fallback makes it robust if the module's init doesn't.
+module load GCC/14.3.0 nvidia-compilers/25.9-CUDA-13 2>/dev/null || true
+export CUDA_HOME="${CUDA_HOME:-/e/software/default/stages/2026/software/CUDA/13}"
+export PATH="$CUDA_HOME/bin:$PATH"
+echo "CUDA_HOME=$CUDA_HOME ; nvcc=$(command -v nvcc || echo MISSING)"
+
 source "$DCFT/eval/build_vllm_cmd.sh"
 build_vllm_cmd "$PYTHON_BIN" "$MODEL" "$GPU_MEMORY_UTIL"
 
-env TORCHDYNAMO_DISABLE=1 \
-    TMPDIR="/tmp" \
+env TMPDIR="/tmp" \
     TRITON_CACHE_DIR="/tmp/triton_cache_${USER}" \
     TORCH_COMPILE_CACHE_DIR="/tmp/torch_cache_${USER}" \
     TORCHINDUCTOR_CACHE_DIR="/tmp/torchinductor_${USER}" \
