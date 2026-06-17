@@ -450,3 +450,16 @@ container:
     # APPTAINERENV_ so the forked vLLM mp workers inside the SIF see it.
     VLLM_ALLOW_ROUTED_EXPERTS_DCP: 1
     APPTAINERENV_VLLM_ALLOW_ROUTED_EXPERTS_DCP: 1
+    # Per-step model-execute RPC timeout. The vLLM EngineCore's `sample_tokens`
+    # collective_rpc aggregates worker responses with a deadline of
+    # VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS (multiproc_executor.py:314; default 300s).
+    # Under option A (ray backend, TP=8 split 8x{GPU:1} ACROSS 2 NODES), each decode
+    # step's TP all-reduce crosses the IB fabric, and at 131k context with MoE + R3
+    # routed-experts capture a single step (esp. the first long-prefill) can exceed
+    # 300s — the EngineCore then declares the worker dead and crashes with
+    # "RPC call to sample_tokens timed out" (job 908469: engine #2's cross-node TP
+    # group on ips .249/.243 timed out, wedging the run in a chat-completion retry
+    # loop). Raise to 900s (3x) to absorb the cross-node-TP per-step latency. Mirror
+    # to APPTAINERENV_ so the forked vLLM workers inside the SIF inherit it.
+    VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS: 900
+    APPTAINERENV_VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS: 900
