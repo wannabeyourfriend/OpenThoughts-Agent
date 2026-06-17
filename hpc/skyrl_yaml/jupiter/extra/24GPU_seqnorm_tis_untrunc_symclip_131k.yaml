@@ -36,6 +36,25 @@
 
 entrypoint: examples.terminal_bench.entrypoints.main_tbench
 
+# RL container section — extra_env ONLY (no `sif`), so this does NOT activate the
+# Apptainer path: the job still runs the bare host RL venv (envs/rl). The launcher's
+# _build_rl_container_env emits these as `export K=V` lines into the sbatch, inherited
+# by every Ray head/worker (incl. the vLLM engine actors) via `srun --export=ALL`.
+#
+# VLLM_ALLOW_LONG_MAX_MODEL_LEN=1: GLM-4.7-swesmith (Qwen3-8B) has native
+# max_position_embeddings=40960. On the RL-venv vLLM build, the matched YaRN
+# (3.2/40960) below does NOT lift the derived max_model_len before the ModelConfig
+# gate runs (it still derives 40960 and rejects 131072 — observed in jobs 912743 &
+# 913087, where the vLLM engine actors died on a ValidationError and
+# init_weight_sync_state then failed at global_step 0). The proven #232 path avoids
+# this because it runs a DIFFERENT vLLM build inside the _cp.sif. Since the YaRN IS
+# matched (positions ≤131072 are valid under YaRN, no nan risk), this env var just
+# bypasses the over-conservative derived-len gate, which is the documented remedy
+# (and the vLLM error message's own suggestion).
+container:
+  extra_env:
+    VLLM_ALLOW_LONG_MAX_MODEL_LEN: 1
+
 # Hydra config groups (+ prefix in CLI)
 config_groups:
   terminal_bench_config: terminal_bench
