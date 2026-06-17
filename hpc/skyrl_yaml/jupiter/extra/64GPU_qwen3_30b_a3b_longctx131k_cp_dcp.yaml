@@ -390,6 +390,13 @@ generator:
     # /chat/completions (native on this 0.20.2rc0 SIF), consumed by the FSDP2
     # replay hook so the train forward replays the EXACT sampled experts.
     enable_return_routed_experts: true
+    # MUST be false under the RAY inference-engine backend (inference_engine_mp_backend:
+    # false, option A). vLLM's R3 guard (_validate_return_routed_experts) rejects
+    # --enable-return-routed-experts together with async scheduling. The mp/uniproc
+    # executors auto-disabled async scheduling, so the mp path never tripped this; the
+    # ray executor leaves it ON, so we must explicitly disable it here. AsyncEngineArgs
+    # accepts the `async_scheduling` field on this 0.20.2rc0 SIF (job 908347 smoke).
+    async_scheduling: false
 
 # Data paths
 data:
