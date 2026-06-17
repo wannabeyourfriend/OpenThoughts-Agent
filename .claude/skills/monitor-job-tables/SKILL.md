@@ -70,6 +70,15 @@ independent of logprobs, so a large prob-diff can never "hit the reward." For a 
 health read use the **capped** `tis/imp_ratio_mean`/`imp_ratio_capped_fraction`, the median, or
 `log_ratio_abs_*` — not this mean.
 
+### NOT a failure/hang cause — context-overflow + passthrough-exception lines
+vLLM `... 32769 input tokens > 32768 max` (off-by-one single-turn overflow), `ContextLengthExceededError`,
+and `AgentTimeoutError` are **benign and expected** in agentic RL+eval rollouts (the latter two are in
+harbor's `passthrough_exceptions` → verifier still scores, rollout completes; they appear in *successful*
+runs). They are **NEVER the reason a job hangs or fails** — do not report them as the cause. When a job
+genuinely stalls/dies, find the real terminal signal instead: a `Traceback`, OOM / Raylet-died / SIGKILL,
+an RPC / `sample_tokens` timeout, a `RuntimeError`, or a hung Ray actor / Daytona trial that never returns.
+(See `feedback_context_overflow_not_failure_cause`.)
+
 ### Collapse rule (≥2 fire same step → cancel+salvage)
 `raw_grad_norm`>1.0 (or >2× window); `policy_entropy` off its 10-step trend >30%; `log_ratio_abs_mean`
 >2× window while `max` bounded; trial pass-rate <10% over last 100. **Exception:** spike-mitigation
