@@ -324,10 +324,15 @@ generator:
   # experts are sharded 16/GPU, plenty for a 3B-active MoE at this engine count.
   inference_engine_expert_parallel_size: 1
 
-  # mp EXECUTOR BACKEND (R3 capture). Required for routed_experts capture under
-  # the SkyRL inference path on this SIF; the mp executor runs capture-ON cleanly
-  # at full cudagraph speed. Requires colocate_all=false (set above).
-  inference_engine_mp_backend: true
+  # RAY EXECUTOR BACKEND (option A, task #232 unblock). The mp backend requested
+  # ONE atomic {GPU:tp_size}={GPU:8} bundle per engine, which is UNPLACEABLE on
+  # Jupiter's 4-GPU nodes (Ray PG bundles cannot span nodes). The ray backend
+  # instead splits TP=8 into 8x{GPU:1} bundles that place across 2 nodes -> fits.
+  # The mp backend was only needed to dodge the Ray Compiled-DAG R3 deadlock on
+  # the Qwen3-NEXT *hybrid* arch; this 30B-A3B is NON-hybrid (dense attention all
+  # 48 layers), so the ray backend should run R3 without deadlocking. Requires
+  # colocate_all=false (set above).
+  inference_engine_mp_backend: false
 
   # DCP=2 (long-ctx): vLLM decode-context-parallel shards the decode KV cache
   # across 2 of the TP=8 engine's GPUs (reuses TP GPUs, no extra GPUs). Ceiling
