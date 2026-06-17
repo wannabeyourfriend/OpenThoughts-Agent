@@ -561,7 +561,8 @@ if [ -d "$RUN_DIR" ] && [ -f "$RUN_DIR/config.json" ]; then
         -p "$RUN_DIR" \
         --filter-error-type EnvironmentStartTimeoutError \
         --filter-error-type DaytonaError \
-        --filter-error-type DaytonaRateLimitError
+        --filter-error-type DaytonaRateLimitError \
+        --filter-error-type VerificationNotCompletedError
 else
     echo "Starting new job"
     proxied $WRAPPER_DIR/harbor jobs start \
