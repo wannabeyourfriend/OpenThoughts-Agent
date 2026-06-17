@@ -32,11 +32,35 @@ audit not needed (upload only production winners). Skip.
 | 1 | **Job finished** | `sacct -j <id> -X -o State` | `COMPLETED` | `RUNNING`/`PENDING` → wait & re-audit later; `FAILED`/`TIMEOUT`/`CANCELLED` → diagnose + relaunch (see `eval-agentic-launch` gotchas #1–#5: `jobs_dir` perm / `hosted_vllm` 2-slash / `model_info` / reservation / stale-row) |
 | 2 | **Score present & not obviously broken** | Supabase `sandbox_jobs` score (read), or run-dir `result.json` → `stats.evals.<k>.metrics[0].mean` | non-null real number; a `0` is OK *only* if check 4 shows trials actually ran (POSTs flowed) | null / missing / **`0` with ~0 trials or ~0 vLLM POSTs** = infra-broken (the eval never reached the model — classic `jobs_dir`/`hosted_vllm`/`model_info` failure) → **re-run**, don't trust the 0 |
 | 3 | **HF traces present + linked** | trace HF repo exists + non-empty (`hf` API 200) AND the eval's DB/LB row has the trace/url field set | repo 200 **and** linked | repo missing/empty OR unlinked → **upload traces + register the link** (§1–§3) |
-| 4 | **Trial count correct** | count per-rep `result.json` under `trace_jobs/<RUN_TAG>` vs **`n_rep_eval × benchmark_size`** | ≥ ~90% of expected | materially short (<~90%, or a whole rep missing) → **re-run/resume the missing trials**. Expected: swebench-verified-random-100=100, dev_set_v2=100, terminal_bench_2=89; × `n_rep_eval` (default 3) → ~300 / ~300 / ~267. Occasional Daytona/`AgentTimeoutError` attrition is normal — don't chase a few %. |
+| 4 | **VALID trial count (PARSE, don't file-count)** | **Parse** each per-trial `result.json` for a numeric reward — do NOT `ls`/`find | wc -l` (an errored trial STILL writes a `result.json`, just with `exception_info` and no reward, so a file count overstates coverage). Count VALID vs ERRORED per eval — see the snippet below. | VALID ≥ ~90% of `n_rep_eval × benchmark_size` | materially short on VALID (<~90%, a whole rep missing, OR a high hard-error rate like 15–25%) → **re-run/resume the errored trials**. Expected: swebench-verified-random-100=100, dev_set_v2=100, terminal_bench_2=89; × `n_rep_eval` (default 3) → ~300/~300/~267. **`AgentTimeoutError` is *passthrough*** (the verifier still scores it → counts VALID); a few % hard-error attrition is normal, but a big hard-error count means the score may be **deflated** if those were scored 0 — flag it. |
 
 Output one row per eval: `✅/⚠️` per check + the single recommended next action. **Re-run the audit after any
 remediation** to confirm it flipped to ✅ (that's what makes the whole skill idempotent — the audit is the
 source of truth, the remediations below are the only side-effecting parts and you run them deliberately).
+
+### Check 4 — counting VALID trials (parse, never file-count) — STANDARD report element
+Trial dirs live at `eval_jobs/eval-<safe_model>_<safe_dataset>/<task>__<id>/result.json` (depth-1 under the
+run dir; the run-dir-root `result.json` is the aggregate — exclude it via the `*/` glob). Each per-trial
+`result.json` has `verifier_result.rewards.reward` (the metric) and `exception_info` (set on error). A trial
+is **VALID** iff `reward` is a finite number; otherwise **ERRORED** (no reward — Daytona/infra/non-passthrough
+exception). One pass over all evals (run from the `otagent` env python, read-only, ~1 min for 21×~300):
+```python
+import glob, json
+EJ='/e/data1/datasets/playground/ot-baf/eval_jobs'
+EVALS=[('eval-laion_<model>_<safe_dataset>', 300), ...]  # (run-tag, n_rep*bench_size) per eval
+for tag, exp in EVALS:
+    valid=err=0
+    for f in glob.glob(f'{EJ}/{tag}/*/result.json'):          # */ = per-trial only, skips root aggregate
+        try: d=json.load(open(f))
+        except Exception: err+=1; continue
+        r=((d.get('verifier_result') or {}).get('rewards') or {}).get('reward')
+        if isinstance(r,(int,float)): valid+=1   # numeric reward = VALID (incl. AgentTimeout passthrough)
+        else: err+=1                             # no reward = ERRORED (hard infra/exception)
+    print(f'{tag}: valid={valid} err={err} total={valid+err} / exp {exp}')
+```
+**Always include the valid/errored/expected matrix in the agent report** — a bare file count is NOT
+acceptable evidence of completeness (it hides errored trials). Flag any eval whose ERRORED rate is high
+(≳10–15%) as a re-run candidate + note the score may be deflated if those errors scored 0.
 
 ---
 # Remediations — the §0 audit scopes which to run (idempotent; re-run §0 after to confirm ✅)
