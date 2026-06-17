@@ -1,23 +1,48 @@
 ---
 name: eval-agentic-cleanup
 description: >-
-  Recover a finished agentic eval whose automatic HF-trace-upload or Supabase DB-registration failed (path
-  mismatch, missing result.json, bogus model name): run manual_db_eval_push.py against the trace_jobs dir,
-  fix the vLLM-numeric-ID → real-HF-model-name registration (with cross-user FK safety), verify in Supabase,
-  then free disk. Use when an eval COMPLETED but didn't upload/register, when a sweep finds an eval with a
-  technical DB-registration failure, or to re-register/correct an eval's model. Distinct from the model-
+  Audit + recover a finished agentic eval. ALWAYS start with the read-only, idempotent completeness/health
+  audit (§0): job finished? score present + non-zero + not obviously broken? HF traces present + linked?
+  trial count ≈ n_rep × benchmark_size? — it writes nothing and recommends an action per check. Then run
+  only the flagged remediations: manual HF-trace upload + Supabase DB-registration via manual_db_eval_push.py,
+  the vLLM-numeric-ID → real-HF-model-name fix (with cross-user FK safety), verify, free disk. Use to verify
+  an eval is truly complete, when a sweep finds an eval that didn't upload/register or has a broken/zero
+  score or short trial count, or to re-register/correct an eval's model/traces. Distinct from the model-
   publishing cleanups (rl-job-cleanup / sft-job-cleanup) and datagen-job-cleanup — this is the EVAL path.
 ---
 
 # eval-agentic-cleanup
 
-Normal evals auto-upload their traces + auto-register in Supabase on completion. Use this when that
-**didn't happen or went wrong** (path mismatch, missing `result.json`, or a bogus/numeric model name).
+Normal evals auto-upload their traces + auto-register in Supabase on completion — but "the score is in the
+leaderboard" does NOT mean the eval is complete. **Always start with the read-only audit (§0)** to verify
+the four things that actually matter, then run only the remediations it flags. The auto-harvest path is
+known to land a score while silently skipping trace upload, or to record a bogus 0 from an eval that never
+reached the model — the audit catches both.
 
-## 0. First — should this eval be uploaded at all?
-**EXEMPT (do NOT upload/register):** grid / throughput / OOM-test **measurement** runs targeting
-`DCAgent2/*` — upload only the **production winners**, not the calibration sweeps. If it's a measurement
-run, stop here. (Per the cron sweep directive.)
+## 0. Read-only completeness + health AUDIT — ALWAYS run first (idempotent, ZERO writes)
+Safe to run any time, repeatedly — it only reads (sacct, run-dir `result.json`, HF API, Supabase **reads**).
+It does NOT upload, register, mutate, or delete. For each eval `(slurm_job_id, model, benchmark)` check the
+four conditions and emit a per-eval verdict + recommended action; only then run the flagged remediation(s).
+
+**Pre-gate — is it EXEMPT?** grid / throughput / OOM-test **measurement** runs targeting `DCAgent2/*` →
+audit not needed (upload only production winners). Skip.
+
+| # | Check | How (read-only) | PASS | If it FAILS → recommend |
+|---|---|---|---|---|
+| 1 | **Job finished** | `sacct -j <id> -X -o State` | `COMPLETED` | `RUNNING`/`PENDING` → wait & re-audit later; `FAILED`/`TIMEOUT`/`CANCELLED` → diagnose + relaunch (see `eval-agentic-launch` gotchas #1–#5: `jobs_dir` perm / `hosted_vllm` 2-slash / `model_info` / reservation / stale-row) |
+| 2 | **Score present & not obviously broken** | Supabase `sandbox_jobs` score (read), or run-dir `result.json` → `stats.evals.<k>.metrics[0].mean` | non-null real number; a `0` is OK *only* if check 4 shows trials actually ran (POSTs flowed) | null / missing / **`0` with ~0 trials or ~0 vLLM POSTs** = infra-broken (the eval never reached the model — classic `jobs_dir`/`hosted_vllm`/`model_info` failure) → **re-run**, don't trust the 0 |
+| 3 | **HF traces present + linked** | trace HF repo exists + non-empty (`hf` API 200) AND the eval's DB/LB row has the trace/url field set | repo 200 **and** linked | repo missing/empty OR unlinked → **upload traces + register the link** (§1–§3) |
+| 4 | **Trial count correct** | count per-rep `result.json` under `trace_jobs/<RUN_TAG>` vs **`n_rep_eval × benchmark_size`** | ≥ ~90% of expected | materially short (<~90%, or a whole rep missing) → **re-run/resume the missing trials**. Expected: swebench-verified-random-100=100, dev_set_v2=100, terminal_bench_2=89; × `n_rep_eval` (default 3) → ~300 / ~300 / ~267. Occasional Daytona/`AgentTimeoutError` attrition is normal — don't chase a few %. |
+
+Output one row per eval: `✅/⚠️` per check + the single recommended next action. **Re-run the audit after any
+remediation** to confirm it flipped to ✅ (that's what makes the whole skill idempotent — the audit is the
+source of truth, the remediations below are the only side-effecting parts and you run them deliberately).
+
+---
+# Remediations — side-effecting (run ONLY the step(s) the §0 audit flagged)
+Everything above is read-only; everything below **writes** (HF uploads, Supabase rows, disk deletes). Run a
+step only when the audit recommended it, then re-run §0 to confirm it flipped to ✅. (Check-4 "re-run/resume
+missing trials" is a relaunch — see `eval-agentic-launch` — not one of the steps below.)
 
 ## 1. Manual upload + DB register — `manual_db_eval_push.py`
 Pass the **`trace_jobs/<RUN_TAG>`** path (where Harbor writes the `<task>__<id>` trial dirs), **NOT**
