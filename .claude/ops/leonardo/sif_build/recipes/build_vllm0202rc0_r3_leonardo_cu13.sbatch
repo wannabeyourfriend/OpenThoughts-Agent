@@ -93,6 +93,13 @@ echo "=== [1b] staging SkyRL + vLLM fork + wheelhouses into sandbox ==="
 mkdir -p "$SANDBOX/opt/SkyRL" "$SANDBOX/opt/vllm_build" \
          "$SANDBOX/opt/build_deps_wheels" "$SANDBOX/opt/runtime_deps_wheels" \
          "$SANDBOX/opt/accel_wheels"
+# Pre-create the /whl bind DESTINATION inside the sandbox. SingularityPRO 4.3.1
+# canNOT auto-create a bind target under `--writable` (no overlay/underlay), so
+# the `-B $ACCEL_WHEELS:/whl` mount in PHASE A (line ~116) FATALs with
+# "destination /whl doesn't exist in container" unless the mountpoint exists.
+# (cu13 build 47093523 failed exactly this way, at PHASE A start.) The sandbox is
+# a plain writable dir tree on GPFS, so we just mkdir the mountpoint here.
+mkdir -p "$SANDBOX/whl"
 cp -a "$SKYRL_SRC"/.            "$SANDBOX/opt/SkyRL/"
 cp -a "$VLLM_SRC"/.            "$SANDBOX/opt/vllm_build/"
 cp -a "$BUILD_DEPS_WHEELS"/.   "$SANDBOX/opt/build_deps_wheels/"
