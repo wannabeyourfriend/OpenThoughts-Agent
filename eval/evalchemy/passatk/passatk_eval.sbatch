@@ -30,7 +30,7 @@ PASSATK_ROOT=/leonardo_work/AIFAC_5C0_290/bfeuer00/experiments/delphi-eval/passa
 
 source /leonardo_work/AIFAC_5C0_290/bfeuer00/miniforge3/etc/profile.d/conda.sh
 conda activate evalchemy-marin
-cd /leonardo_work/AIFAC_5C0_290/bfeuer00/code/evalchemy
+cd /leonardo_work/AIFAC_5C0_290/bfeuer00/code/evalchemy-marin
 
 source ~/secrets.env
 export HF_HOME=/leonardo_work/AIFAC_5C0_290/bfeuer00/data/hub
@@ -66,6 +66,12 @@ if [ -n "${SLURM_JOB_ID:-}" ]; then
 fi
 
 # ----- per-type knobs -----
+# VLLM_FLAGS: extra engine knobs passed to the driver. EMPTY for dense cells (preserve prior
+# gpu_memory_utilization=0.9 / cudagraph behavior — don't degrade them). The Qwen3-30B-A3B MoE
+# cells OOM during the n=128 sampler warmup (256 dummy requests) at TP4 on one 4xGH200 node, so
+# the MoE types get a dedicated OOM-headroom override: lower gpu_memory_utilization + max_num_seqs
+# and enforce_eager (frees the cudagraph-capture pool that was consuming the last ~few-hundred MiB).
+VLLM_FLAGS=""
 case "$TYPE" in
   base)
     CHAT_FLAG=""
@@ -79,12 +85,20 @@ case "$TYPE" in
     MAX_GEN_TOKS=30720
     TP="${EXTRA_TP:-4}"
     ;;
-  qwen3-base|qwen3-moe-base)
-    # Qwen3 dense BASE + Qwen3-30B-A3B base MoE: raw completion (NO chat template), clean rope -> 32k ctx.
+  qwen3-base)
+    # Qwen3 dense BASE: raw completion (NO chat template), clean rope -> 32k ctx.
     CHAT_FLAG=""
     MAX_MODEL_LEN=32768
     MAX_GEN_TOKS=30720
     TP="${EXTRA_TP:-4}"
+    ;;
+  qwen3-moe-base)
+    # Qwen3-30B-A3B base MoE: raw completion (NO chat template), clean rope -> 32k ctx.
+    CHAT_FLAG=""
+    MAX_MODEL_LEN=32768
+    MAX_GEN_TOKS=30720
+    TP="${EXTRA_TP:-4}"
+    VLLM_FLAGS="--gpu-mem-util 0.80 --max-num-seqs 8 --enforce-eager"   # n=128 sampler-warmup OOM headroom
     ;;
   qwen3-moe-thinking)
     # Qwen3-30B-A3B-Thinking-2507: own ChatML template, thinking default-on (enable_thinking UNSET), 32k ctx.
@@ -92,11 +106,12 @@ case "$TYPE" in
     MAX_MODEL_LEN=32768
     MAX_GEN_TOKS=30720
     TP="${EXTRA_TP:-4}"
+    VLLM_FLAGS="--gpu-mem-util 0.80 --max-num-seqs 8 --enforce-eager"   # n=128 sampler-warmup OOM headroom
     ;;
   *) echo "ERROR: TYPE must be base|qwen3|qwen3-base|qwen3-moe-base|qwen3-moe-thinking (got '$TYPE')"; exit 2 ;;
 esac
 
-echo "RUN=$RUN TASK=$TASK TYPE=$TYPE TP=$TP MAX_MODEL_LEN=$MAX_MODEL_LEN MAX_GEN_TOKS=$MAX_GEN_TOKS CHAT_FLAG='$CHAT_FLAG' OUT=$OUT"
+echo "RUN=$RUN TASK=$TASK TYPE=$TYPE TP=$TP MAX_MODEL_LEN=$MAX_MODEL_LEN MAX_GEN_TOKS=$MAX_GEN_TOKS CHAT_FLAG='$CHAT_FLAG' VLLM_FLAGS='$VLLM_FLAGS' OUT=$OUT"
 
 python "$DRIVER" \
   --task "$TASK" \
@@ -107,6 +122,6 @@ python "$DRIVER" \
   --max-model-len "$MAX_MODEL_LEN" \
   --max-gen-toks "$MAX_GEN_TOKS" \
   --temperature 0.7 --top-p 1.0 --seed 42 \
-  $CHAT_FLAG
+  $CHAT_FLAG $VLLM_FLAGS
 
 echo "DONE: $RUN / $TASK -> $OUT"
