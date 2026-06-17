@@ -37,33 +37,32 @@
 entrypoint: examples.terminal_bench.entrypoints.main_tbench
 
 # =============================================================================
-# BLOCKED — 131k on the RL-venv vLLM is NOT viable. DO NOT relaunch as-is.
+# RE-ENABLED 2026-06-17 — RL-venv vLLM now honors the YaRN hf_overrides natively.
 # =============================================================================
 # GLM-4.7-swesmith (Qwen3-8B) has native max_position_embeddings=40960. Reaching
 # 131k REQUIRES the YaRN rope_scaling below to actually take effect IN THE vLLM
-# ENGINE. On the bare RL-venv vLLM build (version `dev`) it does NOT:
-#   - vLLM keeps reporting `derived max_model_len (max_position_embeddings=40960.0)`
-#     even with the hf_overrides.rope_scaling set below — i.e. the YaRN override is
-#     never applied to the engine's ModelConfig (RoPE tables stay sized for 40960).
-#   - With VLLM_ALLOW_LONG_MAX_MODEL_LEN=1 the engine ACCEPTS max_model_len=131072
-#     anyway, then a rollout sequence past 40960 positions indexes the un-extended
-#     RoPE kernel out of bounds -> `CUDA error: illegal memory access` -> EngineCore
-#     dies -> EngineDeadError. Observed end-to-end in job 913278: it cleared the gate
-#     and COMPLETED GRPO step 1 (pass@8 0.6875, glen~38.8k), then the engines died on
-#     the step-2 / post-update rollout once a seq exceeded 40960. (912743 & 913087
-#     died even earlier — at the ModelConfig gate — before VLLM_ALLOW_LONG was added.)
-# So VLLM_ALLOW_LONG_MAX_MODEL_LEN here is REMOVED: it does not extend RoPE, it only
-# unmasks the gate and lets the run produce illegal accesses / nan.
+# ENGINE. The bare RL-venv vLLM build (version `dev`, 0.16-era, transformers 4.57)
+# USED to silently drop it: hf_overrides.rope_scaling is a dict, so vLLM applies it
+# in ModelConfig._apply_dict_overrides AFTER get_config() already ran
+# patch_rope_parameters — the step that (on transformers v4) migrates the legacy
+# `rope_scaling` field into the modern `rope_parameters` dict that
+# _get_and_verify_max_len reads. The override only updated the legacy `rope_scaling`
+# attr while `rope_parameters` kept the native value -> vLLM derived
+# max_model_len=40960 and the YaRN was a no-op (RoPE tables un-extended). Adding
+# VLLM_ALLOW_LONG_MAX_MODEL_LEN=1 only unmasked the 131072 gate WITHOUT extending
+# RoPE -> a rollout seq past 40960 indexed the kernel out of bounds -> CUDA illegal
+# memory access -> EngineDeadError (job 913278 cleared step 1 then died on the
+# step-2 rollout; 912743/913087 died earlier at the gate).
 #
-# The proven #232 path (64GPU_qwen3_30b_a3b_longctx131k_cp_dcp.yaml) reaches 131k on
-# the SAME native-40960 model with the SAME hf_overrides YaRN ONLY because it runs the
-# vllm0202rc0 (_cp) SIF, whose vLLM DOES honor hf_overrides.rope_scaling (derives
-# 131072, no warning, no override needed). FIX = run Lever-1 on that SIF too, i.e. add:
-#   container:
-#     sif: /e/scratch/jureap59/feuer1/containers/skyrl_megatron_vllm0202rc0_r3_cp.sif
-#     binds: [/e/scratch, /e/data1]
-# (plus the #232 pydeps/extra_env as needed) — which crosses the plan's locked
-# "plain FSDP2, RL venv, no _cp tooling" decision, so it needs a human call before relaunch.
+# FIX (vLLM fork penfever/working, commit 28faed993; mirrored pure-Python into the
+# RL-venv site-packages — no recompile): _apply_dict_overrides now re-runs
+# patch_rope_parameters after a rope_scaling/rope_parameters dict override, so the
+# YaRN propagates into rope_parameters before max-len derivation. Validated in
+# isolation on the bare RL venv: ModelConfig derives max_model_len=131072 (no
+# "derived 40960" warning) and a real >40960-token (50k-prompt) decode ran clean (no
+# illegal-memory / nan) at TP=1 — WITHOUT VLLM_ALLOW_LONG_MAX_MODEL_LEN. So this arm
+# runs on the bare RL venv / plain FSDP2 as the plan locked; the _cp SIF route is NOT
+# needed. VLLM_ALLOW_LONG_MAX_MODEL_LEN stays REMOVED (it masks the nan hazard).
 # =============================================================================
 
 # Hydra config groups (+ prefix in CLI)
@@ -210,9 +209,10 @@ trainer:
 
   # Training loop settings
   epochs: 2
-  # SMOKE: <=2 steps to probe fit + first GRPO step + GLM-prior coherence. Bump to
-  # the full horizon (e.g. 80) for the full pure-solve arm once the smoke is green.
-  max_steps: 2
+  # Full pure-solve arm: 80 steps (the RL-venv-vLLM YaRN fix is validated, so this
+  # runs end-to-end on the bare RL venv). Fresh from step 0 (job 913278 banked no
+  # checkpoint). The critical watch is surviving past gs1 (where 913278 crashed).
+  max_steps: 80
   update_epochs_per_batch: 1
 
   # Batch sizes
