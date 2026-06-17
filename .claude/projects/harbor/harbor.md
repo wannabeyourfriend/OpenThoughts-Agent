@@ -4,7 +4,8 @@ The agent framework OT-Agent uses for **trace generation** (RL/SFT data) and **a
 2026-06-14 from notes + the live `penfever/working` tree. Operational eval-job file layout + resume-debug
 specifics live alongside this in `ops.md`; this is the architecture/facts overview.
 
-- **Repo:** local `/Users/benjaminfeuer/Documents/harbor`, branch **`penfever/working`**, remote `marin` = `marin-community/harbor` (v0.7.0). Editable-installed on every cluster; synced via git (commit→push→`git pull`), never patched on the cluster.
+- **Repo:** local `/Users/benjaminfeuer/Documents/harbor`, branch **`penfever/working`**. Editable-installed on every cluster; synced via git (commit→push→`git pull`), never patched on the cluster.
+- **⚠️ CANONICAL UPSTREAM = `marin-community/harbor`** (v0.7.0). The laptop's `origin`/`marin`/`upstream` all point here and `penfever/working` tracks `marin/penfever/working` — **always push here**. Other remotes on the laptop (`laude` = `laude-institute/harbor`, `charlie`, `marianna`) are forks/mirrors and are NOT kept in sync — do not push to or pull from them. **Gotcha (fixed 2026-06-17):** both cluster clones had a STALE `origin` = `laude-institute/harbor` (frozen at an old commit), so `git pull` silently no-op'd and never saw new laptop pushes. Both were repointed to `marin-community/harbor`. If a cluster `git pull` reports "Already up to date" but the fix isn't there, **check `git remote get-url origin` points at `marin-community/harbor`** first.
 - **CLI:** Typer app `harbor.cli.main:app` — `harbor run`, `harbor jobs start`, `harbor view`, `harbor trials start`.
 - **Two OT-Agent uses:** (1) **datagen trace-gen** — run an agent over a task set, record rollout trajectories → HF dataset; (2) **agentic eval** — run an agent over a benchmark, verify, compute metrics. Both go through `hpc/launch.py` (`--job_type datagen`/`eval`) or the unified eval listener.
 
