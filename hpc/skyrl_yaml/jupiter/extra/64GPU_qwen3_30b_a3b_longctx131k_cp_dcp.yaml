@@ -18,8 +18,9 @@
 #   * NON-HYBRID dense attention -> ALL 48 layers grow KV with length (the 80B's
 #     36 GDN layers used fixed recurrent state). KV pressure is MUCH higher -> we
 #     drop gpu_memory_utilization to 0.80 and max_num_batched_tokens stays bounded.
-#   * 4 KV heads (the 80B had 2). DCP ceiling is dcp <= tp / num_kv_heads, so
-#     DCP=2 REQUIRES TP=8 here (TP=4 would give 4/4=1, DCP disabled). Engine TP=8.
+#   * 4 KV heads (the 80B had 2). DCP ceiling is dcp <= tp / num_kv_heads. Option B
+#     (#232) runs DCP=1 -> the ceiling is 4/4=1, so TP=4 is legal (one 4-GPU node per
+#     engine, no cross-node TP decode). [Old Option A ran DCP=2 which forced TP=8.]
 #   * 128 experts (the 80B had 512). MoE divisibility (num_experts//ep)%fsdp==0:
 #     128/EP8 = 16/EP-rank, 16/FSDP2 = 8 even -> valid. (fsdp_size 4->2 vs the 80B
 #     long-ctx mesh, since 30B's sharded state is ~2.6x smaller and fits at FSDP2.)
@@ -42,10 +43,23 @@
 # -----------------------------------------------------------------------------
 # GPU / NODE SIZING (16 nodes x 4 GH200 = 64 GPUs)  [colocate_all: false]
 # -----------------------------------------------------------------------------
-# Generation (vLLM):  4 engines x TP=8            = 32 GPUs  =  8 nodes
+# OPTION B (task #232, USER-APPROVED 2026-06-17): the cross-node-TP decode RPC
+# timeout killed every attempt under the old 4 engines x TP=8 geometry (TP=8 spans
+# 2 nodes on Jupiter's 4-GPU nodes -> per-step IB all-reduce in decode -> dies even
+# at the 900s deadline). Option B drops DCP=2 -> DCP=1, which lifts the DCP ceiling
+# constraint (dcp <= tp/num_kv_heads = 8/4=2 forced TP>=8; with dcp=1 the ceiling is
+# 4/4=1 so TP=4 is now legal). TP=4 = exactly ONE 4-GPU node per engine -> NO cross-
+# node TP decode -> NO per-step IB all-reduce -> NO timeout. The 32-GPU generation
+# footprint is preserved by RESHAPING 4 engines x TP8 -> 8 engines x TP4 (same 8
+# generation nodes, double the engine count, same total 16 nodes). Training mesh is
+# UNCHANGED (EP=8 x FSDP=2 x CP=2). R3-tensorize fix c8be4bb is PROVEN.
+#
+# Generation (vLLM):  8 engines x TP=4 (DCP=1)    = 32 GPUs  =  8 nodes
 # Policy/Ref FSDP  :  EP=8 x FSDP=2 x CP=2        = 32 GPUs  =  8 nodes
 #                                                   --------   --------
 #                                          TOTAL =  64 GPUs   16 nodes
+#
+# (was, Option A — DIED on cross-node-TP decode timeout: 4 engines x TP=8 = 32 GPUs.)
 #
 # FSDP memory arithmetic (why 32 policy GPUs is comfortable):
 #   bf16 weights        : 30e9 x 2 B            =  60 GB
@@ -311,36 +325,42 @@ generator:
   timeout_multiplier: 1.0
   model_dtype: bfloat16
 
-  # TP=8 per engine — REQUIRED for DCP=2 (dcp <= tp/num_kv_heads = 8/4 = 2). Also
-  # divides 32 attn heads (4/GPU), 4 KV heads (replicated/1 per 2 GPUs), and the
-  # 128 experts (16/GPU). 4 engines x TP=8 = 32 GPUs = 8 generation nodes.
-  inference_engine_tensor_parallel_size: 8
-  # 4 TP=8 engines = 32 inference GPUs = 8 inference nodes. Set explicitly (not
-  # null) so the launcher emits exactly 4 (its (num_nodes*gpus)//tp derivation
-  # = 16*4//8 = 8 would be WRONG — 8 of the 16 nodes are policy-only).
-  num_inference_engines: 4
+  # TP=4 per engine (Option B, #232) — exactly ONE 4-GPU node per engine, so the
+  # decode-step TP all-reduce stays ON-NODE (NVLink), never crossing the IB fabric.
+  # This eliminates the cross-node-TP decode RPC timeout that killed Option A's TP=8
+  # (split 8x{GPU:1} across 2 nodes). TP=4 cleanly divides: 32 attn heads (8/GPU),
+  # 4 KV heads (1/GPU, no replication), 128 experts (32/GPU). Requires DCP=1 (the
+  # dcp <= tp/num_kv_heads = 4/4 = 1 ceiling). 8 engines x TP=4 = 32 GPUs = 8 gen nodes.
+  inference_engine_tensor_parallel_size: 4
+  # 8 TP=4 engines = 32 inference GPUs = 8 inference nodes. Set explicitly (not null)
+  # so the launcher uses exactly 8 (its (num_nodes*gpus)//tp = 16*4//4 = 16 derivation
+  # would be WRONG — 8 of the 16 nodes are policy-only; the hydra override here is the
+  # authoritative value, the launcher's NUM_INFERENCE_ENGINES env export is coarse).
+  num_inference_engines: 8
 
-  # Expert parallelism on the engine: leave at default 1. With TP=8 the 128
-  # experts are sharded 16/GPU, plenty for a 3B-active MoE at this engine count.
+  # Expert parallelism on the engine: leave at default 1. With TP=4 the 128
+  # experts are sharded 32/GPU, plenty for a 3B-active MoE at this engine count.
   inference_engine_expert_parallel_size: 1
 
-  # RAY EXECUTOR BACKEND (option A, task #232 unblock). The mp backend requested
-  # ONE atomic {GPU:tp_size}={GPU:8} bundle per engine, which is UNPLACEABLE on
-  # Jupiter's 4-GPU nodes (Ray PG bundles cannot span nodes). The ray backend
-  # instead splits TP=8 into 8x{GPU:1} bundles that place across 2 nodes -> fits.
-  # The mp backend was only needed to dodge the Ray Compiled-DAG R3 deadlock on
-  # the Qwen3-NEXT *hybrid* arch; this 30B-A3B is NON-hybrid (dense attention all
-  # 48 layers), so the ray backend should run R3 without deadlocking. Requires
-  # colocate_all=false (set above).
+  # RAY EXECUTOR BACKEND (task #232 unblock; kept under Option B). The ray backend
+  # splits TP=4 into 4x{GPU:1} bundles which now place WITHIN a single 4-GPU node
+  # (Option B: TP=4 = one node) -> the decode TP all-reduce is on-node NVLink, no IB.
+  # The ray backend was chosen because the mp backend requested ONE atomic {GPU:tp}
+  # bundle per engine; it is also the path the proven attempt-6/7/8 init + R3 capture
+  # validated on (no Compiled-DAG deadlock on this NON-hybrid 30B-A3B; async_scheduling
+  # is explicitly disabled below to satisfy the R3 guard the ray executor would
+  # otherwise trip). Requires colocate_all=false (set above).
   inference_engine_mp_backend: false
 
-  # DCP=2 (long-ctx): vLLM decode-context-parallel shards the decode KV cache
-  # across 2 of the TP=8 engine's GPUs (reuses TP GPUs, no extra GPUs). Ceiling
-  # dcp <= tp/num_kv_heads = 8/4 = 2, so dcp=2 is AT the ceiling. R3 + DCP>1 is
-  # cleared by the VLLM_ALLOW_ROUTED_EXPERTS_DCP guard-lift (baked into this SIF).
-  # The DCP GQA-LSE fp32 fix (baked) brings dcp=1-vs-dcp=2 token mismatch to the
-  # accepted bf16-tie floor (6.94%, gold parity job 905835).
-  inference_engine_decode_context_parallel_size: 2
+  # DCP=1 (Option B, #232): decode-context-parallel DISABLED. Dropping DCP 2->1 is
+  # what lets TP go 8->4 (ceiling dcp <= tp/num_kv_heads; with dcp=1 the constraint
+  # is satisfied at TP=4 = 4/4=1). The cost is the lost DCP=2 KV-cache sharding at
+  # 131k (KV now sits on the TP shard alone, ~3.2 GB per 131k seq per GPU vs ~1.6 GB
+  # under DCP=2), so max_num_seqs is lowered below to keep a TP=4 engine within one
+  # 4xGH200 node (30B bf16 weights 15 GB/GPU at TP4 + 131k KV + activations). With
+  # DCP=1 the R3+DCP>1 guard path is moot (no DCP), so VLLM_ALLOW_ROUTED_EXPERTS_DCP
+  # is harmless-but-unneeded; the DCP GQA-LSE fp32 parity concern also no longer applies.
+  inference_engine_decode_context_parallel_size: 1
 
   n_samples_per_prompt: 8
   eval_n_samples_per_prompt: 8
@@ -349,9 +369,18 @@ generator:
   # model: ALL 48 layers grow KV with length (the 80B had only 12/48 attention
   # layers), so KV pressure at 131k is far higher. 0.80 leaves more HBM headroom
   # for the length-scaling KV cache. TUNE DOWN to 0.75 if the first smoke OOMs.
+  # Option B sizing (TP=4, DCP=1, one 4xGH200 node/engine): weights ~15 GB/GPU +
+  # ~3.2 GB/131k-seq/GPU KV. At util 0.80 (~77 GB usable) -> ~58 GB KV budget ->
+  # ~18 full-length 131k seqs/engine worst-case; max_num_seqs=16 stays under that
+  # with activation headroom. (Old TP8+DCP2 fit ~24 because DCP halved KV to 1.6 GB.)
   gpu_memory_utilization: 0.80
 
-  max_num_seqs: 24
+  # 24 -> 16 for Option B: without DCP=2's KV halving, a TP=4 engine holds the full
+  # 131k KV on its TP shard (~3.2 GB/seq/GPU). 16 keeps the worst-case all-131k
+  # working set under the ~18-seq ceiling at gpu_mem 0.80. Verify against the vLLM
+  # "GPU KV cache size / Maximum concurrency" profiling line; if it OOMs at bind,
+  # drop gpu_memory_utilization 0.80->0.75 first, then max_num_seqs 16->12.
+  max_num_seqs: 16
   # 16384 prefill batch — keeps the per-engine activation peak bounded on the
   # TP=8 GH200 engines alongside the KV reservation.
   max_num_batched_tokens: 16384
@@ -450,16 +479,12 @@ container:
     # APPTAINERENV_ so the forked vLLM mp workers inside the SIF see it.
     VLLM_ALLOW_ROUTED_EXPERTS_DCP: 1
     APPTAINERENV_VLLM_ALLOW_ROUTED_EXPERTS_DCP: 1
-    # Per-step model-execute RPC timeout. The vLLM EngineCore's `sample_tokens`
-    # collective_rpc aggregates worker responses with a deadline of
-    # VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS (multiproc_executor.py:314; default 300s).
-    # Under option A (ray backend, TP=8 split 8x{GPU:1} ACROSS 2 NODES), each decode
-    # step's TP all-reduce crosses the IB fabric, and at 131k context with MoE + R3
-    # routed-experts capture a single step (esp. the first long-prefill) can exceed
-    # 300s — the EngineCore then declares the worker dead and crashes with
-    # "RPC call to sample_tokens timed out" (job 908469: engine #2's cross-node TP
-    # group on ips .249/.243 timed out, wedging the run in a chat-completion retry
-    # loop). Raise to 900s (3x) to absorb the cross-node-TP per-step latency. Mirror
-    # to APPTAINERENV_ so the forked vLLM workers inside the SIF inherit it.
+    # Per-step model-execute RPC timeout (multiproc_executor.py:314; default 300s).
+    # Under Option A (TP=8 split 8x{GPU:1} ACROSS 2 NODES) each decode-step TP all-
+    # reduce crossed the IB fabric and a single 131k step exceeded even 900s, killing
+    # all EngineCores (jobs 908469 + 911361). Option B (TP=4 = one 4-GPU node/engine)
+    # keeps the decode all-reduce on-node NVLink, so this deadline is NO LONGER load-
+    # bearing — kept at 900s as harmless belt-and-suspenders headroom for the long
+    # first-prefill. Mirror to APPTAINERENV_ so the forked vLLM workers inherit it.
     VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS: 900
     APPTAINERENV_VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS: 900
