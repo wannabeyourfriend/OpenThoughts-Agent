@@ -201,6 +201,11 @@ trainer:
 
   max_prompt_length: 999999
 
+  # Sample packing MUST be off under context_parallel_size>1: SkyRL's _validate_cp_cfg
+  # rejects packed-varlen + CP (packed-varlen ring-SDPA CP is deferred). The 131k run
+  # uses one sequence per micro-batch (micro_train=1), so packing buys nothing here.
+  use_sample_packing: false
+
   eval_interval: 999999
   eval_before_train: false
   # ckpt_interval=1: long-ctx 30B steps are slow; bank step-1 to avoid resume-from-0.
