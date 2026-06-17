@@ -39,10 +39,11 @@ remediation** to confirm it flipped to ✅ (that's what makes the whole skill id
 source of truth, the remediations below are the only side-effecting parts and you run them deliberately).
 
 ---
-# Remediations — side-effecting (run ONLY the step(s) the §0 audit flagged)
-Everything above is read-only; everything below **writes** (HF uploads, Supabase rows, disk deletes). Run a
-step only when the audit recommended it, then re-run §0 to confirm it flipped to ✅. (Check-4 "re-run/resume
-missing trials" is a relaunch — see `eval-agentic-launch` — not one of the steps below.)
+# Remediations — the §0 audit scopes which to run (idempotent; re-run §0 after to confirm ✅)
+The §0 audit is read-only; the steps below **do write** — and that's expected: **HF trace upload + Supabase
+registration are normal, sanctioned operations of this skill**, not something to avoid. The audit just tells
+you *which* are needed so you don't redo finished work or clobber a good row. (Check-4 "re-run/resume missing
+trials" is a relaunch — see `eval-agentic-launch` — not one of the steps below.)
 
 ## 1. Manual upload + DB register — `manual_db_eval_push.py`
 Pass the **`trace_jobs/<RUN_TAG>`** path (where Harbor writes the `<task>__<id>` trial dirs), **NOT**
@@ -56,6 +57,22 @@ python scripts/database/manual_db_eval_push.py --job-dir trace_jobs/<RUN_TAG> --
 #   --skip-hf                             # DB only (traces already uploaded)
 #   --forced-update                       # overwrite existing records
 ```
+
+### HF trace dataset — use the MEMORY-EFFICIENT uploader (don't hand-extract episodes)
+For the HF trace **dataset** itself, use the same streamed, **last-episode-per-trial** uploader the RL
+cleanup uses (see `rl-job-cleanup` §8 for the canonical invocation) — naive per-conversation extraction
+loads every episode of every trial into RAM and is brutally I/O-heavy on GPFS at eval scale (300 trials ×
+hundreds of episode files each):
+```bash
+# otagent env; ALWAYS in tmux; `hf upload`, NEVER `hf upload-large-folder` (deprecated + LFS-429 deadlocks)
+python -m scripts.harbor.make_and_upload_trace_dataset \
+  --job-dir trace_jobs/<RUN_TAG> --repo_id <org>/<RUN_TAG>-traces --episodes last
+```
+`--episodes last` keeps only the final (scored) episode per trial — the same convention as the RL trace
+datasets, and what keeps memory flat. **Eval-vs-RL difference:** RL passes `--skip_register`; for EVALS you
+DO want the trace repo linked, so register/link it onto the eval's existing `sandbox_jobs` row (§2/§3 — set
+the trace/url field only, do NOT create a second row or touch the score). On **Leonardo**, login-node
+`hf upload` is SIGKILLed at ~100s → use the sbatch+tunnel pattern (`ops/leonardo/ops.md`).
 
 ## 2. ⚠️ CRITICAL — verify + fix the model name (with cross-user FK safety)
 The script auto-detects the model from trial `result.json` → `agent_info.model_info.name`. For vLLM-served
