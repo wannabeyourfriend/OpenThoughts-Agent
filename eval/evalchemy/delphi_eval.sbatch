@@ -29,7 +29,16 @@
 set -euo pipefail
 
 # Resolve this wrapper's directory so it finds evalchemy_eval.sbatch next to it (repo-relative).
-SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# NOTE: under SLURM the submitted script is copied to /var/spool/slurmd/jobNNN/ and run from there,
+# so BASH_SOURCE[0]/dirname resolves to the spool dir (where evalchemy_eval.sbatch does NOT exist) —
+# that produced a 4-sec ExitCode-127 "No such file or directory". Pin to the repo clone instead,
+# falling back to the BASH_SOURCE dir only for interactive/non-SLURM invocation.
+REPO_EVAL_DIR="/leonardo_work/AIFAC_5C0_290/bfeuer00/code/OpenThoughts-Agent/eval/evalchemy"
+if [[ -f "${REPO_EVAL_DIR}/evalchemy_eval.sbatch" ]]; then
+  SELF_DIR="${REPO_EVAL_DIR}"
+else
+  SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+fi
 
 # Delphi-specific defaults (overridable from the environment).
 export CHAT_TEMPLATE_OVERRIDE="${CHAT_TEMPLATE_OVERRIDE:-/leonardo_work/AIFAC_5C0_290/bfeuer00/code/OpenThoughts-Agent/chat_templates/delphi_v0.jinja2}"
