@@ -37,7 +37,8 @@ ops notes first.
   `swebench`, `bfcl`, `aider`) OR explicit `--datasets` — **use one, not both**.
   - **Harbor config: do NOT override `--harbor-config` for standard terminus-2 evals.** Omit it — the
     sbatch defaults to the clean canonical `eval/jupiter/dcagent_eval_config.yaml` (terminus-2, n_attempts 3;
-    listener sets timeout_multiplier 2.0 at runtime). The old `eval_ctx{32k,131k}_non_it*.yaml` /
+    listener sets a **size-based** `timeout_multiplier` at runtime — 8B→2×, 32B→16×, see §"Timeout
+    multiplier policy" below). The old `eval_ctx{32k,131k}_non_it*.yaml` /
     `ctx32k_non_it_16x_eval_.yaml` configs are **deprecated** (they carried `penfever/temp-override`-era
     `mean-drop-ei`/`accuracy-drop-ei` metrics that no Marin-branch harbor supports → JobConfig
     ValidationError). Only pass `--harbor-config` for a genuine non-default need (131k context window,
@@ -110,6 +111,41 @@ python eval/jupiter/unified_eval_listener.py \
   [--pre-download] [--pinggy_persistent_url <URL> --pinggy_token <TOKEN>] \
   --once --verbose --batch-size <N> 2>&1 | tee eval/<cluster>/logs/<preset>_listener_$(date +%Y%m%d_%H%M%S).log
 ```
+
+## 3b. Timeout multiplier policy (automatic, size-based — usually nothing to do)
+
+Harbor's `--timeout-multiplier` scales every agentic-rollout timeout. A larger model decodes its rollout
+much more slowly, so a flat multiplier (the old 1× default) made big models spuriously hit
+**AgentTimeout** → deflated scores. The listener now sets the multiplier **automatically from the model
+size**, so a normal launch gets the right value with no flag:
+
+| model size (param count) | timeout multiplier |
+|---|---|
+| **8B-class** (≤ ~14B; includes 1.5B/7B/14B) | **2×** |
+| **32B-class** (~30–40B; includes MoE like `30b-a3b`) | **16×** |
+| out-of-band (e.g. 70B / 80B) **or no size token in the name** | **unset** → harbor default + a logged WARNING (set one explicitly) |
+
+**Where it's set:** `eval/jupiter/unified_eval_listener.py` — `infer_size_timeout_multiplier()` /
+`get_timeout_multiplier_env()`, applied per-model in the submission loop. It reads the **param-count size
+token from the HF model name** (largest `\dB` token wins, so MoE `…-30b-a3b` → 30B → 16×). The resolved
+value flows as `EVAL_TIMEOUT_MULTIPLIER` into the sbatch (→ harbor `--timeout-multiplier`) and is recorded
+in the Pending DB row's config so dedup stays consistent with what actually ran.
+
+**Resolution order (first wins):**
+1. **Explicit global override** — `EVAL_TIMEOUT_MULTIPLIER` already in the listener's sbatch env (set by a
+   harbor YAML carrying a top-level `timeout_multiplier`). Honoured as-is for all models — overrides the
+   size default.
+2. **Per-model entry** — a `timeout_multiplier:` under a model (or pattern) in
+   `eval/baseline_model_configs.yaml`. Use this for models whose **name has no size token** (e.g.
+   `laion/GLM-4_7-swesmith-…` is really a Qwen3-8B → add an entry with `timeout_multiplier: 2.0`) or for
+   out-of-band sizes you want a deliberate value for.
+3. **Size-based default** — the table above, derived from the name.
+
+**Rule for sizes the table doesn't name:** ≤ ~14B → 2× and ~30–40B → 16× are applied automatically.
+Anything else (notably **1.5B** is *covered* by the ≤14B 2× branch, but **80B / 70B** are NOT) is left at
+harbor's default with a WARNING — **do not guess**; add a per-model entry in `baseline_model_configs.yaml`
+with a deliberate multiplier. For a one-off manual `harbor jobs start`, pass `--timeout-multiplier 2.0`
+(8B) / `16.0` (32B) by hand (see `eval/EVAL_GUIDE.md`).
 
 ## 4. VERIFY the launch — the 15-min infra sanity check (do NOT trust "RUNNING")
 A job can report RUNNING while nothing happens (pinggy locked, launcher missing `--pinggy_*`, dead vLLM

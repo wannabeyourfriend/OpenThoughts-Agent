@@ -315,6 +315,58 @@ def get_vllm_env_overrides(hf_model: str, configs: Dict[str, Dict[str, Any]]) ->
 
 
 # ---------------------------------------------------------------------------
+# Model-size -> Harbor timeout multiplier default
+# ---------------------------------------------------------------------------
+# Larger models decode their agentic rollouts much more slowly, so they
+# spuriously hit AgentTimeout at the old flat default (1x). We pick the
+# multiplier automatically from the model's parameter-count size token in the
+# HF name (e.g. "...-8B", "Qwen3-32B"). Policy:
+#   <= ~14B   -> 2x   (8B-class; user-specified 8B = 2x)
+#   ~30-40B   -> 16x  (32B-class; user-specified 32B = 16x; a 32B agentic
+#                      rollout is ~16x slower, hence the big jump)
+# Sizes outside these bands (e.g. 1.5B, 80B) are NOT guessed: we leave the
+# multiplier unset (falls back to harbor's 1x / whatever the YAML specifies)
+# and log a warning so a human can set a deliberate value. A per-model entry
+# in baseline_model_configs.yaml ("timeout_multiplier") always wins over this.
+_SIZE_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9.])(\d+(?:\.\d+)?)\s*[bB](?![A-Za-z0-9])")
+
+
+def infer_size_timeout_multiplier(hf_model: str) -> Optional[float]:
+    """Infer a Harbor timeout multiplier from the model-name size token.
+
+    Returns the multiplier (2.0 for <=~14B, 16.0 for ~30-40B), or None when
+    the size is unknown / outside the documented bands (caller should not
+    guess; leaves harbor at its default and logs).
+    """
+    # Largest size token in the name wins (handles e.g. MoE "30b-a3b").
+    sizes = [float(m) for m in _SIZE_TOKEN_RE.findall(hf_model)]
+    if not sizes:
+        return None
+    b = max(sizes)
+    if b <= 14.0:
+        return 2.0
+    if 28.0 <= b <= 42.0:
+        return 16.0
+    # 1.5B is covered by the <=14 branch; only truly out-of-band sizes
+    # (e.g. 70B/80B) reach here.
+    return None
+
+
+def get_timeout_multiplier_env(hf_model: str, configs: Dict[str, Dict[str, Any]]) -> Optional[str]:
+    """Resolve the size-based EVAL_TIMEOUT_MULTIPLIER default for a model.
+
+    Per-model "timeout_multiplier" in baseline_model_configs.yaml wins; else
+    the size-token inference. Returns the multiplier as a string, or None if
+    no automatic value applies (caller leaves any existing value untouched).
+    """
+    cfg = configs.get(hf_model) or _match_pattern_config(hf_model) or {}
+    if cfg.get("timeout_multiplier") is not None:
+        return str(float(cfg["timeout_multiplier"]))
+    tm = infer_size_timeout_multiplier(hf_model)
+    return str(tm) if tm is not None else None
+
+
+# ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
 _LOG_FILE: Optional[Path] = None
@@ -1081,8 +1133,25 @@ def main() -> None:
 
                     log(f"Submitting [{idx+1}/{len(submissions)}]: model={hf_model}, dataset={dataset_hf}, reason={reason}")
 
+                    # Resolve the size-based Harbor timeout multiplier default for this
+                    # model (8B->2x, 32B->16x). Only fill in when not already set
+                    # explicitly by the harbor YAML (EVAL_TIMEOUT_MULTIPLIER in sbatch_env
+                    # is a deliberate global override). Record the resolved value in the
+                    # per-model eval_config so the Pending DB row matches what actually runs.
+                    model_eval_config = dict(eval_config) if eval_config else {}
+                    size_tm: Optional[str] = None
+                    if "EVAL_TIMEOUT_MULTIPLIER" not in sbatch_env:
+                        size_tm = get_timeout_multiplier_env(hf_model, baseline_configs)
+                        if size_tm is not None:
+                            model_eval_config["timeout_multiplier"] = float(size_tm)
+                            log(f"  Timeout multiplier (size-based default): {size_tm}x for {hf_model}")
+                        else:
+                            log(f"  WARNING: no size-based timeout multiplier for {hf_model} "
+                                f"(size token out of band, e.g. 1.5B/80B) — using harbor default; "
+                                f"set one explicitly in baseline_model_configs.yaml")
+
                     db_job_id = create_pending_job(hf_model, dataset_hf, bench_id, mid,
-                                                    eval_config=eval_config)
+                                                    eval_config=model_eval_config or None)
 
                     job_env = dict(sbatch_env)
                     if db_job_id:
@@ -1093,6 +1162,10 @@ def main() -> None:
                     if vllm_overrides:
                         log(f"  Applying baseline model vLLM overrides: {list(vllm_overrides.keys())}", verbose_only=True)
                         job_env.update(vllm_overrides)
+
+                    # Pass the resolved size-based multiplier through to the sbatch env.
+                    if size_tm is not None and "EVAL_TIMEOUT_MULTIPLIER" not in job_env:
+                        job_env["EVAL_TIMEOUT_MULTIPLIER"] = size_tm
 
                     # Build dependency: job N depends on job N-batch_size
                     job_dependency = args.dependency
