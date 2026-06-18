@@ -1,11 +1,13 @@
-# Eval harbor config — EXACT eval-team defaults, Iris-adapted.
+# Eval harbor config — EXACT eval-team defaults. CANONICAL, cross-cluster.
 #
-# Faithful port of the canonical eval-team config
+# This is THE base agentic-eval config for every Daytona cluster (Iris AND Jupiter;
+# the per-cluster `eval/jupiter/dcagent_eval_config*.yaml` clones were removed in favor
+# of this single source of truth). Faithful port of the canonical eval-team config
 #   eval/configs/dcagent_eval_config.yaml
-# (the default `EVAL_CONFIG_YAML` in eval/unified_eval_harbor.sbatch:68, run with
-# EVAL_N_ATTEMPTS=3, EVAL_AGENT_NAME=terminus-2). Use THIS file for Iris eval
-# unless you have a specific reason not to — it reproduces the scoring the eval
-# team gets on SLURM.
+# (run with EVAL_N_ATTEMPTS=3, EVAL_AGENT_NAME=terminus-2). It reproduces the scoring the
+# eval team gets on SLURM. The Jupiter listener (eval/jupiter/unified_eval_listener.py)
+# selects THIS file for <=14B models and dcagent_eval_defaults_32b.yaml (identical body,
+# timeout_multiplier 16.0) for 32B-class models.
 #
 # Behavioral defaults:
 #   * timeout_multiplier: 2.0   <- the eval team's REAL agentic-eval setting (NOT

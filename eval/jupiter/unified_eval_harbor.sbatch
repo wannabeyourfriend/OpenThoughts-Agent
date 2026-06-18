@@ -25,7 +25,9 @@
 #   EVAL_N_CONCURRENT       (default: 128)
 #   EVAL_GPU_MEMORY_UTIL    (default: 0.95)
 #   EVAL_DAYTONA_THRESHOLD  (default: 3)
-#   EVAL_HARBOR_CONFIG      (default: $DCFT/eval/jupiter/dcagent_eval_config.yaml)
+#   EVAL_HARBOR_CONFIG      (fallback default: $DCFT/hpc/harbor_yaml/eval/dcagent_eval_defaults.yaml;
+#                            the listener normally sets this per-model — 8B-class ->
+#                            dcagent_eval_defaults.yaml, 32B-class -> dcagent_eval_defaults_32b.yaml)
 #   EVAL_DB_JOB_ID          (optional, pre-created Pending job ID)
 # ==============================================================================
 
@@ -47,7 +49,7 @@ GPU_MEMORY_UTIL="${EVAL_GPU_MEMORY_UTIL:-0.95}"
 DAYTONA_ERROR_THRESHOLD="${EVAL_DAYTONA_THRESHOLD:-999999}"
 # NOTE: $DCFT is defined further below, so inline its default here too (else an omitted
 # --harbor-config expands to a bad absolute path '/eval/jupiter/...' → FileNotFoundError).
-HARBOR_CONFIG="${EVAL_HARBOR_CONFIG:-${DCFT:-/e/scratch/jureap59/$USER/OpenThoughts-Agent}/eval/jupiter/dcagent_eval_config.yaml}"
+HARBOR_CONFIG="${EVAL_HARBOR_CONFIG:-${DCFT:-/e/scratch/jureap59/$USER/OpenThoughts-Agent}/hpc/harbor_yaml/eval/dcagent_eval_defaults.yaml}"
 DB_JOB_ID="${EVAL_DB_JOB_ID:-}"
 
 # Strip slashes and special chars for file-safe names

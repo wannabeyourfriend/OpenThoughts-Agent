@@ -315,55 +315,112 @@ def get_vllm_env_overrides(hf_model: str, configs: Dict[str, Dict[str, Any]]) ->
 
 
 # ---------------------------------------------------------------------------
-# Model-size -> Harbor timeout multiplier default
+# Model-size -> canonical Harbor config selection
 # ---------------------------------------------------------------------------
 # Larger models decode their agentic rollouts much more slowly, so they
-# spuriously hit AgentTimeout at the old flat default (1x). We pick the
-# multiplier automatically from the model's parameter-count size token in the
-# HF name (e.g. "...-8B", "Qwen3-32B"). Policy:
-#   <= ~14B   -> 2x   (8B-class; user-specified 8B = 2x)
-#   ~30-40B   -> 16x  (32B-class; user-specified 32B = 16x; a 32B agentic
-#                      rollout is ~16x slower, hence the big jump)
-# Sizes outside these bands (e.g. 1.5B, 80B) are NOT guessed: we leave the
-# multiplier unset (falls back to harbor's 1x / whatever the YAML specifies)
-# and log a warning so a human can set a deliberate value. A per-model entry
-# in baseline_model_configs.yaml ("timeout_multiplier") always wins over this.
+# spuriously hit AgentTimeout at the small default multiplier. Rather than
+# inferring a bare multiplier from the model name, the listener SELECTS the
+# canonical harbor config by the model's parameter-count size token in the HF
+# name (e.g. "...-8B", "Qwen3-32B") — the timeout_multiplier now lives IN the
+# config file:
+#   <= ~14B (8B-class)   -> hpc/harbor_yaml/eval/dcagent_eval_defaults.yaml      (timeout_multiplier 2.0)
+#   ~28-42B (32B-class)  -> hpc/harbor_yaml/eval/dcagent_eval_defaults_32b.yaml  (timeout_multiplier 16.0)
+# Sizes outside these bands (e.g. 1.5B, 80B) and names with no size token fall
+# back to the base default config and emit a log line. An explicit user
+# --harbor-config / preset harbor_config overrides the size selection entirely,
+# and a per-model "timeout_multiplier" in baseline_model_configs.yaml still wins
+# over whatever the selected config specifies.
 _SIZE_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9.])(\d+(?:\.\d+)?)\s*[bB](?![A-Za-z0-9])")
 
+# Canonical config paths, resolved relative to the repo root (same root used to
+# import database.unified_db.*). The base default covers 8B-class; the _32b
+# variant is byte-identical except timeout_multiplier 16.0.
+DEFAULT_HARBOR_CONFIG = os.path.join(
+    _PROJECT_ROOT, "hpc", "harbor_yaml", "eval", "dcagent_eval_defaults.yaml")
+DEFAULT_HARBOR_CONFIG_32B = os.path.join(
+    _PROJECT_ROOT, "hpc", "harbor_yaml", "eval", "dcagent_eval_defaults_32b.yaml")
 
-def infer_size_timeout_multiplier(hf_model: str) -> Optional[float]:
-    """Infer a Harbor timeout multiplier from the model-name size token.
 
-    Returns the multiplier (2.0 for <=~14B, 16.0 for ~30-40B), or None when
-    the size is unknown / outside the documented bands (caller should not
-    guess; leaves harbor at its default and logs).
+def select_harbor_config(
+    hf_model: str,
+    base_default_path: str = DEFAULT_HARBOR_CONFIG,
+    path_32b: str = DEFAULT_HARBOR_CONFIG_32B,
+) -> str:
+    """Select the canonical harbor config for a model by its size token.
+
+    Returns ``path_32b`` when the largest size token in the HF name falls in
+    the 32B band (~28-42B), else ``base_default_path``. Out-of-band sizes
+    (e.g. 1.5B / 80B) and names with no size token get the base default; a log
+    line records the decision.
     """
     # Largest size token in the name wins (handles e.g. MoE "30b-a3b").
     sizes = [float(m) for m in _SIZE_TOKEN_RE.findall(hf_model)]
-    if not sizes:
-        return None
-    b = max(sizes)
-    if b <= 14.0:
-        return 2.0
-    if 28.0 <= b <= 42.0:
-        return 16.0
-    # 1.5B is covered by the <=14 branch; only truly out-of-band sizes
-    # (e.g. 70B/80B) reach here.
-    return None
+    b = max(sizes) if sizes else None
+    if b is not None and 28.0 <= b <= 42.0:
+        log(f"  Harbor config (size-based): 32B-class ({b}B) -> {path_32b}", verbose_only=True)
+        return path_32b
+    if b is None:
+        log(f"  Harbor config (size-based): no size token in {hf_model!r} -> base default {base_default_path}",
+            verbose_only=True)
+    elif b > 42.0 or b < 28.0:
+        log(f"  Harbor config (size-based): {b}B out of 32B band -> base default {base_default_path}",
+            verbose_only=True)
+    return base_default_path
 
 
-def get_timeout_multiplier_env(hf_model: str, configs: Dict[str, Dict[str, Any]]) -> Optional[str]:
-    """Resolve the size-based EVAL_TIMEOUT_MULTIPLIER default for a model.
+def get_model_timeout_override(hf_model: str, configs: Dict[str, Dict[str, Any]]) -> Optional[str]:
+    """Return an explicit per-model timeout_multiplier override, or None.
 
-    Per-model "timeout_multiplier" in baseline_model_configs.yaml wins; else
-    the size-token inference. Returns the multiplier as a string, or None if
-    no automatic value applies (caller leaves any existing value untouched).
+    Highest-priority source: a "timeout_multiplier" under a model (or pattern)
+    entry in baseline_model_configs.yaml. Use this for models whose name has no
+    size token (e.g. a GLM-named Qwen3-8B) or an out-of-band size you want a
+    deliberate value for. Returns the multiplier as a string, or None when no
+    per-model override applies (caller falls back to the selected config's
+    timeout_multiplier).
     """
     cfg = configs.get(hf_model) or _match_pattern_config(hf_model) or {}
     if cfg.get("timeout_multiplier") is not None:
         return str(float(cfg["timeout_multiplier"]))
-    tm = infer_size_timeout_multiplier(hf_model)
-    return str(tm) if tm is not None else None
+    return None
+
+
+def resolve_model_eval(
+    hf_model: str,
+    explicit_harbor_config: Optional[str],
+    baseline_configs: Dict[str, Dict[str, Any]],
+) -> Tuple[str, Dict[str, Any]]:
+    """Resolve the harbor config path + eval_config dict for a single model.
+
+    This is the single source of truth used BOTH for dedup (so a 32B's existing
+    16.0 row is compared against 16.0, not the global default) AND for the
+    per-model sbatch env. Logic:
+
+      1. Harbor config path:
+         - an explicit ``--harbor-config`` / preset ``harbor_config`` wins for
+           every model (size selection is bypassed);
+         - otherwise ``select_harbor_config`` picks the size-appropriate
+           canonical default (8B-class base, 32B-class _32b).
+      2. eval_config = parsed fields of THAT config (timeout_multiplier +
+         resource overrides) — this is what gets compared in dedup and written
+         to the Pending DB row.
+      3. A per-model ``timeout_multiplier`` in baseline_model_configs.yaml is the
+         highest-priority override and replaces the config's value.
+
+    Returns ``(harbor_config_path, eval_config)``.
+    """
+    if explicit_harbor_config:
+        harbor_config_path = explicit_harbor_config
+    else:
+        harbor_config_path = select_harbor_config(hf_model)
+
+    eval_config = parse_harbor_eval_config(harbor_config_path)
+
+    # Per-model explicit override (baseline_model_configs.yaml) wins.
+    override_tm = get_model_timeout_override(hf_model, baseline_configs)
+    if override_tm is not None:
+        eval_config["timeout_multiplier"] = float(override_tm)
+
+    return harbor_config_path, eval_config
 
 
 # ---------------------------------------------------------------------------
@@ -987,17 +1044,15 @@ def main() -> None:
         sbatch_env["EVAL_GPU_MEMORY_UTIL"] = str(gpu_mem_util)
     sbatch_env["EVAL_DAYTONA_THRESHOLD"] = str(args.daytona_threshold)
 
-    # Harbor config (CLI > preset > sbatch default)
-    harbor_config = args.harbor_config or preset_config.get("harbor_config")
-    if harbor_config:
-        sbatch_env["EVAL_HARBOR_CONFIG"] = harbor_config
-
-    # Parse eval-relevant config from harbor YAML for dedup + sbatch env vars
-    eval_config = parse_harbor_eval_config(harbor_config)
-    if eval_config.get("timeout_multiplier") is not None:
-        sbatch_env["EVAL_TIMEOUT_MULTIPLIER"] = str(eval_config["timeout_multiplier"])
-    if eval_config.get("override_memory_mb") is not None:
-        sbatch_env["EVAL_OVERRIDE_MEMORY_MB"] = str(eval_config["override_memory_mb"])
+    # Harbor config: an explicit --harbor-config / preset harbor_config is an
+    # override that wins for EVERY model (bypasses size selection). When unset,
+    # the listener SELECTS the canonical config per-model by size in the loop
+    # below (8B-class -> dcagent_eval_defaults.yaml [2.0]; 32B-class ->
+    # dcagent_eval_defaults_32b.yaml [16.0]). The harbor config + its parsed
+    # eval_config (timeout_multiplier, resource overrides) are resolved per-model
+    # via resolve_model_eval() so EVAL_HARBOR_CONFIG / EVAL_TIMEOUT_MULTIPLIER and
+    # the dedup comparison all use the SAME per-model values.
+    explicit_harbor_config = args.harbor_config or preset_config.get("harbor_config")
     # Preset-specific env vars (snapshot, daytona key)
     if preset_config.get("snapshot_name"):
         sbatch_env["EVAL_SNAPSHOT_NAME"] = preset_config["snapshot_name"]
@@ -1009,8 +1064,11 @@ def main() -> None:
 
     check_interval_seconds = int(args.check_hours * 3600)
 
-    if eval_config:
-        log(f"Eval config for dedup: {eval_config}")
+    if explicit_harbor_config:
+        log(f"Harbor config (explicit override for all models): {explicit_harbor_config}")
+    else:
+        log("Harbor config: size-based per-model selection "
+            f"(8B-class -> {DEFAULT_HARBOR_CONFIG}; 32B-class -> {DEFAULT_HARBOR_CONFIG_32B})")
     log(
         f"Starting listener: datasets={datasets}, lookback={args.lookback_days}d, "
         f"interval={args.check_hours}h, sbatch={args.sbatch_script}, "
@@ -1031,7 +1089,13 @@ def main() -> None:
                 ds: resolve_benchmark_id_for_dataset(ds) for ds in datasets
             }
 
-            submissions: List[Tuple[str, str, str, Optional[str], str]] = []
+            # (model_id, hf_model, dataset_hf, bench_id, reason, harbor_config_path, eval_config)
+            submissions: List[Tuple[str, str, str, Optional[str], str, str, Dict[str, Any]]] = []
+
+            # Per-model resolved (harbor_config_path, eval_config). Depends only on
+            # the model (size + baseline override + explicit override), not the
+            # dataset, so compute once per model and reuse for dedup + submission.
+            model_eval_cache: Dict[str, Tuple[str, Dict[str, Any]]] = {}
 
             for m in models:
                 model_id = str(m.get("id", ""))
@@ -1051,17 +1115,27 @@ def main() -> None:
                     log(f"Skip (not found on HF): {hf_model}")
                     continue
 
+                # Resolve the per-model harbor config + eval_config UP FRONT so the
+                # dedup comparison below uses THIS model's timeout (e.g. a 32B's
+                # existing 16.0 row is compared against 16.0, an 8B against 2.0),
+                # not a single global value.
+                if hf_model not in model_eval_cache:
+                    model_eval_cache[hf_model] = resolve_model_eval(
+                        hf_model, explicit_harbor_config, baseline_configs)
+                harbor_config_path, model_eval_config = model_eval_cache[hf_model]
+
                 for dataset_hf in datasets:
                     bench_id = dataset_to_bench.get(dataset_hf)
                     start, reason = should_start_job(
                         model_id, bench_id,
-                        eval_config=eval_config,
+                        eval_config=model_eval_config,
                         stale_started_hours=args.stale_started_hours,
                         stale_pending_hours=args.stale_pending_hours,
                         force=args.force_eval,
                     )
                     if start:
-                        submissions.append((model_id, hf_model, dataset_hf, bench_id, reason))
+                        submissions.append((model_id, hf_model, dataset_hf, bench_id, reason,
+                                            harbor_config_path, model_eval_config))
                     else:
                         log(f"Skip: model={hf_model}, dataset={dataset_hf}, reason={reason}", verbose_only=True)
 
@@ -1086,7 +1160,7 @@ def main() -> None:
                     # Pre-download datasets (same for all submissions, download once)
                     downloaded_datasets: set = set()
                     failed_datasets: set = set()
-                    for _, _, dataset_hf, _, _ in submissions:
+                    for _, _, dataset_hf, _, _, _, _ in submissions:
                         if dataset_hf not in downloaded_datasets and dataset_hf not in failed_datasets:
                             log(f"  Pre-downloading dataset {dataset_hf}...")
                             try:
@@ -1108,7 +1182,8 @@ def main() -> None:
                         f"first {batch_size} run immediately, rest chain one-by-one")
 
                 failed_models: set = set() if pre_download else set()
-                for idx, (mid, hf_model, dataset_hf, bench_id, reason) in enumerate(submissions):
+                for idx, (mid, hf_model, dataset_hf, bench_id, reason,
+                          harbor_config_path, model_eval_config) in enumerate(submissions):
                     # Skip if dataset download failed
                     if pre_download and dataset_hf in failed_datasets:
                         log(f"  Skipping {hf_model} (dataset {dataset_hf} download failed)")
@@ -1133,22 +1208,10 @@ def main() -> None:
 
                     log(f"Submitting [{idx+1}/{len(submissions)}]: model={hf_model}, dataset={dataset_hf}, reason={reason}")
 
-                    # Resolve the size-based Harbor timeout multiplier default for this
-                    # model (8B->2x, 32B->16x). Only fill in when not already set
-                    # explicitly by the harbor YAML (EVAL_TIMEOUT_MULTIPLIER in sbatch_env
-                    # is a deliberate global override). Record the resolved value in the
-                    # per-model eval_config so the Pending DB row matches what actually runs.
-                    model_eval_config = dict(eval_config) if eval_config else {}
-                    size_tm: Optional[str] = None
-                    if "EVAL_TIMEOUT_MULTIPLIER" not in sbatch_env:
-                        size_tm = get_timeout_multiplier_env(hf_model, baseline_configs)
-                        if size_tm is not None:
-                            model_eval_config["timeout_multiplier"] = float(size_tm)
-                            log(f"  Timeout multiplier (size-based default): {size_tm}x for {hf_model}")
-                        else:
-                            log(f"  WARNING: no size-based timeout multiplier for {hf_model} "
-                                f"(size token out of band, e.g. 1.5B/80B) — using harbor default; "
-                                f"set one explicitly in baseline_model_configs.yaml")
+                    # harbor_config_path + model_eval_config were resolved per-model
+                    # (resolve_model_eval) during the gathering pass and used for the
+                    # dedup decision above, so they're identical here — no re-derivation.
+                    log(f"  Harbor config: {harbor_config_path}", verbose_only=True)
 
                     db_job_id = create_pending_job(hf_model, dataset_hf, bench_id, mid,
                                                     eval_config=model_eval_config or None)
@@ -1157,15 +1220,26 @@ def main() -> None:
                     if db_job_id:
                         job_env["EVAL_DB_JOB_ID"] = db_job_id
 
+                    # Per-model harbor config selection (8B vs 32B canonical, or the
+                    # explicit override) drives EVAL_HARBOR_CONFIG for this job.
+                    job_env["EVAL_HARBOR_CONFIG"] = harbor_config_path
+
+                    # The timeout multiplier now lives IN the selected config; mirror
+                    # it (and any resource override) into the sbatch env so harbor's
+                    # --timeout-multiplier / --override-memory-mb fire with the same
+                    # value recorded in the Pending DB row.
+                    tm = model_eval_config.get("timeout_multiplier")
+                    if tm is not None:
+                        job_env["EVAL_TIMEOUT_MULTIPLIER"] = str(tm)
+                        log(f"  Timeout multiplier: {tm}x for {hf_model}")
+                    if model_eval_config.get("override_memory_mb") is not None:
+                        job_env["EVAL_OVERRIDE_MEMORY_MB"] = str(model_eval_config["override_memory_mb"])
+
                     # Apply per-model vLLM overrides from baseline config mapping
                     vllm_overrides = get_vllm_env_overrides(hf_model, baseline_configs)
                     if vllm_overrides:
                         log(f"  Applying baseline model vLLM overrides: {list(vllm_overrides.keys())}", verbose_only=True)
                         job_env.update(vllm_overrides)
-
-                    # Pass the resolved size-based multiplier through to the sbatch env.
-                    if size_tm is not None and "EVAL_TIMEOUT_MULTIPLIER" not in job_env:
-                        job_env["EVAL_TIMEOUT_MULTIPLIER"] = size_tm
 
                     # Build dependency: job N depends on job N-batch_size
                     job_dependency = args.dependency
