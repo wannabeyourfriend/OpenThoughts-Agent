@@ -272,8 +272,11 @@ trainer:
       cp_rotate_method: allgather
       # R3 router-replay: recompute the EXACT rollout routing in the train forward
       # so the MoE grad matches the sampled experts (pi_old == pi_train for the MoE).
-      # Fed by enable_return_routed_experts=true (generator) via native R3 capture.
-      moe_router_replay: true
+      # Fed by enable_return_routed_experts (generator) via native R3 capture.
+      # #237 R3-OFF A/B (2026-06-18): DISABLED to match enable_return_routed_experts=false
+      # above — with no capture there is nothing to replay; off makes the
+      # generator/trainer consume path byte-identical to the flag-off (None) case.
+      moe_router_replay: false
       moe_grouped_gemm: true
       ep_comm_backend: torch
   ref:
@@ -289,7 +292,8 @@ trainer:
       context_parallel_size: 2
       cp_style: ring_sdpa
       cp_rotate_method: allgather
-      moe_router_replay: true
+      # #237 R3-OFF A/B (2026-06-18): DISABLED (matches policy block above).
+      moe_router_replay: false
       moe_grouped_gemm: true
       ep_comm_backend: torch
 
@@ -418,7 +422,13 @@ generator:
     # R3 router-replay capture flag — emits per-token expert routing over
     # /chat/completions (native on this 0.20.2rc0 SIF), consumed by the FSDP2
     # replay hook so the train forward replays the EXACT sampled experts.
-    enable_return_routed_experts: true
+    # #237 R3-OFF A/B (2026-06-18): DISABLED. With capture off, vLLM takes the
+    # Noop routed-experts capturer path (FIX B is INERT), so this run cleanly
+    # isolates "long-ctx CP RL without R3" — if it STILL wedges, the wedge is in
+    # the CP/DCP path, not R3 capture; if it runs clean to gs1, R3 is confirmed
+    # necessary for the wedge. moe_router_replay is also set false below (policy+ref)
+    # so the trainer/generator do not expect routing that will never arrive.
+    enable_return_routed_experts: false
     # MUST be false under the RAY inference-engine backend (inference_engine_mp_backend:
     # false, option A). vLLM's R3 guard (_validate_return_routed_experts) rejects
     # --enable-return-routed-experts together with async scheduling. The mp/uniproc
@@ -465,7 +475,11 @@ container:
   # torch-native CP ring-SDPA + ExpertParallel) + DCP fp32 fix + VLLM_ALLOW_ROUTED_EXPERTS_DCP
   # guard-lift are all preserved (rebaked ON TOP of the _cp SIF). torchtitan 0.2.2 still
   # via PYTHONPATH pydeps. Baked commit verified: .vllm_commit == afe60f19a, FIX B grep == 2.
-  sif: /e/scratch/jureap59/feuer1/containers/skyrl_megatron_vllm0202rc0_r3_cp_fixb.sif
+  # #237 R3-OFF A/B (2026-06-18): reuse the _cp_fixb2.sif (FIX B + 28faed993 reverted)
+  # that job 923903 ran on. With enable_return_routed_experts=false the R3/FIX B code
+  # in this image is INERT (Noop capturer path), so no rebuild is needed — this is the
+  # same SIF 923903 used, isolating the CP/DCP path from R3 capture.
+  sif: /e/scratch/jureap59/feuer1/containers/skyrl_megatron_vllm0202rc0_r3_cp_fixb2.sif
   binds:
     - /e/scratch
     - /e/data1
@@ -492,8 +506,12 @@ container:
     APPTAINERENV_LIBRARY_PATH: /.singularity.d/libs
     # R3 + DCP>1 guard-lift (baked into the SIF; env var arms it). Mirror to
     # APPTAINERENV_ so the forked vLLM mp workers inside the SIF see it.
-    VLLM_ALLOW_ROUTED_EXPERTS_DCP: 1
-    APPTAINERENV_VLLM_ALLOW_ROUTED_EXPERTS_DCP: 1
+    # #237 R3-OFF A/B (2026-06-18): DISABLED. With enable_return_routed_experts=false
+    # there is no R3 capture and DCP=1 anyway, so this guard-lift is doubly inert;
+    # dropped to keep the R3-OFF run free of any R3-related arming. (Re-enable if
+    # R3 capture is ever turned back on at DCP>1.)
+    # VLLM_ALLOW_ROUTED_EXPERTS_DCP: 1
+    # APPTAINERENV_VLLM_ALLOW_ROUTED_EXPERTS_DCP: 1
     # Per-step model-execute RPC timeout (multiproc_executor.py:314; default 300s).
     # Under Option A (TP=8 split 8x{GPU:1} ACROSS 2 NODES) each decode-step TP all-
     # reduce crossed the IB fabric and a single 131k step exceeded even 900s, killing
