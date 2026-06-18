@@ -484,12 +484,22 @@ def should_start_job(
     eval_config: Optional[Dict[str, Any]] = None,
     stale_started_hours: float = 24.0,
     stale_pending_hours: float = 6.0,
+    force: bool = False,
 ) -> Tuple[bool, str]:
     """
     Determine if a job should be started based on DB status.
     Extends TACC's check_job_status with Pending handling, auto-scancel,
     and config-aware deduplication (timeout, resource overrides).
+
+    ``force=True`` (the ``--force-eval`` CLI flag) bypasses ALL dedup checks and
+    always submits — for intentional re-evals / parity tests, where an existing
+    Finished+metrics row would otherwise return ``(False, "job finished")``.
+    Note that this does NOT touch the existing row (no metrics clearing); it just
+    submits a fresh eval that lands as a new (model, benchmark) row.
     """
+    if force:
+        return (True, "force-eval (dedup bypassed)")
+
     # First, quick check: does any job exist at all for this model+benchmark?
     job_exists, job_status, started_at = check_job_status(model_id, benchmark_id)
 
@@ -825,6 +835,12 @@ Examples:
     p.add_argument("--check-hours", type=float, default=float(os.getenv("EVAL_LISTENER_CHECK_HOURS", "4")))
     p.add_argument("--stale-started-hours", type=float, default=float(os.getenv("EVAL_LISTENER_STALE_HOURS", "24")))
     p.add_argument("--stale-pending-hours", type=float, default=float(os.getenv("EVAL_LISTENER_STALE_PENDING_HOURS", "6")))
+    p.add_argument("--force-eval", action="store_true",
+                   help="Bypass ALL dedup checks and (re)submit every targeted (model, dataset) pair, "
+                        "even if a Finished row WITH metrics already exists (which would otherwise "
+                        "Skip with reason='job finished'). For intentional re-evals / parity tests. "
+                        "Submits a fresh row; does NOT mutate the existing one. ALWAYS combine with "
+                        "--require-priority-list so only the intended models are forced.")
 
     # Priority file
     p.add_argument("--priority-file", default=os.getenv("EVAL_LISTENER_PRIORITY_FILE"))
@@ -990,6 +1006,7 @@ def main() -> None:
                         eval_config=eval_config,
                         stale_started_hours=args.stale_started_hours,
                         stale_pending_hours=args.stale_pending_hours,
+                        force=args.force_eval,
                     )
                     if start:
                         submissions.append((model_id, hf_model, dataset_hf, bench_id, reason))
