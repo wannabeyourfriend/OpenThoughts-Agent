@@ -451,66 +451,31 @@ rollout:
 # supplied via PYTHONPATH pydeps (NOT a runtime overlay -> dodges the GPFS-FUSE
 # Ray-bootstrap timeout), exactly as the 80B long-ctx config does.
 container:
-  sif: /e/scratch/jureap59/feuer1/containers/skyrl_megatron_vllm0202rc0_r3_cp.sif
+  # #237 Stage 4 (FIX B baked, 2026-06-18): advanced to the rank-symmetric R3 epilogue
+  # SIF, rebaked from skyrl_megatron_vllm0202rc0_r3_cp.sif with the editable vLLM source
+  # swapped 5d7319dd1 -> afe60f19a (feuer/r3-rank-symmetry). The delta is PYTHON-ONLY (6
+  # vllm/*.py, no csrc/.cu -> compiled kernels byte-identical; no recompile). This bakes,
+  # in one image: FIX B (routed_experts_capturer.py rank-symmetric D2H epilogue), FIX A
+  # (the gpu_model_runner pre-forward finalize drop + watchdog revert), and the #232
+  # R3-transport split + MQ-chunk fix (multiproc_executor.py / outputs.py / envs.py) --
+  # ALL the files that were previously single-file bind-mounted from vllm_patch_232/.
+  # Those binds are now REMOVED (the baked source supersedes them; the stale hand-staged
+  # gpu_model_runner.patched.py bind in particular PREDATED FIX B and would have reverted
+  # the FIX B callsite). The CP /opt/SkyRL (marin penfever/working @ 34c348b, FSDP2
+  # torch-native CP ring-SDPA + ExpertParallel) + DCP fp32 fix + VLLM_ALLOW_ROUTED_EXPERTS_DCP
+  # guard-lift are all preserved (rebaked ON TOP of the _cp SIF). torchtitan 0.2.2 still
+  # via PYTHONPATH pydeps. Baked commit verified: .vllm_commit == afe60f19a, FIX B grep == 2.
+  sif: /e/scratch/jureap59/feuer1/containers/skyrl_megatron_vllm0202rc0_r3_cp_fixb.sif
   binds:
     - /e/scratch
     - /e/data1
-    # #232 FIX (B), worker_response_mq chunk-size patch. The R3 routed_experts_dict
-    # on ModelRunnerOutput reaches ~96MB at 131k ctx and overflows vLLM's HARDCODED
-    # 24MB default chunk on the single-node `worker_response_mq` (MessageQueue(1,1)
-    # at multiproc_executor.py:556) -> shm_broadcast OOB/overflow path wedges the
-    # worker->EngineCore handoff -> mq.dequeue 900s timeout -> EngineDead at the
-    # 47-61k-token point (the wall #232 died on, attempts 6-9). The patched file
-    # sizes that queue from VLLM_MQ_MAX_CHUNK_BYTES_MB floored at 160MB, keeping the
-    # payload on the in-ring (non-overflow) path. Bound SRC:DST over the in-SIF
-    # install (same single-file-bind precedent as the 80B guard-lift below). Patched
-    # source is committed to the vLLM fork (penfever/working) for durability/rebuilds.
-    - /e/scratch/jureap59/feuer1/vllm_patch_232/multiproc_executor.patched.py:/opt/vllm_build/vllm/v1/executor/multiproc_executor.py
-    # #232 FIX (R3 TRANSPORT, durable root-cause): move the large R3 routed_experts
-    # payload OFF the per-step worker_response_mq execute_model-deadline read path.
-    # The worker now publishes the small ModelRunnerOutput first (routed_experts_dict
-    # cleared, routed_experts_deferred=True), then the ~96MB-at-131k dict as a
-    # SEPARATE ROUTED_EXPERTS message on the same FIFO ring; the driver reads the
-    # small output under the execute_model deadline, then dequeues the big payload
-    # under VLLM_ROUTED_EXPERTS_SIDE_TIMEOUT_SECONDS (1200s default) and re-attaches
-    # it before the scheduler sees it. This stops the read-block starvation that the
-    # 160MB chunk floor alone did NOT (deaths at 42-79k output tokens -> 900s
-    # execute_model RPC timeout -> EngineCore death -> 1694-retry storm, never gs1).
-    # Scheduler/EngineCore/SkyRL path byte-identical -> NO consumer change. The patch
-    # spans 3 files (multiproc_executor.py producer+driver split, outputs.py
-    # routed_experts_deferred flag, envs.py the new side-timeout); all three are
-    # byte-identical drop-in overlays over the SIF base (verified md5 == fork
-    # 5d7319dd1 for the unpatched files). Committed to the vLLM fork (penfever/working
-    # 32a11afc8) for durability/rebuilds.
-    - /e/scratch/jureap59/feuer1/vllm_patch_232/outputs.patched.py:/opt/vllm_build/vllm/v1/outputs.py
-    - /e/scratch/jureap59/feuer1/vllm_patch_232/envs.patched.py:/opt/vllm_build/vllm/envs.py
-    # #232 FIX A (TP-rank-desync wedge, candidate-1 prime fix, 2026-06-18). The
-    # residual EngineDead wedge (no MQ/transport involvement — the small per-step
-    # ModelRunnerOutput never arrived, worker stuck INSIDE execute_model) was a TP-
-    # rank collective desync on a rare mixed chunked-prefill+decode step. The fork-
-    # audit proved the R3 capture path has NO conditional collective; the ONLY rank-
-    # asymmetric R3 op is a rank-0-ONLY host CUDA-stream sync — finalize_pending_copy()
-    # at the TOP of execute_model (gpu_model_runner.py) does _copy_event.synchronize()
-    # only on rank 0 (non-rank-0 capturers have host_cache=None -> no-op). Under
-    # enforce_eager that pre-forward host serialization skews rank-0's collective
-    # launch timing vs its peers -> desync -> execute_model hang -> 900s watchdog ->
-    # EngineDead (job 919724: EngineDead=3 in the first ~1.3h, NO FR dump). FIX A drops
-    # that redundant pre-forward finalize (the host scatter still happens in the step
-    # epilogue via issue_routing_d2h_copy -> sync_fwd_experts_buffer_DtoH, off the
-    # critical pre-collective path; the only host-cache reader,
-    # extract_routed_experts_for_current_batch, finalizes internally). R3 capture
-    # CORRECTNESS is preserved byte-for-byte (buffer contents + per-request host
-    # scatter unchanged); only rank-0's cross-step stream-sync TIMING is equalized.
-    # Patched source committed to the vLLM fork (penfever/working 1b5a72e9a); the
-    # patched file is the pulled fork copy staged at vllm_patch_232/ (single-file bind
-    # over the in-SIF install, same precedent as the MQ + R3-transport binds above).
-    - /e/scratch/jureap59/feuer1/vllm_patch_232/gpu_model_runner.patched.py:/opt/vllm_build/vllm/v1/worker/gpu_model_runner.py
-    # NOTE: the 80B long-ctx config bind-mounts a vllm_config_guardlift.py because
-    # ITS canonical SIF (rebuilt from the fork base) had the UNPATCHED guard. THIS
-    # _cp SIF inherits the canonical SIF that was rebaked from penfever/working,
-    # which carries the VLLM_ALLOW_ROUTED_EXPERTS_DCP guard-lift BAKED IN (verified
-    # grep=2 in /opt/vllm_build/vllm/config/vllm.py), so NO guard-lift bind is
-    # needed here — the env var below alone clears the guard.
+    # #237 Stage 4: ALL prior #232 single-file vLLM binds REMOVED -- FIX A, the R3
+    # transport split (multiproc_executor.py / outputs.py / envs.py), the MQ-chunk fix,
+    # AND FIX B are now BAKED into the _cp_fixb.sif (commit afe60f19a). The runtime env
+    # vars below (VLLM_MQ_MAX_CHUNK_BYTES_MB, VLLM_ROUTED_EXPERTS_SIDE_TIMEOUT_SECONDS,
+    # VLLM_ALLOW_ROUTED_EXPERTS_DCP, ...) still ARM those baked code paths. The
+    # VLLM_ALLOW_ROUTED_EXPERTS_DCP guard-lift is baked (inherited from the canonical
+    # SIF, grep=2 in config/vllm.py); the env var below alone clears the guard.
   # torchtitan 0.2.2 via PYTHONPATH pydeps (pure-python, 0 .so -> bake-equivalent,
   # no rebuild, no FUSE). Two-dir colon-separated path: titan022 holds torchtitan
   # 0.2.2 (+ tyro), shared sif_pydeps supplies daytona/hydra/harbor/etc.
