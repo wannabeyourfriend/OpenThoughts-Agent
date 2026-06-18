@@ -93,18 +93,30 @@ echo "=== [1b] staging SkyRL + vLLM fork + wheelhouses into sandbox ==="
 mkdir -p "$SANDBOX/opt/SkyRL" "$SANDBOX/opt/vllm_build" \
          "$SANDBOX/opt/build_deps_wheels" "$SANDBOX/opt/runtime_deps_wheels" \
          "$SANDBOX/opt/accel_wheels"
-# Pre-create the /whl bind DESTINATION inside the sandbox. SingularityPRO 4.3.1
-# canNOT auto-create a bind target under `--writable` (no overlay/underlay), so
-# the `-B $ACCEL_WHEELS:/whl` mount in PHASE A (line ~116) FATALs with
-# "destination /whl doesn't exist in container" unless the mountpoint exists.
-# (cu13 build 47093523 failed exactly this way, at PHASE A start.) The sandbox is
-# a plain writable dir tree on GPFS, so we just mkdir the mountpoint here.
-mkdir -p "$SANDBOX/whl"
+# NB: no /whl bind mountpoint is created -- the host bind into the --writable
+# sandbox is silently dropped on SingularityPRO 4.3.1 (no overlay/underlay), so
+# PHASE A installs the accel wheels from the staged /opt/accel_wheels copy below.
 cp -a "$SKYRL_SRC"/.            "$SANDBOX/opt/SkyRL/"
 cp -a "$VLLM_SRC"/.            "$SANDBOX/opt/vllm_build/"
 cp -a "$BUILD_DEPS_WHEELS"/.   "$SANDBOX/opt/build_deps_wheels/"
 cp -a "$RUNTIME_DEPS_WHEELS"/. "$SANDBOX/opt/runtime_deps_wheels/"
 [ -d "$ACCEL_WHEELS" ] && cp -a "$ACCEL_WHEELS"/. "$SANDBOX/opt/accel_wheels/" || echo "(no accel wheelhouse -- phase A will compile flash-attn from source)"
+
+# PREFLIGHT ASSERT (host-side, runs in seconds): the megatron-core install is the
+# FIRST PHASE A step, and it can only see the IN-SANDBOX staged wheelhouse (the
+# host bind is unsupported here). Verify the staged megatron wheel actually landed
+# in $SANDBOX/opt/accel_wheels BEFORE we spend ~2h on the base-sandbox clone +
+# vLLM compile. A staging miss must fail HERE, not 2h later inside the container
+# (cu13 build 47137387 burned ~1h55 before the in-container FATAL). Glob -> stat
+# the first match to confirm it exists AND is non-empty.
+_mega_staged=$(ls "$SANDBOX"/opt/accel_wheels/megatron_core-0.14.0-*.whl 2>/dev/null | head -1)
+if [ -z "$_mega_staged" ] || [ ! -s "$_mega_staged" ]; then
+  echo "FATAL (preflight): megatron-core 0.14.0 wheel did NOT stage into $SANDBOX/opt/accel_wheels" >&2
+  echo "  host wheelhouse $ACCEL_WHEELS:" >&2; ls -la "$ACCEL_WHEELS" 2>&1 | sed "s/^/    /" >&2
+  echo "  staged $SANDBOX/opt/accel_wheels:" >&2; ls -la "$SANDBOX"/opt/accel_wheels 2>&1 | sed "s/^/    /" >&2
+  exit 4
+fi
+echo "preflight OK: staged megatron wheel -> $_mega_staged ($(stat -c%s "$_mega_staged" 2>/dev/null || stat -f%z "$_mega_staged") bytes)"
 
 # ---------------------------------------------------------------------------
 # 2. PHASE A: SkyRL editable + Megatron-core 0.14.0 + flash-attn (sm_80).
@@ -113,14 +125,18 @@ cp -a "$RUNTIME_DEPS_WHEELS"/. "$SANDBOX/opt/runtime_deps_wheels/"
 #    + nvcc come from the base. SETUPTOOLS_SCM not needed for these.
 # ---------------------------------------------------------------------------
 echo "=== [2] PHASE A: SkyRL + Megatron-core + flash-attn ==="
-# Bind the HOST accel wheelhouse straight into the container at /whl. This makes
-# the megatron-core install independent of the sandbox-clone/staging copy (line
-# 100): a sandbox-clone race could leave $SANDBOX/opt/accel_wheels empty/stale and
-# fire a FALSE-NEGATIVE FATAL even though the wheel exists on the host (the cu13
-# build 47083129 failed exactly this way). The host preflight at line 76 already
-# guarantees $ACCEL_WHEELS holds the wheel, so the bind mount is always populated.
+# Install the offline accel wheels from the IN-SANDBOX staged copy
+# (/opt/accel_wheels) ONLY -- do NOT bind the host wheelhouse into the writable
+# sandbox. On Leonardo's SingularityPRO 4.3.1 (no overlay/underlay) a user bind
+# into a `--writable` sandbox dir SILENTLY DROPS even when the mountpoint is
+# pre-created: the bind never appears inside the container, so `/whl` shows up as
+# "No such file or directory" and the megatron-core install fails at PHASE A start
+# (cu13 build 47137387, the 4th recurrence of this class). The staged
+# /opt/accel_wheels is a plain dir in the writable sandbox tree and is therefore
+# always visible inside; the host-side preflight assert above (after the cp -a)
+# guarantees the megatron wheel is actually present in that staged path before we
+# spend ~2h on the base-sandbox clone + compile.
 $SINGULARITY exec --writable --no-home \
-  -B "$ACCEL_WHEELS":/whl \
   --env TORCH_CUDA_ARCH_LIST="8.0" \
   --env MAX_JOBS=24 \
   --env FLASH_ATTENTION_FORCE_BUILD=TRUE \
@@ -137,12 +153,14 @@ $SINGULARITY exec --writable --no-home \
     # deps are torch / numpy / packaging, all already in the base (the base's
     # numpy 2.1.0 vs megatron's conservative numpy<2.0.0 pin is intentionally
     # ignored -- the Jupiter prod stack runs megatron-core on the NGC numpy 2.x).
-    # Prefer the host-bound /whl (always populated; immune to the staging race);
-    # fall back to the staged /opt/accel_wheels for older sandbox layouts.
+    #
+    # Install from the IN-SANDBOX staged wheelhouse /opt/accel_wheels ONLY. The
+    # host-bind /whl path was removed: a user bind into this --writable sandbox is
+    # silently dropped on SingularityPRO 4.3.1 (no overlay/underlay), so /whl is
+    # never present inside the container. The host-side preflight assert (after the
+    # cp -a stage) already guaranteed the wheel is in $SANDBOX/opt/accel_wheels.
     MEGA_LINKS=""
-    if ls /whl/megatron_core-0.14.0-*.whl >/dev/null 2>&1; then
-      MEGA_LINKS=/whl
-    elif ls /opt/accel_wheels/megatron_core-0.14.0-*.whl >/dev/null 2>&1; then
+    if ls /opt/accel_wheels/megatron_core-0.14.0-*.whl >/dev/null 2>&1; then
       MEGA_LINKS=/opt/accel_wheels
     fi
     if [ -n "$MEGA_LINKS" ]; then
@@ -150,8 +168,12 @@ $SINGULARITY exec --writable --no-home \
       python -m pip install --no-index --no-deps --find-links "$MEGA_LINKS" \
         "megatron-core==0.14.0"
     else
-      echo "FATAL: megatron-core 0.14.0 wheel not found in /whl (host bind) NOR /opt/accel_wheels (staged)" >&2
-      echo "  /whl:" >&2;              ls -la /whl 2>&1 | sed "s/^/    /" >&2
+      # GUARD the diagnostics: under `set -euo pipefail` an `ls` of a missing dir
+      # exits 2 and would trip pipefail, self-aborting this block at exit 2 BEFORE
+      # the intended `exit 4` ever ran (that masked the real cause on 47137387 as a
+      # bare 2:0). `set +e` here lets both listings print and the explicit exit 4 fire.
+      set +e
+      echo "FATAL: megatron-core 0.14.0 wheel not found in /opt/accel_wheels (staged)" >&2
       echo "  /opt/accel_wheels:" >&2; ls -la /opt/accel_wheels 2>&1 | sed "s/^/    /" >&2
       exit 4
     fi
