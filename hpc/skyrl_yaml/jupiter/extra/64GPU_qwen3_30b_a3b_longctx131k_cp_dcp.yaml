@@ -505,28 +505,6 @@ container:
     # patched file is the pulled fork copy staged at vllm_patch_232/ (single-file bind
     # over the in-SIF install, same precedent as the MQ + R3-transport binds above).
     - /e/scratch/jureap59/feuer1/vllm_patch_232/gpu_model_runner.patched.py:/opt/vllm_build/vllm/v1/worker/gpu_model_runner.py
-    # #232 INSTRUMENT (TP-rank-desync wedge IN-PROCESS stack capture, 2026-06-18).
-    # candidate-1 did NOT fix the wedge; we still need the LAGGING rank's (rank2's)
-    # Python stack at wedge time, but ptrace/py-spy/gdb are BLOCKED and NCCL's
-    # flight-recorder never fires on the lagging rank (nothing in-flight to time
-    # out). Two observability-only patches (no behavior change):
-    #  (1) gpu_worker.patched.py — at worker init_device, arms an IN-PROCESS
-    #      faulthandler.dump_traceback_later(VLLM_WEDGE232_DUMP_SECS=300, repeat)
-    #      writing per-rank thread-stack files to VLLM_WEDGE232_DUMP_DIR
-    #      (/e/data1/datasets/playground/ot-baf/wedge232_stacks). 300s is BELOW
-    #      the NCCL 600s + vLLM 900s watchdogs, so on a >300s hang EVERY rank
-    #      (incl. the stuck one) dumps ALL thread stacks BEFORE engine teardown.
-    #      Healthy step ~20-40s so a 300s dump only fires on a real wedge. Also
-    #      installs a SIGUSR1 handler -> manual `kill -SIGUSR1 <pid>` dump.
-    #  (2) gpu_model_runner.patched.py — a rank-tagged INFO per-step log of the
-    #      MIXED chunked-prefill+decode batch composition (decodes/prefill_chunks/
-    #      allreduce_count) right before the forward, so the last line each rank
-    #      emits before diverging pins which rank saw what mix.
-    # Both gated on env (VLLM_WEDGE232_FAULTHANDLER / VLLM_WEDGE232_STEPLOG,
-    # default "1"), wrapped in try/except so instrumentation can never break the
-    # worker. Patched sources committed to the vLLM fork (penfever/working);
-    # single-file binds over the in-SIF install, same precedent as the binds above.
-    - /e/scratch/jureap59/feuer1/vllm_patch_232/gpu_worker.patched.py:/opt/vllm_build/vllm/v1/worker/gpu_worker.py
     # NOTE: the 80B long-ctx config bind-mounts a vllm_config_guardlift.py because
     # ITS canonical SIF (rebuilt from the fork base) had the UNPATCHED guard. THIS
     # _cp SIF inherits the canonical SIF that was rebaked from penfever/working,
@@ -628,27 +606,17 @@ container:
     # pre-creates the dir. Mirror to APPTAINERENV_ so SIF workers write there too.
     TORCH_NCCL_DEBUG_INFO_TEMP_FILE: /e/data1/datasets/playground/ot-baf/fr_dumps_232/nccl_fr_rank
     APPTAINERENV_TORCH_NCCL_DEBUG_INFO_TEMP_FILE: /e/data1/datasets/playground/ot-baf/fr_dumps_232/nccl_fr_rank
-    # =========================================================================
-    # #232 INSTRUMENT (2026-06-18): IN-PROCESS per-rank Python-stack capture.
-    # -------------------------------------------------------------------------
-    # The FR config above only fires on the ranks that ENTER a collective (0/1);
-    # the LAGGING rank (rank2) is stuck EARLIER (CPU/Python or a different op)
-    # with nothing in-flight, so NCCL's watchdog has nothing to time out on it
-    # and it NEVER dumps. To capture WHAT rank2 is doing, the bound
-    # gpu_worker.patched.py arms a faulthandler watchdog that, on ANY step
-    # hanging > DUMP_SECS, dumps ALL thread stacks of EVERY rank (incl. rank2)
-    # to a per-rank file. 300s is below the NCCL 600s + vLLM 900s watchdogs so
-    # stacks are written BEFORE engine teardown; a healthy step is ~20-40s so it
-    # only fires on a genuine wedge. SIGUSR1 manual dump also installed.
-    # Mirror to APPTAINERENV_ so the forked vLLM mp workers inside the SIF see it.
-    VLLM_WEDGE232_FAULTHANDLER: 1
-    APPTAINERENV_VLLM_WEDGE232_FAULTHANDLER: 1
-    VLLM_WEDGE232_STEPLOG: 1
-    APPTAINERENV_VLLM_WEDGE232_STEPLOG: 1
-    VLLM_WEDGE232_DUMP_SECS: 300
-    APPTAINERENV_VLLM_WEDGE232_DUMP_SECS: 300
-    # Per-rank stack dump dir (writable, outside inode-pressured /e/scratch,
-    # shared across the restart chain). The worker mkdir -p's it; the launch
-    # also pre-creates it. Files: rank_<global_rank>_<node>_pid<PID>.txt.
-    VLLM_WEDGE232_DUMP_DIR: /e/data1/datasets/playground/ot-baf/wedge232_stacks
-    APPTAINERENV_VLLM_WEDGE232_DUMP_DIR: /e/data1/datasets/playground/ot-baf/wedge232_stacks
+    # #232 INSTRUMENT REMOVED (2026-06-18): the faulthandler watchdog (gpu_worker.
+    # patched.py bind) + the WEDGE232 env block were reverted (revert of a1255e79)
+    # because the INSTRUMENTED run 921410 uniquely hung ~2h at init_weight_sync_state
+    # (training-init / weight-sync) BEFORE ever generating, whereas every prior NON-
+    # instrumented #232 reached generation first -> the faulthandler dump_traceback_
+    # later armed in every vLLM worker at init_device is the prime init-stall suspect.
+    # The gpu_worker bind is gone. The step-log block still lives (DORMANT) inside the
+    # candidate-1 gpu_model_runner.patched.py (KEPT byte-for-byte — candidate-1 = the
+    # rank-0 finalize_pending_copy removal, fork 1b5a72e9a, STAYS); its gate
+    # VLLM_WEDGE232_STEPLOG defaults "1" in that file, so we explicitly force it OFF
+    # here (=0) to fully disable the step-log at runtime WITHOUT touching the
+    # candidate-1 file. Mirror to APPTAINERENV_ so the forked vLLM mp workers see it.
+    VLLM_WEDGE232_STEPLOG: 0
+    APPTAINERENV_VLLM_WEDGE232_STEPLOG: 0
