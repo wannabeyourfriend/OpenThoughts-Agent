@@ -455,6 +455,17 @@ container:
   binds:
     - /e/scratch
     - /e/data1
+    # #232 FIX (B), worker_response_mq chunk-size patch. The R3 routed_experts_dict
+    # on ModelRunnerOutput reaches ~96MB at 131k ctx and overflows vLLM's HARDCODED
+    # 24MB default chunk on the single-node `worker_response_mq` (MessageQueue(1,1)
+    # at multiproc_executor.py:556) -> shm_broadcast OOB/overflow path wedges the
+    # worker->EngineCore handoff -> mq.dequeue 900s timeout -> EngineDead at the
+    # 47-61k-token point (the wall #232 died on, attempts 6-9). The patched file
+    # sizes that queue from VLLM_MQ_MAX_CHUNK_BYTES_MB floored at 160MB, keeping the
+    # payload on the in-ring (non-overflow) path. Bound SRC:DST over the in-SIF
+    # install (same single-file-bind precedent as the 80B guard-lift below). Patched
+    # source is committed to the vLLM fork (penfever/working) for durability/rebuilds.
+    - /e/scratch/jureap59/feuer1/vllm_patch_232/multiproc_executor.patched.py:/opt/vllm_build/vllm/v1/executor/multiproc_executor.py
     # NOTE: the 80B long-ctx config bind-mounts a vllm_config_guardlift.py because
     # ITS canonical SIF (rebuilt from the fork base) had the UNPATCHED guard. THIS
     # _cp SIF inherits the canonical SIF that was rebaked from penfever/working,
@@ -488,3 +499,11 @@ container:
     # first-prefill. Mirror to APPTAINERENV_ so the forked vLLM workers inherit it.
     VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS: 900
     APPTAINERENV_VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS: 900
+    # #232 FIX (B): widen the shm message-queue chunk to 160MB (>= the 96MB R3
+    # routed_experts worst case at 131k). This sizes rpc_broadcast_mq directly
+    # (multiproc_executor.py:137) AND is the base the bound patch reads for
+    # worker_response_mq (max'd with a 160MB floor). 160MB x 10 chunks = 1.6GB
+    # of /dev/shm per engine — trivial against the 239G tmpfs. Mirror to
+    # APPTAINERENV_ so the forked vLLM workers inside the SIF see it.
+    VLLM_MQ_MAX_CHUNK_BYTES_MB: 160
+    APPTAINERENV_VLLM_MQ_MAX_CHUNK_BYTES_MB: 160
