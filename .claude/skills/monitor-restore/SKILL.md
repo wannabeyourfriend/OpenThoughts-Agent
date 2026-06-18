@@ -65,6 +65,10 @@ ON SUCCESSFUL COMPLETION (SFT / RL / datagen / eval) → note it + give summary 
 - Eval where DB registration FAILED for a technical reason → WITHOUT asking, dispatch a subagent to perform
   ALL steps of the documented checklist (`eval-agentic-cleanup`); confirm the subagent completed every step,
   dispatching another if any were missed. (Ask only if genuinely unsure what the checklist means.)
+- **INODES: every cleanup MUST `rm` the on-disk artifact tree (`trace_jobs/`/`tasks/`) after the HF upload
+  is confirmed, and verify reclaim** — leaving it is the #1 inode leak (the shared `datasets` project on
+  `/e/data1/.../ot-baf` runs over its soft limit). Check inode headroom each sweep + see the per-allocation
+  limits in `ops/jupiter/ops.md` (`#inode-allocations`); bake the delete+verify into every cleanup subagent prompt.
 
 ON ANY JOB THAT FAILED since the last check → dispatch a subagent to determine the cause + propose fixes.
 Then ANNOUNCE the choices the subagent presented, SELECT one yourself, and apply the changes + relaunch the

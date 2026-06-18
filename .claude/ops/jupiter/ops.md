@@ -65,6 +65,20 @@ rsync -avz --progress -e "ssh -i ~/.ssh/id_ed25519_jsc -4" \
 - **Freeing inodes (order):** `rm -rf ~/.cache/uv` (biggest disposable target — uv extract cache, rebuilds itself; freed 131k and cleared EDQUOT once), then `~/.cache/{pip,wandb,torch,curator,flashinfer}`, then old experiment dirs. Always re-survey your own usage before accepting an "it's other members'/out-of-hands" diagnosis.
 - Last-resort dodge: `--experiments_dir /e/data1/datasets/playground/ot-baf/experiments` + `OT_AGENT_RAY_LOG_DIR=/e/data1/...` to avoid `/e/scratch` entirely (needs the `ray_utils.py:520` patch, commit `122cae2d`).
 
+## Inode allocations — counts + maxima per Jupiter allocation (CHECK EACH SWEEP) {#inode-allocations}
+Inodes (file/dir COUNT), not bytes, are the binding constraint on Jupiter — datagen/eval create thousands of tiny task/trial files. **Check via `jutil project dataquota -p <project>` (the `inode-usage / inode-soft-limit / inode-hard-limit` columns) + `df -i /e/data1 /e/scratch`.** Per-allocation limits (soft → hard; over-soft only works during the GPFS ~7-day grace, then fails as if over-hard):
+
+| Allocation (path) | Project | inode soft | inode hard | typical use |
+|---|---|---|---|---|
+| `/e/data1/datasets` (`exa_data1`) | **datasets** (SHARED, `hagemeier2:datasets`) | **110M** | **121M** | our `…/playground/ot-baf` lives here |
+| `/e/scratch/jureap59` (`exa_scratch`) | jureap59 | 8.0M | 8.8M | RL/datagen scratch (the EDQUOT-sig53 area above) |
+| `/e/project1/jureap59` (`exa_project1`) | jureap59 | 4.0M | 4.4M | — |
+| `/e/scratch/laionize` | laionize | 8.0M | 8.8M | — |
+| `/e/project1/laionize` (`exa_project1`) | laionize | 4.0M | 4.4M | — |
+| `/p/project1/{jureap59,laionize}` | — | 3.0M / 6.0M | 3.3M / 6.6M | — |
+
+**`/e/data1/datasets/playground/ot-baf` is the chronic offender.** The `datasets` project is **SHARED across all its members** and has run **OVER the 110M soft limit (~118M used, ~98% of the 121M hard)** — when it hits hard, *everyone's* writes fail. Our footprint is dominated by per-experiment **`trace_jobs/` + `tasks/` subtrees** (each = thousands of tiny trial/task dirs). **The standing rule: a cleanup is NOT done until the artifact dir is actually `rm`'d — uploading to HF then leaving the trace/task tree on disk is the #1 inode leak** (subagents habitually skip the delete). After any RL/SFT/datagen/eval cell is archived to HF, its `trace_jobs/`/`tasks/`/`exports`-already-pushed subtrees MUST be deleted (detached `rm`, per the GPFS-delete discipline above), and inode reclaim verified with `df -i`/`jutil`.
+
 ## sbatch signal-53 trap (true cluster-side variant)
 Distinct from EDQUOT: `sbatch` returns a JID, RUNS 9–18s, then FAILS `0:53` `Reason=RaisedSignal:53(Real-time_signal_19)`, **no log file at all** (script's first line never runs). `srun` from the same shell works fine; already-running sbatches keep running — affects NEW submissions only. Per-user/per-account, not per-node. Ruled out: reservation, account, node count, cpus-per-task, mail dirs, `--export=NONE`, WorkDir, `--exclude`, even raw `--wrap='echo hello'`. **Probe:** `sbatch --reservation=reformo --account=reformo --partition=booster --time=00:02:00 --nodes=1 --gres=gpu:4 --wrap='echo hello'` — if it FAILs 0:53 the trap is active → fall back to `srun` for one-offs, or use `python -m hpc.launch` (its submission path has been observed healthy). Untried next steps: fresh login shell, different login node, CPU-only sbatch, JSC support (slurmstepd/spank-side). First seen 2026-04-29.
 

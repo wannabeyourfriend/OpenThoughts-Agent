@@ -41,6 +41,11 @@ Deploy this each cron sweep to produce ONE comprehensive update across all activ
   it's RUNNING) kill+relaunch. **Never report a RUNNING job as "healthy" without confirming its log is
   live** — this is how 914214 (stageC) sat wedged at buffer 35/64 for 6.5h on 14 nodes across multiple
   sweeps. Put the log-mtime (or "last output N min ago") in the table so staleness is visible at a glance.
+- **INODE HEADROOM CHECK (each sweep) — `jutil project dataquota -p <project>` + `df -i`.** Inodes (file
+  COUNT), not bytes, are the binding constraint; the shared `datasets` project on `/e/data1/datasets`
+  (where `…/playground/ot-baf` lives) runs chronically near/over its soft limit. See the per-allocation
+  limits + how-to-check in **`ops/jupiter/ops.md` → "Inode allocations" (`#inode-allocations`)**. If a
+  project is at/over its inode soft limit, that's a sweep red-flag → trigger the cleanup-reclaim step (§4).
 - ssh string + paths → `ops/<cluster>`.
 
 ## 2. Bucket every job by type
@@ -66,6 +71,12 @@ ONE table.** Extraction pointers:
   chunks done) → **`datagen-job-cleanup`** (consolidate + advance the tracker), eval → **`eval-agentic-cleanup`**
   (only if auto-upload/register failed). For RL, recognize **resume-overshoot**: a clean COMPLETED at
   `max_steps` means done → cleanup; spurious past-max chain links should be cancelled.
+  **CLEANUP IS NOT DONE UNTIL THE ARTIFACT DIR IS `rm`'d.** Uploading to HF then leaving the experiment's
+  `trace_jobs/`/`tasks/`/already-pushed-`exports/` subtrees on `/e/data1/.../ot-baf` is the #1 inode leak
+  (subagents habitually skip the delete → the `datasets` project blew past its inode soft limit). Every
+  cleanup handoff (and every cleanup subagent prompt) MUST: confirm the artifact is on HF, then **delete the
+  on-disk trees** (detached `rm` per the GPFS-delete discipline in `ops/jupiter/ops.md`), and **verify inode
+  reclaim** (`df -i` / `jutil`). Limits + the offender list → `ops/jupiter/ops.md` (`#inode-allocations`).
 - **HF-only / non-agentic SFT (Delphi #6279 + any `enable_db_registration: false` series) — "move the chains" (3 legs, autonomous, every sweep, no asking):**
   1. **SFT completes → HF upload** via `sft-cleanup-hf-only` (NOT `sft-job-cleanup`; upload, **no DB**).
   2. **upload completes → `eval-standard-launch`** for the newly-uploaded cell(s).
