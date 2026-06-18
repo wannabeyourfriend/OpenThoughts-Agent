@@ -533,3 +533,55 @@ container:
     # forked vLLM mp workers inside the SIF see it.
     VLLM_ROUTED_EXPERTS_SIDE_TIMEOUT_SECONDS: 1200
     APPTAINERENV_VLLM_ROUTED_EXPERTS_SIDE_TIMEOUT_SECONDS: 1200
+    # =========================================================================
+    # #232 OBSERVABILITY (2026-06-18): make NCCL's flight recorder FIRE + DUMP
+    # before vLLM's 900s execute_model watchdog preempts it.
+    # -------------------------------------------------------------------------
+    # Root cause this fixes: the residual TP-rank-desync wedge (rare mixed
+    # prefill+decode step -> execute_model hangs on a TP=4 decode collective)
+    # was killed at vLLM's VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS=900 (kept above)
+    # BEFORE NCCL's own watchdog (TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC=1800, the
+    # sbatch-template + hpc.env_vars default) ever reached its dump path -> no FR
+    # dump was ever written. We drop the NCCL heartbeat timeout to 600s so NCCL
+    # trips FIRST (600 < 900). 600s is FAR above the observed clean per-step
+    # collective time (clean groups complete in seconds; 917349 tqdm step-group
+    # cadence ~tens of seconds) so 600 cannot false-fire on a healthy step.
+    #
+    # Var-name verification (torch 2.11.0+cu130 in skyrl_..._cp.sif, libtorch_cuda
+    # symbol grep 2026-06-18): the build reads TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC,
+    # TORCH_NCCL_DUMP_ON_TIMEOUT, TORCH_NCCL_ENABLE_MONITORING,
+    # TORCH_NCCL_TRACE_BUFFER_SIZE (deprecated alias auto-mapped to
+    # TORCH_FR_BUFFER_SIZE; we set the new name), TORCH_NCCL_TRACE_CPP_STACK,
+    # TORCH_NCCL_DEBUG_INFO_PIPE_FILE. The dump TARGET is DebugInfoWriter
+    # getWriterTarget() (default /tmp/nccl_trace_rank_<rank>), overridden by
+    # TORCH_NCCL_DEBUG_INFO_TEMP_FILE (canonical PyTorch 2.x cvar; torch APPENDS
+    # the global rank to this base -> per-rank files land under a findable dir).
+    #
+    # These render via the template's LATE {rl_container_env_late} block (added
+    # 2026-06-18), AFTER the hardcoded `export TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC=1800`
+    # and the hpc.env_vars re-export, so THIS 600 wins by shell last-write. Scoped
+    # to #232 only (lives in this config's extra_env; no global edit). Mirror to
+    # APPTAINERENV_ so the forked vLLM mp workers inside the SIF inherit them.
+    TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC: 600
+    APPTAINERENV_TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC: 600
+    # Arm the heartbeat monitor (so a stuck watchdog actually triggers the dump +
+    # process exit instead of spinning) and dump-on-collective-timeout.
+    TORCH_NCCL_ENABLE_MONITORING: 1
+    APPTAINERENV_TORCH_NCCL_ENABLE_MONITORING: 1
+    TORCH_NCCL_DUMP_ON_TIMEOUT: 1
+    APPTAINERENV_TORCH_NCCL_DUMP_ON_TIMEOUT: 1
+    # FR ring buffer (new name; the sbatch sets the deprecated TORCH_NCCL_TRACE_
+    # BUFFER_SIZE=2000 which torch auto-maps -> set TORCH_FR_BUFFER_SIZE explicitly
+    # so the dump has the last 2000 collectives per rank to name the stuck op).
+    TORCH_FR_BUFFER_SIZE: 2000
+    APPTAINERENV_TORCH_FR_BUFFER_SIZE: 2000
+    # Record C++ stack frames in the FR trace (richer "which collective" frames).
+    TORCH_NCCL_TRACE_CPP_STACK: 1
+    APPTAINERENV_TORCH_NCCL_TRACE_CPP_STACK: 1
+    # Per-rank FR dump target base. torch appends the global rank id, so per-rank
+    # dumps land at /e/data1/.../fr_dumps_232/nccl_fr_rank<RANK>. Stable absolute
+    # path (writable, outside the inode-pressured /e/scratch) shared across the
+    # whole restart chain so the FIRST clean catch's dump is preserved. The launch
+    # pre-creates the dir. Mirror to APPTAINERENV_ so SIF workers write there too.
+    TORCH_NCCL_DEBUG_INFO_TEMP_FILE: /e/data1/datasets/playground/ot-baf/fr_dumps_232/nccl_fr_rank
+    APPTAINERENV_TORCH_NCCL_DEBUG_INFO_TEMP_FILE: /e/data1/datasets/playground/ot-baf/fr_dumps_232/nccl_fr_rank

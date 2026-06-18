@@ -171,6 +171,17 @@ export PYTHONPATH="$WORKDIR:${PYTHONPATH:-}"
 # --- RL-specific environment variables ---
 {rl_env_exports}
 
+# --- RL container env (LATE override — config container.extra_env wins) ---
+# Re-emit the yaml container.extra_env exports AFTER both the hardcoded
+# export TORCH_NCCL_* lines above and the RL-specific env exports block,
+# so a config that intentionally sets a normally-hardcoded var (e.g. #232 lowering
+# TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC to 600 so NCCL's flight-recorder fires BEFORE
+# vLLM's 900s execute_model watchdog and actually dumps) wins by shell last-write.
+# No-op for every config whose extra_env does NOT collide with a hardcoded var
+# (the earlier container-env block already exported those, re-export is
+# idempotent), so this is byte-identical behavior for all existing configs.
+{rl_container_env_late}
+
 # --- Ray defaults ---
 {ray_env_exports}
 

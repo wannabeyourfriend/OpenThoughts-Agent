@@ -1162,6 +1162,11 @@ fi"""
         "cuda_setup": cuda_setup,
         "nccl_exports": hpc.get_nccl_exports(),
         "rl_container_env": rl_container_env_block,
+        # LATE re-emit of the SAME container.extra_env block, placed after
+        # {rl_env_exports} in the template so config extra_env wins by shell
+        # last-write over the hardcoded `export TORCH_NCCL_*` defaults and the
+        # hpc.env_vars block (idempotent / no-op for non-colliding configs).
+        "rl_container_env_late": rl_container_env_block,
         "rl_env_exports": rl_env_exports,
         "ray_env_exports": hpc.get_ray_env_exports(experiments_subdir),
         "rl_env_activation": rl_env_activation,
