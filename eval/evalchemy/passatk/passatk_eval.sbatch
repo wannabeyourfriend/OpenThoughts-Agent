@@ -117,6 +117,7 @@ python "$DRIVER" \
   --task "$TASK" \
   --model-repo "$MODEL_REPO" \
   --out "$OUT" \
+  --evalchemy-root /leonardo_work/AIFAC_5C0_290/bfeuer00/code/evalchemy-marin \
   --n 128 \
   --tp "$TP" \
   --max-model-len "$MAX_MODEL_LEN" \
