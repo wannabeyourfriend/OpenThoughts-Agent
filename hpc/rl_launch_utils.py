@@ -21,7 +21,7 @@ import subprocess
 import sys
 from dataclasses import dataclass, asdict, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Mapping, Optional
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence
 
 from hpc.hf_utils import is_hf_dataset_path
 from hpc.launch_utils import get_daytona_api_key_override
@@ -1333,6 +1333,67 @@ class RLJobRunner:
                 self._hpc = detect_hpc()
         return self._hpc
 
+    @staticmethod
+    def _hydra_arg_value(hydra_args: Sequence[str], key: str) -> Optional[str]:
+        """Last-wins lookup of a dotted Hydra ``key`` in ``trainer.*=value`` args.
+
+        Hydra is last-wins, so we scan in order and keep the final match. Strips
+        the leading ``+``/``++`` override markers Hydra allows. Returns None if the
+        key is absent.
+        """
+        found: Optional[str] = None
+        for arg in hydra_args:
+            if "=" not in arg:
+                continue
+            k, v = arg.split("=", 1)
+            if k.lstrip("+").strip() == key:
+                v = v.strip()
+                # Strip a single layer of surrounding quotes that _format_hydra_arg
+                # may add for paths/values containing Hydra special chars.
+                if len(v) >= 2 and v[0] == v[-1] and v[0] in ("'", '"'):
+                    v = v[1:-1]
+                found = v
+        return found
+
+    def _already_complete_on_disk(self) -> bool:
+        """True iff the canonical checkpoint already reached max_steps.
+
+        Reads ``trainer.ckpt_path`` + ``trainer.max_steps`` from the job's Hydra
+        args and compares ``<ckpt_path>/latest_ckpt_global_step.txt`` (the atomic
+        completed-step marker SkyRL writes after each step) against max_steps.
+        Returns True only when BOTH are resolvable and ``completed >= max_steps``.
+
+        Fully defensive: any missing/unparseable input -> False (fall through to
+        normal training). The marker is the same file the trainer's resume-at-max
+        guard keys off, so the two guards agree on what "complete" means.
+        """
+        hydra_args = list(getattr(self.config, "skyrl_hydra_args", []) or [])
+        max_steps_raw = self._hydra_arg_value(hydra_args, "trainer.max_steps")
+        ckpt_path = self._hydra_arg_value(hydra_args, "trainer.ckpt_path")
+        if not max_steps_raw or not ckpt_path:
+            return False
+        try:
+            max_steps = int(max_steps_raw)
+        except (TypeError, ValueError):
+            return False
+        if max_steps <= 0:
+            return False
+
+        marker = Path(ckpt_path) / "latest_ckpt_global_step.txt"
+        try:
+            completed = int(marker.read_text().strip())
+        except (OSError, ValueError):
+            return False
+
+        if completed >= max_steps:
+            print(
+                f"[RLJobRunner] Completion marker {marker} reports global_step "
+                f"{completed} >= trainer.max_steps {max_steps}.",
+                flush=True,
+            )
+            return True
+        return False
+
     def run(self) -> int:
         """Execute the RL training job.
 
@@ -1344,6 +1405,25 @@ class RLJobRunner:
             Exit code (0 for success, non-zero for failure).
         """
         print(f"=== RLJobRunner: {self.config.job_name} ===", flush=True)
+
+        # Resume-overshoot CHAIN guard. Each link in the afterany auto-restart
+        # chain runs this before bringing up Ray. If the canonical checkpoint dir
+        # already records a completed global_step >= max_steps, the run is DONE:
+        # skip Ray + training entirely and return 0. Without this, every queued
+        # afterany successor would still spin up a 14/16-node Ray cluster just to
+        # resume-and-immediately-exit (the trainer's own resume-at-max guard makes
+        # that exit clean, but it still wastes the node slot + bring-up time). This
+        # short-circuits the whole remaining chain at ~zero cost. afterany fires
+        # the successor regardless of the predecessor's exit status, so the marker
+        # check — not the exit code — is what actually terminates the chain.
+        if self._already_complete_on_disk():
+            print(
+                "[RLJobRunner] Canonical checkpoint already at/past max_steps — "
+                "run is COMPLETE. Skipping Ray bring-up and training; exiting 0 "
+                "(short-circuits the remaining afterany restart chain).",
+                flush=True,
+            )
+            return 0
 
         training_exit_code = 1
         try:
