@@ -31,8 +31,10 @@
 #
 # WHAT IS MADE FAST (rollout only — data CONTENT is irrelevant to the sharding/
 # recompute code under test; we only need a tiny batch to fill quickly):
-#   * train_batch_size 64 -> 4, policy_mini_batch_size 64 -> 4, eval_batch_size 4.
-#   * n_samples_per_prompt 8 -> 2  => 4 prompts × 2 = 8 episodes/step (vs 512).
+#   * train_batch_size 64 -> 16, policy_mini_batch_size 64 -> 8, eval_batch_size 8.
+#     (NOT 4/4: policy DP mesh is 16, so policy_mini_batch_size*n_samples>=16 is
+#      required by validate_batch_sizes — 4*2//16 floors to 0. See job 929921.)
+#   * n_samples_per_prompt 8 -> 2  => 16 prompts × 2 = 32 episodes/step (vs 512).
 #   * sampling_params.max_generate_length 4096 -> 512 (short episodes).
 #   * generator.max_turns 999999 -> 6 (cap agent turns so episodes end fast).
 #   * harbor.override_timeout_sec 1800 -> 300, n_concurrent_trials 300 -> 16
@@ -169,10 +171,16 @@ trainer:
   max_steps: 3
   update_epochs_per_batch: 1
 
-  # SMOKE: tiny batch so the generation buffer fills in minutes, not ~90 min.
-  train_batch_size: 4
-  policy_mini_batch_size: 4
-  eval_batch_size: 4
+  # SMOKE: small batch so the generation buffer fills fast. NOTE: the policy DP
+  # mesh here is 16 (policy_world_size=16 / sequence_parallel_size=1), so
+  # validate_batch_sizes requires policy_mini_batch_size * n_samples_per_prompt
+  # (=2) >= 16, i.e. policy_mini_batch_size >= 8, AND train_batch_size %
+  # policy_mini_batch_size == 0. Hence 16 / 8 (not 4 / 4 — that floored
+  # policy_mini_batch_size_per_gpu = 4*2//16 = 0 and hard-failed at startup,
+  # job 929921). 16 prompts x 2 = 32 episodes/step; still a minutes-scale smoke.
+  train_batch_size: 16
+  policy_mini_batch_size: 8
+  eval_batch_size: 8
 
   # micro sizes UNCHANGED (these drive the per-GPU CP forward/backward shapes).
   micro_forward_batch_size_per_gpu: 4
