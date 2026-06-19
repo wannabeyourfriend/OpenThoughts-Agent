@@ -27,6 +27,20 @@ cd /leonardo_work/AIFAC_5C0_290/bfeuer00/code/OpenThoughts-Agent
 - Data/HF cache: `/leonardo_work/AIFAC_5C0_290/bfeuer00/data/hub`
 - Experiments: `/leonardo_work/AIFAC_5C0_290/bfeuer00/experiments`
 
+> **⚠ WRITE-PATH MANDATE (quota-bind — obey in every launcher/sbatch/subagent).** Two filesystems,
+> two purposes:
+> - **`$WORK` (`/leonardo_work/AIFAC_5C0_290/bfeuer00`, ~1.4 PB GPFS, persistent)** — **ALL persistent/large
+>   writes go here:** RL/SFT **checkpoints**, `trainer.export_path`, HF cache (`$WORK/data/hub`), envs,
+>   experiment outputs. The dotenv already sets `CHECKPOINTS_DIR=$WORK/experiments` — **use it; never
+>   hardcode a checkpoint/export path onto scratch.**
+> - **`$SCRATCH_FAST` (`/leonardo_scratch/fast/AIFAC_5C0_290/bfeuer00`, 1 TB Lustre, auto-purged)** — **ONLY
+>   ephemeral caches/tmp** (`VLLM_CONFIG_ROOT`/`TRITON_CACHE_DIR`/`FLASHINFER_WORKSPACE_BASE`). It is **1 TB,
+>   shared, chronically OVER quota** — a checkpoint/export written here fails with `OSError: [Errno 122] Disk
+>   quota exceeded` (NOT an OOM). **History (2026-06-19):** all 12 Delphi #6279 RL cells crashed at their
+>   first ckpt-write because `sbatch_delphi_math_rl.sh` hardcoded `$SF/rl_ckpts`; fix = redirect ckpts to
+>   `$WORK`. **Any launch subagent MUST verify its sbatch's checkpoint/export paths resolve to `$WORK`
+>   (`$CHECKPOINTS_DIR`), not `$SF`/`$SCRATCH_FAST`, BEFORE submitting.**
+
 **Correct upstream per codebase** (SoT = the Mac clones under `/Users/benjaminfeuer/Documents/`; aligned on Leonardo 2026-06-05). All on branch `penfever/working`:
 - **OpenThoughts-Agent** → remote `origin` = `open-thoughts/OpenThoughts-Agent`.
 - **harbor** → remote `marin` = `marin-community/harbor` (NOT laude-institute / `penfever/temp-override` / `otagent-latest` — those were stale on Leonardo).

@@ -15,6 +15,12 @@ description: >-
 
 # rl-standard-launch-leonardo
 
+> **⚠ Before submitting, VERIFY checkpoint/export paths resolve to `$WORK` (`$CHECKPOINTS_DIR`), NOT
+> `$SF`/`$SCRATCH_FAST`** — scratch is 1 TB/over-quota; a ckpt write there fails `OSError [Errno 122] Disk
+> quota exceeded` mid-run (NOT an OOM). This wiped all 12 Delphi #6279 RL cells on 2026-06-19 (an sbatch
+> hardcoded `$SF/rl_ckpts`). See `.claude/ops/leonardo/ops.md` "WRITE-PATH MANDATE"; bake the check into
+> every launch subagent.
+
 Standard **NON-agentic** SkyRL RL on CINECA Leonardo (A100-64GB, no compute-node
 internet): GRPO on local math/reasoning parquet (gsm8k, Hendrycks MATH via the
 `aime` env) and on-policy distillation (OPD, teacher-logit KL). This is the

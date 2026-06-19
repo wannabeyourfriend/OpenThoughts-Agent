@@ -12,6 +12,11 @@ description: Launch, monitor, and clean up a LLaMA-Factory SFT job on the CINECA
 > Bake this rule into every subagent you dispatch from this skill.
 
 End-to-end SFT on CINECA Leonardo via `python -m hpc.launch --train_config_path …`.
+
+> **⚠ Checkpoints/exports → `$WORK` (`$CHECKPOINTS_DIR`), NEVER `$SF`/`$SCRATCH_FAST`** (1 TB/over-quota →
+> `OSError [Errno 122] Disk quota exceeded` mid-run; wiped the Delphi #6279 RL grid 2026-06-19). Verify the
+> sbatch's ckpt/export paths before submitting — see `ops/leonardo/ops.md` "WRITE-PATH MANDATE".
+
 Leonardo is **no-internet-on-compute-nodes** + a **login-node process killer** +
 **24h max wall** — three constraints that drive almost every quirk below. Read
 §5 (pretokenization) and §10 (canary blockers) before launching anything large;
