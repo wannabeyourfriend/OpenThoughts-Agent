@@ -197,3 +197,25 @@ GPFS WORK (default `TMPDIR=/scratch_local` is Lustre → xattr storm). The cu13 
 `sif_build/recipes/{README_vllm0202rc0_r3_leonardo_cu13.md, build_vllm0202rc0_r3_leonardo_cu13.sbatch}`;
 the torch-2.8 recipe is retained as the documented fallback. Run convention:
 `SINGULARITYENV_LD_LIBRARY_PATH=/usr/local/cuda-13.0/compat/lib.real singularity exec --nv …`.
+
+## ptrace LOCKED DOWN cluster-wide (`ptrace_scope=2`) — software profilers/debuggers FAIL (CVE-2026-46333)
+**Since 2026-05-15** (CVE-2026-46333, a ptrace root-priv-escalation flaw), CINECA raised the kernel
+`kernel.yama.ptrace_scope` from `0` → **`2`** (only admin-privileged processes may ptrace). This is a
+**cluster-wide kernel setting** (broader than the SIF-only ptrace block on Jupiter — `ops/jupiter/ops.md`
+§Debugging tooling). **Consequence: any ptrace/software-sampling tool fails** — `py-spy dump`/`py-spy record`,
+`gdb -p`, and **software-sampling profilers**. Do NOT burn time trying them on a wedged Leonardo process.
+- **General rule:** use **hardware-based sampling (`perf`-backed)**, not software (ptrace) sampling. Check
+  whether a tool's collection method is configurable to hw before running.
+- **Intel VTune** (`vtune -collect <analysis_type>`) — verify hw-sampling support per analysis with
+  `vtune -help collect <analysis_type>`:
+  - **NOT affected (work as-is):** `performance-snapshot`, `uarch-exploration`, `hpc-performance`, `io`,
+    `system-overview`.
+  - **Affected (need the hw-sampling knob):** `hotspots`, `threading`, `memory-consumption`.
+  - **Tested-working mitigations:**
+    - `vtune -collect hotspots  -r vtune_hotspots  -knob sampling-mode=hw`
+    - `vtune -collect threading -r vtune_threading -knob sampling-and-waits=hw`
+  - ⚠ **`memory-consumption` has NO hw-sampling mode → unusable under `ptrace_scope=2`.**
+- **For our use (diagnosing wedged RL/inference):** the Jupiter playbook already applies — ptrace is out,
+  so rely on **NCCL trace + per-rank `opCount` alignment** + last-log-line-per-rank + `/proc/<pid>/{stack,environ}`
+  (readable without ptrace) to localize a hang. faulthandler/`SIGUSR1`-stack-dump is in-process (no ptrace)
+  and still works if instrumented at launch.
