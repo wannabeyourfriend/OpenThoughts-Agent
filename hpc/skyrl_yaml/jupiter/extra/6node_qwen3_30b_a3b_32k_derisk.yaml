@@ -27,9 +27,10 @@
 #     * placement fix SkyRL e5f0ff5 — fixes a CROSS-NODE TP=4 split. This config
 #       runs TP=2 = HALF a 4-GPU node per engine (2 engines/node), so the TP
 #       all-reduce is ALWAYS on-node NVLink by construction; the placement bug it
-#       fixes cannot occur here. (It is also NOT baked into the _cp_fixb2.sif: that
-#       SIF's /opt/SkyRL is at 34c348b, which PREDATES e5f0ff5 by ~3h — so the
-#       "latest #232 run" did NOT actually have the placement fix live. Moot here.)
+#       fixes cannot occur here. (NOTE: the fix IS live in #232's runs — SkyRL
+#       loads from the HOST clone OpenThoughts-Agent/SkyRL @ e5f0ff5 via PYTHONPATH,
+#       which shadows the SIF's older baked /opt/SkyRL @ 34c348b. Just moot HERE
+#       because TP=2 cannot split cross-node.)
 #     * _cp_fixb2.sif — that SIF exists for the CP/R3 path. The minimal baseline
 #       uses #217's PROVEN runtime (skyrl_megatron_vllm0202rc0_r3.sif + titan
 #       overlay), which is the KNOWN-GOOD train-to-gs1 path for plain qwen3_moe at
