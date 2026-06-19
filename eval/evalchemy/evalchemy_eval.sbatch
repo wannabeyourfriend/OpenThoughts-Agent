@@ -59,6 +59,12 @@ export HF_HUB_OFFLINE=1            # repos pre-cached on login node; no compute-
 export HF_ALLOW_CODE_EVAL=1       # required for gsm8k execution grading
 export TOKENIZERS_PARALLELISM=false
 export HF_HUB_ENABLE_HF_TRANSFER=1  # only matters for any pre-download; harmless here
+# IFEval's loose-accuracy checks use nltk sentence tokenization (punkt/punkt_tab). On a read-only,
+# offline compute node lm_eval's download_nltk_resources() would try (and fail) to fetch them, so
+# point NLTK_DATA at the pre-downloaded copy under $WORK (populated once on a login node:
+#   python -c 'import nltk; d="$WORK/data/nltk_data"; nltk.download("punkt_tab",download_dir=d); nltk.download("punkt",download_dir=d)'
+# ). Harmless for the math tasks (they don't import nltk).
+export NLTK_DATA="${NLTK_DATA:-/leonardo_work/AIFAC_5C0_290/bfeuer00/data/nltk_data}"
 
 # ----- writable caches (Leonardo: $HOME is READ-ONLY from compute AND login nodes) -----
 # vLLM's flashinfer/triton/inductor JIT caches default under $HOME/.cache and hard-crash every worker
@@ -235,6 +241,29 @@ lm_eval --model vllm \
   --gen_kwargs "temperature=0.7,top_p=1.0,max_gen_toks=${MAX_GEN_TOKS}" \
   --seed 42 \
   --output_path "${OUT}/seed42"
+
+# ----- IFEval : instruction-following pass-rate (lm-eval-native; single seed) -----
+# Primary held-out metric for the D2 / RLVR-IFeval RL cells (their training reward is the open-instruct
+# constraint verifier on allenai/RLVR-IFeval; this scores generalization on the disjoint held-out
+# google/IFEval 541-prompt benchmark — NOT train-on-test). IFEval is an lm-eval-NATIVE generate_until
+# task, so it runs through the PLAIN `lm_eval` CLI (one vLLM engine), exactly like gsm8k — running it
+# under evalchemy eval.eval would double-build the engine and OOM. lm_eval ships the `ifeval` task
+# (dataset_path=google/IFEval) at v0.4.12; it reports prompt/inst-level strict+loose accuracy. The
+# headline "pass-rate" = prompt_level_strict_acc (fraction of prompts whose EVERY constraint is met).
+# Single seed (42) is sufficient (deterministic constraint grading over 541 prompts; matches IFEval
+# leaderboard practice). Dataset + nltk punkt/punkt_tab must be pre-cached on a login node (see NLTK_DATA
+# above; `python -c 'from datasets import load_dataset; load_dataset("google/IFEval", split="train")'`).
+# IFEVAL_ENABLE=0 to skip (e.g. a math-only cell).
+if [ "${IFEVAL_ENABLE:-1}" = "1" ]; then
+  lm_eval --model vllm \
+    --model_args "pretrained=${MODEL_REPO},tensor_parallel_size=${TP_SIZE},dtype=bfloat16,max_model_len=${MAX_MODEL_LEN},gpu_memory_utilization=0.9,seed=42" \
+    --tasks ifeval \
+    ${CHAT_TEMPLATE_FLAG} \
+    --batch_size auto \
+    --gen_kwargs "temperature=0.7,top_p=1.0,max_gen_toks=${MAX_GEN_TOKS}" \
+    --seed 42 \
+    --output_path "${OUT}/seed42"
+fi
 
 # ----- AIME24 : averaged over 10 seeds (small set, high variance) (§2.4) -----
 for S in 42 43 44 45 46 47 48 49 50 51; do
