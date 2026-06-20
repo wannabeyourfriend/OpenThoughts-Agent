@@ -317,7 +317,7 @@ rollout:
 # Apptainer runtime container  (IDENTICAL to production — fixb3 SIF)
 # =============================================================================
 container:
-  sif: /e/scratch/jureap59/feuer1/containers/skyrl_megatron_vllm0202rc0_r3_cp_fixb3.sif
+  sif: /e/scratch/jureap59/feuer1/containers/skyrl_megatron_vllm0202rc0_r3_cp_fixb4.sif
   binds:
     - /e/scratch
     - /e/data1
