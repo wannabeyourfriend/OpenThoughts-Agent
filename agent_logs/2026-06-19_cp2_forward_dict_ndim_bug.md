@@ -100,3 +100,159 @@ PENDING — monitoring 930367 for genbuf advance past 2/64 (where 930208 died)
 with NO `uvloop/sslproto` / `Fatal Python error: Aborted` in any
 RolloutCoordinator. Will update with the genbuf milestone + abort-free
 confirmation.
+
+---
+
+# 2026-06-20 — FIX-3: the CP-MoE 4D-mask expand crash (job 930793) — TRUE root cause + fix
+
+## Recap of the crash (job 930793, run dir rl_30b_a3b_32k_cp2_5, CANCELLED)
+Cleared all infra, reached **gs1**, then the gs1 TRAINING forward crashed at
+`fully_async_trainer.py:493` / `model_wrapper.py:731`:
+`Sharding propagation failed for aten.expand.default(Spec(bf16[4,1,24440,12220](R)),
+[4,32,24440,24440]) on DeviceMesh((cp=2))`. (kv=12220=24440/2 → CP-sharded;
+q=24440 full; head dim 1→32.)
+
+## The FIX-1/FIX-2/initial-FIX-3 mask theory was WRONG for the SIF's transformers
+The prior diagnosis (and the #232 task framing) assumed HF's Qwen3-MoE forward
+BUILDS the 4D causal bias (via `create_causal_mask` → `find_packed_sequence_indices`
+never returning None for monotonic positions). **That is true for transformers
+4.57 (the laptop env) but NOT for the SIF.** Verified in `_cp_fixb3.sif`:
+- transformers = **5.10.1**, torch = **2.11.0+cu130**.
+- `find_packed_sequence_indices(monotonic)` → **returns None** (5.10.1 added the
+  None-when-unpacked behavior the 4.57 source only wished for).
+- `create_causal_mask(qwen3_moe cfg, attention_mask=None, monotonic pos)` with
+  `_attn_implementation=sdpa` → **returns None** (no 4D mask). Only the `eager`
+  path returns a bf16 `[B,1,S,S]` mask.
+- A real `Qwen3MoeForCausalLM(attn_implementation="sdpa")` forward with
+  `attention_mask=None` confirms `create_causal_mask` returns None and HF's
+  `sdpa_attention_forward` then calls `F.scaled_dot_product_attention(...,
+  attn_mask=None, is_causal=True)`.
+
+So on the SIF, the existing FIX-1/FIX-2 path (`attention_mask=None` + monotonic
+positions) ALREADY makes HF take the no-4D-mask `is_causal=True` SDPA route. HF
+does not build the 4D bias. The first FIX-3 (commit `5471918`, monkeypatching
+`find_packed_sequence_indices`) is INERT on 5.10.1 and was superseded.
+
+## (a) TRUE root cause — torch's context-parallel SDPA backend builds the bias
+The job-930793 **Python** traceback (recovered from the `.out`) is unambiguous:
+```
+model_wrapper.py:731  output = self.model(sequences_fwd, attention_mask=None, position_ids=cp_position_ids)
+modeling_qwen3_moe.py:181  attn_output, attn_weights = attention_interface(...)
+integrations/sdpa_attention.py:92  torch.nn.functional.scaled_dot_product_attention(..., attn_mask=None, is_causal=True)
+torch/.../_context_parallel/_attention.py:966  outputs = target_fn(*args, **kwargs)   # CP monkeypatch wrapper
+torch/.../tensor/_dispatch.py:251  _propagate_op_sharding_dispatch_slow_path → aten.expand bf16[4,1,24440,12220]→[4,32,24440,24440]
+```
+i.e. the `attn_mask` into SDPA is **None** (our path is correct). The 4D
+`bf16[B,1,S_q,S_kv]` bias is **materialized by torch's CP SDPA backend**, not by
+HF. With q/k/v CP-sharded on the seq dim (kv→S/cp) and `is_causal=True`, torch CP
+routed the op to the **memory-efficient / cuDNN ring-attention backend**
+(`_scaled_dot_product_ring_efficient_attention`), which constructs an explicit
+`[B,1,S_q,S_kv/cp]` causal bias and `aten.expand`s it to all heads + full kv
+`[B,H,S_q,S_kv]` — DTensor sharding-prop rejects the `S_kv/cp(12220)→S_kv(24440)`
+expand. The FLASH ring backend (`_scaled_dot_product_ring_flash_attention`)
+consumes `is_causal` natively and never builds a 4D bias, so it has no such
+expand — but torch did not pick it by default for this (seq, dtype, head_dim)
+combo on GH200. This is a **torch-internal CP-SDPA-backend** issue, NOT an HF
+mask the wrapper builds — a genuinely distinct (4th) CP-shape cause from FIX-1/2.
+
+Why the genbuf/logprob forward was "fine": it is the SAME structural path, but
+the crash only manifests once a CP forward actually runs the SDPA op that gets
+routed to the efficient/cuDNN backend with CP-sharded kv at full seq length (the
+training micro-batch forward at gs1). Short/earlier forwards can dodge backend
+selection.
+
+## (a, cont.) The root fix (file:line + idiom)
+`skyrl-train/skyrl_train/model_wrapper.py`:
+- New `@contextlib.contextmanager _cp_force_flash_sdpa()` (~L120): pins
+  `torch.nn.attention.sdpa_kernel([SDPBackend.FLASH_ATTENTION], set_priority=True)`
+  for the wrapped forward; guarded no-op if the `sdpa_kernel` API is absent.
+- Wrapped BOTH CP forward branches in `with _cp_force_flash_sdpa():`
+  — policy `HFModelWrapper.forward` (the `elif cp_size > 1:` block, ~L753) and
+  critic `_get_critic_model` (the `elif cp_size > 1:` block, ~L1189) — covering
+  both the dense dict-mask path and the MoE `attention_mask=None` path (both
+  route through torch CP SDPA and both benefit). CP1 / non-CP forwards never enter
+  the context → byte-unchanged. The MoE branch keeps the FIX-2 monotonic
+  `cp_position_ids` (still required so `create_causal_mask` returns None / so the
+  is_causal route is taken; recompute-safe).
+- In-SIF verified: the context pins `FLASH_ATTENTION` (`_cur_sdpa_kernel_backends()`
+  → `['FLASH_ATTENTION']`). `ast.parse` clean. Dense/CP1 untouched.
+
+## (a, cont.) Commits pushed/pulled (marin `penfever/working`)
+- `5471918` — first FIX-3 (find_packed_sequence_indices monkeypatch; correct for
+  transformers 4.57 but **inert on the SIF's 5.10.1**). Superseded.
+- **`bee47ca`** — FIX-3 v2 (pin FLASH ring SDPA backend). THE fix. Pushed to
+  marin `penfever/working`; `git pull` on Jupiter SkyRL clone fast-forwarded
+  `0554dae→…→bee47ca`, HEAD = `bee47ca` (editable install → live).
+
+## (b) FAST smoke validation
+- Config `extra/6node_qwen3_30b_a3b_32k_cp2_SMOKE.yaml`, `_cp_fixb3.sif`,
+  max_steps=3, 6 nodes, `--reservation reformo`, db_reg false, detached tmux
+  `cp2smoke`. **Smoke jobid 932121** (exp dir `rl_30b_a3b_32k_cp2_SMOKE_4`),
+  RUNNING from 10:43. SkyRL clone confirmed at `bee47ca`, sbatch confirmed
+  `_cp_fixb3.sif`. The smoke uses the FULL 32k seq config (only batch/episode
+  counts shrunk), so its training forward exercises the SAME CP-sharded SDPA path
+  at the same seq regime → it genuinely covers the bug. MONITORING for gs≥2 with
+  no `aten.expand`/sharding error. (Verdict appended below once it lands.)
+
+## (c) real cp2 relaunch
+PENDING smoke result.
+
+## (d) escape-hatch note
+The true cause turned out to be torch-CP-internal SDPA backend selection, not the
+HF-mask theory the #232 task was built on. The FLASH-backend pin is a clean
+wrapper-level fix (no transformers-internal surgery), so the escape hatch was NOT
+invoked — BUT this WAS a distinct 4th CP-shape cause, so per the guardrail: if the
+smoke shows the FLASH pin does not hold (e.g. flash kernel unavailable for these
+q/k/v on GH200, or a NEW CP-shape error surfaces), STOP and recommend a holistic
+FSDP2-CP-MoE attention-backend review rather than looping.
+
+---
+
+# FIX-3 (FLASH-backend pin, `bee47ca`) smoke re-validation — 2026-06-20
+
+## Batch-config fix (the 932121 init failure was NOT the CP fix)
+- Smoke 932121 FAILED at init (~4.5min) on `fully_async_trainer.py:313`:
+  `AssertionError: train_batch_size must equal policy_mini_batch_size for fully
+  async training`. The SMOKE yaml had `train_batch_size: 16` / `policy_mini_batch_size: 8`
+  (the earlier 16/8 fix only addressed the DP=16 mini-batch floor, not the
+  fully-async equality constraint).
+- **Fix:** `train_batch_size 16 -> 8`, keep `policy_mini_batch_size: 8`,
+  `eval_batch_size: 8`. 8/8/8 is the SMALLEST pair satisfying BOTH constraints:
+  - fully-async equality: `8 == 8` ✓
+  - DP=16 floor: `policy_mini_batch_size_per_gpu = 8 * n_samples(2) // dp(16) = 1 > 0` ✓,
+    `1 % micro_train(1) == 0` ✓; `train % mini = 8%8 == 0` ✓
+    (policy_dp_size = policy_world_size(16) // sequence_parallel_size(1) = 16, FSDP2
+    path; CP handled in fsdp_config, not counted in this DP formula).
+  - 8 prompts × 2 samples = 16 episodes/step. CP G4 seq-divisibility untouched.
+- Commit **`53e6e6bc`** (OpenThoughts-Agent, penfever/working), pushed; pulled on
+  Jupiter (OTAgent HEAD `53e6e6bc`). YAML parses clean (yaml.safe_load OK).
+- SkyRL clone on Jupiter `/e/scratch/.../OpenThoughts-Agent/SkyRL` confirmed at HEAD
+  **`bee47ca`** (= origin/penfever/working HEAD) → FLASH-backend FIX-3 v2 live on the
+  cluster PYTHONPATH (editable install). The fix survives Jupiter shutdown regardless
+  (committed + pushed).
+
+## Relaunch attempt 1 — job 932194 (FAILED, 3rd config assert, NOT the CP fix)
+- Smoke **932194**, exp dir `rl_30b_a3b_32k_cp2_SMOKE_5`, detached tmux `cp2smoke`,
+  6 nodes (jpbo-105-[17-19,24-25,28]), `_cp_fixb3.sif`. Ray cluster formed fine,
+  PYTHONPATH carried the SkyRL clone (bee47ca) + SIF confirmed `_cp_fixb3.sif`.
+- FAILED at init (~2min) on `validate_batch_sizes` (utils.py:388):
+  `AssertionError: train_batch_size (8) should be >= lcm of enabled DP sizes:
+  policy_dp_size=16, lcm_dp_size=16`. A THIRD batch constraint the 8/8 fix missed
+  (use_ref_model=False since use_kl_loss=false → lcm = policy_dp_size = 16).
+  Still NOT the CP fix — pure config bringup. Cancelled.
+
+## Final batch fix — 16/16/16 (clears all three coupled constraints)
+- `train_batch_size 8 -> 16`, `policy_mini_batch_size 8 -> 16`, `eval_batch_size 16`.
+  16 is the UNIQUE smallest value satisfying: (1) train==mini (fully-async),
+  (2) train >= lcm_dp_size = 16, (3) mini*2//16 = 2 > 0 / train%mini = 0.
+  Commit **`b5ce5812`** (OpenThoughts-Agent), pushed; pulled on Jupiter
+  (HEAD `b5ce5812`). yaml.safe_load OK.
+
+## Relaunch attempt 2 — job 932229 (the FIX-3 validation run)
+- Smoke **932229**, exp dir `rl_30b_a3b_32k_cp2_SMOKE_6`, detached tmux `cp2smoke`,
+  6 nodes (jpbo-105-[17-19,24-25,28]), `_cp_fixb3.sif`, 32k full-seq config. Log:
+  `/e/data1/datasets/playground/ot-baf/rl_30b_a3b_32k_cp2_SMOKE_6/logs/rl_30b_a3b_32k_cp2_SMOKE_932229.out`.
+  This is the ONE authorized relaunch after the trivial-config fix.
+
+## VERDICT
+PENDING — monitoring 932229 to gs≥2.
