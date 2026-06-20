@@ -470,7 +470,7 @@ rollout:
 # =============================================================================
 # Apptainer runtime container
 # =============================================================================
-# CP + DCP + R3 SIF (skyrl_megatron_vllm0202rc0_r3_cp_fixb4.sif): the canonical
+# CP + DCP + R3 SIF (skyrl_megatron_vllm0202rc0_r3_cp_fixb5.sif): the canonical
 # torch-2.11 / vLLM-0.20.2rc0 SIF. = _cp_fixb2.sif (baked /opt/SkyRL @ marin
 # penfever/working 34c348b FSDP2 torch-native CP ring-SDPA + ExpertParallel; vLLM DCP
 # GQA-LSE fp32 fix + VLLM_ALLOW_ROUTED_EXPERTS_DCP guard-lift preserved) PLUS the
@@ -483,7 +483,7 @@ rollout:
 # Ray-bootstrap timeout). The torch-2.11 multi-node env fixes + R3/DCP transport env +
 # the NCCL flight-recorder observability block live in extra_env below.
 container:
-  sif: /e/scratch/jureap59/feuer1/containers/skyrl_megatron_vllm0202rc0_r3_cp_fixb4.sif
+  sif: /e/scratch/jureap59/feuer1/containers/skyrl_megatron_vllm0202rc0_r3_cp_fixb5.sif
   binds:
     - /e/scratch
     - /e/data1
