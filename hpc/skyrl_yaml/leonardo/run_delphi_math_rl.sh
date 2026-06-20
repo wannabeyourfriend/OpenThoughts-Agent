@@ -31,11 +31,13 @@ set -x
 #     entropy → pushes it UP) was the explosion driver. The stabilization sweep (cell
 #     gc05_lr3e6_e0, jobid 47447528) ran the full 101 steps with entropy bounded
 #     0.10–0.14 and reward −0.89→−0.09 / pass@8 0.25→0.68 using: max_grad_norm=0.5,
-#     lr=3e-6, entropy regularization OFF, NO KL. That is the PROVEN-SAFE default below.
-#     NOTE: lr=1e-5 (with clip 0.5, entropy off — sweep cell gc05_lr1e5_e0 / jobid
-#     47447531) is a PENDING-COMPLETION higher-reward candidate; once it lands clean it
-#     may be promoted. All knobs stay overridable via dotted-hydra `"$@"` passthrough.
-: "${LR:=3.0e-6}"                      # PROVEN-SAFE (sweep gc05_lr3e6_e0). 1e-5 = pending higher-reward candidate (gc05_lr1e5_e0)
+#     lr=3e-6, entropy regularization OFF, NO KL. UPDATE 2026-06-21: sweep cell
+#     gc05_lr1e5_e0 (jobid 47447531) COMPLETED the full 101 steps — entropy bounded
+#     0.065–0.264, reward −0.89→+0.24, pass@8 0.25→0.75 (peak 0.875) — BEATING lr3e-6
+#     (pass@8 0.68, reward −0.06). So lr=1e-5 (with clip 0.5 + entropy OFF) is the
+#     VALIDATED BEST and is now the default; the explosion was the +0.01 bonus, not the
+#     lr. lr=3e-6 remains the conservative fallback. All knobs overridable via `"$@"`.
+: "${LR:=1.0e-5}"                      # VALIDATED-BEST (sweep gc05_lr1e5_e0 47447531: pass@8 0.75, +reward). 3.0e-6 = conservative fallback (gc05_lr3e6_e0)
 : "${MAX_GRAD_NORM:=0.5}"              # tightened from config default 1.0 — cheap insurance brake on the runaway
 : "${USE_ENTROPY_LOSS:=false}"         # entropy regularization OFF (the +0.01 bonus was the explosion driver)
 : "${N_SAMPLES:=8}"                    # GRPO group size (efficiency winner)
