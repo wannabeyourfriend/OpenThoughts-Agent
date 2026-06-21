@@ -104,3 +104,16 @@ cd /tmp && singularity exec --nv -B /leonardo_work,/leonardo_scratch $SCRATCH_FA
 - **Booster nodes:** 32-core Ice Lake (x86_64) @ 2.6GHz, **4× A100-64GB**, 512 GB RAM, 3456 nodes. CUDA 12.2/12.3/12.6 modules; gcc 12.2 system / conda gcc 14.
 - **Filesystems:** HOME `/leonardo/home/userexternal/bfeuer00` (50 GB, NFS, persistent) — too small for envs; **WORK** `/leonardo_work/AIFAC_5C0_290` (~1.465 PB shared GPFS, persistent — code/envs/HF-cache/experiments live here); **SCRATCH/fast** `/leonardo_scratch/fast/AIFAC_5C0_290` (1 TB shared Lustre, **auto-purged**, fastest — vLLM/Triton/FlashInfer caches + job tmp; often OVER quota, may need project cleanup). Env vars in `hpc/dotenv/leonardo.env`: `HF_HOME`/`HF_HUB_CACHE=$WORK/data/hub`, `VLLM_CONFIG_ROOT`/`TRITON_CACHE_DIR`/`FLASHINFER_WORKSPACE_BASE=$SCRATCH_FAST/vllm_cache`.
 - **Account:** `AIFAC_5C0_290` (the expired `EUHPC_E03_068` / `CMPNS_E03_068` are dead — do NOT use). Partition `boost_usr_prod`, max wall 24h (`--time 23:59:00`), debug QOS `boost_qos_dbg` ≤30min. Budget: `saldo -b`; storage: `cinQuota`/`cindata`.
+
+---
+
+## 5. Canonical env set — anything else is cruft (inventory reconciled 2026-06-21)
+
+These are ALL the runtimes we intentionally keep. If you find an env/sandbox/clone NOT on this list, it's a candidate to retire (audit before assuming).
+
+**conda (`$WORK/miniforge3/envs/`):** `otagent` (default — orch/eval/datagen/agentic), `sft-qwen35` (Qwen3.5 SFT), `evalchemy-marin` (Delphi #6279 evals), `ajudge` (LLM-judge tool — a documented dependency, rarely used).
+**RL runtime (`$SF`):** `marinskyrl_sandbox` (singularity sandbox) + `marin_venv` (uv venv, editable MarinSkyRL) — torch 2.8/vLLM 0.11. **This is what live multi-node RL uses** (not the cu13 twin).
+**cu13 cross-cluster twin (`$WORK/containers/`):** `skyrl_megatron_vllm0202rc0_r3_sandbox` (the Jupiter prod-SIF twin, 22G) + `pytorch_2509_sbx` (its NGC cu13 base, 19G) — both fully built, **PARKED**: no live RL uses them (the recipe is committed under `sif_build/recipes/`, so they're rebuildable). Keep only while the cross-cluster-twin option is open; retire if that effort is abandoned.
+**code clones (`$WORK/code/`):** `OpenThoughts-Agent`, `MarinSkyRL`, `harbor`, `evalchemy-marin`, `ajudge`. (`abb` = an unidentified 700M clone, untouched since 2026-03; flagged for retirement pending an ID.)
+
+**RETIRED 2026-06-21** (orphaned, no live ref): the deprecated **`evalchemy` 0.4.9.1 conda env** (superseded by `evalchemy-marin` 2026-06-15), the conda `pkgs` cache, stale `$SF` dirs (`ray_tmp`/`canary_home`/`apptainer_cache`), and the one-off forward-compat/build artifacts. Earlier deletions (per §2e): `code/evalchemy`, `code/evalchemy-resume-test`, `code/SkyRL`.
