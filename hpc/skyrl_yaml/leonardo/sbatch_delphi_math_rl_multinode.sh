@@ -84,9 +84,18 @@ if [ "$THINK_MODE" = "forced" ]; then
   export DELPHI_TEMPLATE=${DELPHI_TEMPLATE:-$WORK/code/OpenThoughts-Agent/chat_templates/delphi_v0_think.jinja2}
 fi
 
-# Fresh per-run ckpt dir on $WORK (scratch-fast quota is tight; ckpt OFF in the smoke anyway).
+# RESUME_MODE controls checkpoint resumption across an afterany restart CHAIN.
+#   null (default)  -> one-shot smoke semantics: WIPE the per-run ckpt dir, no resume.
+#   latest          -> chain semantics: PRESERVE the ckpt dir + resume from the latest ckpt
+#                      (passed through to hydra as trainer.resume_mode=latest). The head run
+#                      of a chain finds an empty/fresh dir and starts at step 0; restarts resume.
+export RESUME_MODE=${RESUME_MODE:-null}
+
+# Per-run ckpt dir on $WORK (scratch-fast quota is tight; ckpt OFF in the smoke anyway).
 export CKPT_DIR=$WORK/rl_ckpts/$RUN_NAME
-rm -rf "$CKPT_DIR"
+if [ "$RESUME_MODE" = "null" ]; then
+  rm -rf "$CKPT_DIR"   # smoke / non-resumable: always start clean
+fi
 
 # Offline / cache env (compute nodes have no internet).
 export HF_HUB_OFFLINE=1
@@ -258,7 +267,7 @@ srun --nodes=1 --ntasks=1 -w "$HEAD_NODE" --overlap \
         --bind "$SING_BIND" --pwd "$MARIN" \
         --env "$SING_ENV" \
         "$SANDBOX" bash "$CFG/run_delphi_math_rl_think.sh" "${HYDRA_ARGS[@]}" \
-        trainer.resume_mode=null trainer.ckpt_path="$CKPT_DIR" trainer.export_path="$CKPT_DIR/exports"
+        trainer.resume_mode=$RESUME_MODE trainer.ckpt_path="$CKPT_DIR" trainer.export_path="$CKPT_DIR/exports"
 TRAIN_RC=$?
 echo "DELPHI_RL_MN_EXIT=$TRAIN_RC"
 
