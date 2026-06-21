@@ -78,6 +78,22 @@ set -x
 TP=1
 ENGINES=$(( NUM_GPUS / TP * POLICY_NUM_NODES ))
 
+# THINK_MODE — how real (non-empty) thinking is driven into the rollout:
+#   'kwarg'  (default; the validated smoke path): generator.batched=false +
+#            chat_template_kwargs.enable_thinking — relies on the MODEL to populate the
+#            think region. Smoke 47525016 showed THIS sft ckpt emits an EMPTY block here.
+#   'forced' (the bake-in / fast path): generator.batched=true (FAST) and NO kwarg
+#            (batched refuses chat_template_kwargs). Thinking is FORCED by the template
+#            itself — pass DELPHI_TEMPLATE=.../delphi_v0_think.jinja2 to the sbatch so the
+#            cached tokenizer (used by BOTH the vLLM engine AND the policy → consistent)
+#            PREFILLS '<|start_think|>\n', so the response MUST begin inside the think region.
+: "${THINK_MODE:=kwarg}"
+if [ "$THINK_MODE" = "forced" ]; then
+  THINK_ARGS=( generator.batched=true )
+else
+  THINK_ARGS=( generator.batched=false "+generator.chat_template_kwargs.enable_thinking=$THINK" )
+fi
+
 "$VENV_PY" -m skyrl_train.entrypoints.main_base \
   data.train_data="['$DATA_DIR/train.parquet']" \
   data.val_data="['$DATA_DIR/validation.parquet']" \
@@ -118,8 +134,7 @@ ENGINES=$(( NUM_GPUS / TP * POLICY_NUM_NODES ))
   generator.run_engines_locally=true \
   generator.weight_sync_backend=nccl \
   generator.async_engine=true \
-  generator.batched=false \
-  +generator.chat_template_kwargs.enable_thinking=$THINK \
+  "${THINK_ARGS[@]}" \
   generator.enforce_eager=false \
   environment.env_class=$ENV_CLASS \
   generator.n_samples_per_prompt=$N_SAMPLES \
