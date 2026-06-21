@@ -195,6 +195,12 @@ SING_ENV="$SING_ENV,RAY_TMPDIR=$RAY_TMP,TMPDIR=$RAY_TMP"
 SING_ENV="$SING_ENV,DATA_DIR=$DATA_DIR,MODEL_PATH=$MODEL_PATH,NUM_GPUS=$NUM_GPUS,CKPT_DIR=$CKPT_DIR"
 SING_ENV="$SING_ENV,RUN_NAME=$RUN_NAME,ENV_CLASS=$ENV_CLASS,LOGGER=console,VENV_PY=$VENV_PY"
 SING_ENV="$SING_ENV,POLICY_NUM_NODES=$POLICY_NUM_NODES,THINK=$THINK,THINK_MODE=$THINK_MODE"
+# Put the skyrl-train repo on PYTHONPATH so EVERY Ray actor (incl. remote-node FSDP policy
+# workers) imports skyrl_train.* from source — NOT via the setuptools editable-finder, which
+# omits skyrl_train.dataset on the actors and crashes worker init at 16-node scale
+# (ImportError: cannot import name 'PromptDataset' ... unknown location). Mirrors the Jupiter
+# multi-node launch (PYTHONPATH=.../skyrl-train). Additive: venv deps stay on site-packages.
+SING_ENV="$SING_ENV,PYTHONPATH=$MARIN"
 
 SING_BIND="/leonardo_work:/leonardo_work,/leonardo_scratch:/leonardo_scratch"
 
