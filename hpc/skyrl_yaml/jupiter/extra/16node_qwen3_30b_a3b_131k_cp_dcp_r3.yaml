@@ -263,10 +263,16 @@ trainer:
   policy_mini_batch_size: 64
   eval_batch_size: 64
 
-  # micro_forward 2 at 131k (forward-only logprob pass; lower than the 32k rung's 4
-  # because dense-attention 131k activations are heavier per sequence — matches the
-  # 64GPU 131k parent). micro_train 1 (the full-shard all-gather + MoE backward spike).
-  micro_forward_batch_size_per_gpu: 2
+  # micro_forward 4 (raised from 2 on 2026-06-21). Full-batch prod (512 samples → 16
+  # seqs/rank → 8 forward micro-batches at mf=2) issued 384 sequential EP MoE all-to-alls
+  # and DEADLOCKED at SeqNum=145 (the 4th micro-batch's first all-to-all) — a straggler
+  # desync on the 16k ragged sequences (per-rank fwd-time skew > the 600s NCCL watchdog;
+  # jobs 935650/651 both died here, identically). mf=4 halves the micro-batch count
+  # (→ ~192 all-to-alls), shrinking the straggler-accumulation window, WITHOUT cutting the
+  # effective batch. Watch first-step activation memory (16k seqs × mf=4); fall back to
+  # mf=2 + batch-reduction if OOM. (The smoke at 64 samples only ever issued ~48 collectives
+  # so it never reached SeqNum 145 — it was not a valid stress test for this failure.)
+  micro_forward_batch_size_per_gpu: 4
   micro_train_batch_size_per_gpu: 1
 
   max_prompt_length: 999999
@@ -529,10 +535,15 @@ container:
     # cross-node decode. Carried from the 64GPU 131k config (where Option-A TP8 died).
     VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS: 900
     APPTAINERENV_VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS: 900
-    # NCCL flight recorder: drop the heartbeat timeout to 600s (< the 900s execute_model
-    # watchdog) so NCCL trips + dumps FIRST on a stuck collective (names the wedged op).
-    TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC: 600
-    APPTAINERENV_TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC: 600
+    # NCCL timeouts raised to 1800s (2026-06-21): the wedged op is now diagnosed (EP MoE
+    # token-dispatch all-to-all straggler at micro-batch depth, primary-fixed via
+    # micro_forward=4). Raise BOTH the collective PG timeout (SKYRL_WORKER_NCCL_TIMEOUT_IN_S,
+    # default 600) AND the heartbeat monitor so residual per-rank skew on the 16k ragged
+    # sequences is absorbed rather than watchdog-killed (hedge alongside the mf=4 primary fix).
+    SKYRL_WORKER_NCCL_TIMEOUT_IN_S: 1800
+    APPTAINERENV_SKYRL_WORKER_NCCL_TIMEOUT_IN_S: 1800
+    TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC: 1800
+    APPTAINERENV_TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC: 1800
     TORCH_NCCL_ENABLE_MONITORING: 1
     APPTAINERENV_TORCH_NCCL_ENABLE_MONITORING: 1
     TORCH_NCCL_DUMP_ON_TIMEOUT: 1
