@@ -69,6 +69,7 @@ Write `data/<slug>/generate.py` (model it on `data/nl2bash/generate.py` / `data/
 - `tests/` — `test.sh` (runs the tests), `test_state.py` (asserts `/logs/verifier/reward.txt == "1"`), `config.json` (pass/fail test lists).
 - `solution/` — `solve.sh` (the oracle/gold solution, typically a heredoc + `git apply` / direct edits). Empty/placeholder until Stage 4 if the source has no gold solution.
 - task metadata (id, source, etc.).
+- **Harbor mounts ONLY `environment/` (→ the image), `solution/` (→ `/solution`), and `tests/` (→ `/tests`) — there is NO `/setup_files` mount** (it's named in `TaskPaths` but NOT wired up; verified against harbor source 2026-06-22, TMax-15K). So any per-task setup that can't live in the shared Dockerfile (Stage 3) must be carried INSIDE `tests/` AND `solution/` (e.g. ship a `setup.sh` in both and have `test.sh`/`solve.sh` source it) and inlined into `instruction.md` for the agent — do NOT invent a `setup_files/` dir and expect it mounted. If the setup touches a cloned repo, add a `git config --global --add safe.directory '*'` hardening.
 - **Gate:** extract a few tasks and confirm the schema matches a known-good dataset. The fast check is to run a tiny **infra smoke** (Stage 5's tier-1) on ~5 tasks — does the env build + the harness run? Fix schema/Dockerfile errors here, before scaling up. Upload the converted set to `laion/<slug>-tasks-raw` (parquet) via `upload_tasks_to_hf`.
 
 ## Stage 3 — SNAPSHOT-SAFE (the patcher)
