@@ -75,8 +75,8 @@ The x86/A100 analogue of Jupiter's `skyrl_megatron_vllm0202rc0_r3.sif`: SkyRL ed
 - **The ONE canonical evalchemy clone:** `/leonardo_work/AIFAC_5C0_290/bfeuer00/code/evalchemy-marin` —
   remote `origin = github.com/marin-community/evalchemy.git`, branch `main`. The **`evalchemy-marin` conda env**
   is the editable install against it (lm-eval v0.4.12 standard). All recent Delphi #6279 pass@k + standard
-  `SCORES.md` rows used this env+clone; the live `evalchemy_eval.sbatch` / `passatk_eval.sbatch` `cd` here.
-- **Use for:** MATH500 / gsm8k / AIME24 (`eval/evalchemy/*.sbatch`) + pass@k (`eval/evalchemy/passatk/`).
+  `SCORES.md` rows used this env+clone; the live `evalchemy_eval.sbatch` `cd`s here.
+- **Use for:** MATH500 / gsm8k / AIME24 (`eval/evalchemy/*.sbatch`) + native pass@k (`eval.eval --num_samples N --pass_at_k …`; unbiased estimator in `eval/passk.py`). The standalone `passatk/` driver was removed 2026-06-22 (superseded by native pass@k).
 - **CLEANUP (2026-06-18):** the two redundant clones were **deleted** — `code/evalchemy` (a stale
   `mlfoundations/evalchemy` clone, frozen at clone-time HEAD `6ed67415`, paired with the deprecated 0.4.9.1
   `evalchemy` conda env; cut over to `evalchemy-marin` on 2026-06-15 after MATH500 validated 9.6% vs 10.2%

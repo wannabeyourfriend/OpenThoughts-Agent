@@ -1,9 +1,14 @@
 # eval/evalchemy — evalchemy reasoning-eval sbatch runners (Leonardo)
 
-Generic SLURM runners for the evalchemy downstream reasoning evals (**MATH500 / AIME24 / gsm8k**) and
-the **pass@k** grid, run on Leonardo under the `evalchemy-marin` conda env. These are the git-tracked,
+Generic SLURM runners for the evalchemy downstream reasoning evals (**MATH500 / AIME24 / gsm8k**),
+run on Leonardo under the `evalchemy-marin` conda env. These are the git-tracked,
 generalized successors to the ad-hoc copies that lived (untracked) in the experiment workspace
 `/leonardo_work/AIFAC_5C0_290/bfeuer00/experiments/delphi-eval/`.
+
+**pass@k is native to evalchemy** — add `--num_samples N --pass_at_k 1,8,32,128` to the `eval.eval`
+path (the unbiased Chen et al. 2021 estimator `1 − C(n−c,k)/C(n,k)` lives in `eval/passk.py`;
+`num_samples=1` is the default and takes the single-sample path byte-identically). The old standalone
+`passatk/` driver subsystem was **removed 2026-06-22 as superseded** by this native path.
 
 ## Scripts
 
@@ -12,13 +17,10 @@ generalized successors to the ad-hoc copies that lived (untracked) in the experi
 | `evalchemy_eval.sbatch` | **Generic** MATH500 + gsm8k + AIME24(×10 seeds) runner. Parameterized by `(MODEL_REPO, RUN_NAME, STAGE)`. Computes tensor-parallel size at runtime (**auto-TP**, see below). |
 | `delphi_eval.sbatch` | **Thin delphi wrapper** — sets the delphi-specific defaults (delphi_v0 chat-template override + 4k context clamp) and `exec`s the generic runner. Same CLI as the old standalone delphi script. |
 | `qwen3_eval.sbatch` | Qwen3 dense instruct ladder baseline runner (own ChatML template, long 32k context, thinking-on). TP defaults to 4 with a `$3` override (all Qwen3 head counts divide by 4). |
-| `passatk/passatk_eval.sbatch` | pass@k grid array runner — one array task = one `(model, task)` N=128 pass@k pass, grid-driven (`grid.txt`, type-parameterized: `base` / `qwen3` / `qwen3-base` / `qwen3-moe-base` / `qwen3-moe-thinking`). |
-| `passatk/passatk_smoke.sbatch` | pass@k mechanism smoke test (Qwen3-0.6B / MATH500, reduced budget; validates 128-sample generation + monotone pass@k). |
-| `passatk/smoke_ext.sbatch` | second pass@k smoke (Qwen3-0.6B-Base / AIME24, no chat template). |
 
-The pass@k scripts invoke `passatk_driver.py`, which lives in the experiment workspace
-(`.../experiments/delphi-eval/passatk-sft/passatk_driver.py`) and is referenced by absolute path; it is
-not vendored here. The grid file (`grid.txt`) is also experiment-local.
+pass@k needs no dedicated script — add `--num_samples N --pass_at_k <k-list>` to an `eval.eval`
+invocation (see the run convention below). The removed `passatk/` subsystem (driver + smoke/grid/merge
+sbatch) is fully replaced by this native path.
 
 ## auto-TP behavior (the key fix)
 
@@ -65,10 +67,11 @@ sbatch --job-name="qwen3-baseline-<RUN>" eval/evalchemy/qwen3_eval.sbatch <MODEL
 RUN=delphi-9e19-p33m67-coldstart-magpie_lr1e5
 sbatch --job-name="delphi-eval-$RUN" eval/evalchemy/delphi_eval.sbatch laion/$RUN $RUN sft
 
-# pass@k grid (concurrency capped at 8)
-cd .../experiments/delphi-eval/passatk-sft
-sbatch --array=0-$(($(wc -l < grid.txt)-1))%8 \
-  /leonardo_work/AIFAC_5C0_290/bfeuer00/code/OpenThoughts-Agent/eval/evalchemy/passatk/passatk_eval.sbatch
+# pass@k — native evalchemy path (no separate driver). Add to any eval.eval task:
+#   python -m eval.eval --model vllm --model_args "...,seed=42" --tasks AIME24 \
+#     --num_samples 128 --pass_at_k 1,8,32,128 --gen_kwargs "temperature=0.7,top_p=1.0" \
+#     --log_samples --output_path "$OUT/passk"
+# Unbiased estimator: eval/passk.py. (Replaces the removed passatk/ subsystem.)
 ```
 
 Submit from the repo checkout on Leonardo
