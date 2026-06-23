@@ -5,9 +5,12 @@
 # This image includes a SEPARATE RL environment due to dependency conflicts with
 # the datagen/base stack (see hpc/rl_requirements.txt: "INCOMPATIBLE with the
 # datagen environment"):
-#   - RL (MarinSkyRL skyrl-train[vllm]): torch==2.8.0+cu128, vllm==0.11.0, ray==2.51.1
+#   - RL (MarinSkyRL skyrl-train[vllm]): torch==2.11.0+cu128, vllm==0.20.2rc0
+#     (OUR FORK, built FROM SOURCE), ray==2.51.1
 #   - base/datagen:                      torch 2.9.x, vllm 0.16.x
-# The dual-venv split is therefore KEPT.
+# The dual-venv split is therefore KEPT (the conflict is now WIDER than before —
+# RL torch 2.11 / vllm-fork-0.20.2rc0 vs base torch 2.9 / vllm 0.16, so the two
+# stacks still cannot share a venv).
 #
 # The RL environment is installed at /opt/openthoughts/envs/rl.
 # MarinSkyRL is cloned to /opt/skyrl (for examples/terminal_bench entrypoints).
@@ -16,23 +19,43 @@
 # never the live source. Source is synced at runtime via SkyPilot to /sky/workdir
 # and PYTHONPATH is set so the synced clone wins over anything baked here.
 #
-# Version pins MIRROR the actually-running MarinSkyRL `marin_venv`
-# (`uv sync --extra vllm` against the committed skyrl-train/uv.lock, the build
-# documented in .claude/ops/leonardo/ENVIRONMENT_MAP.md §2c). Ground truth, all
-# three agreeing — uv.lock requires-dist, OT-Agent hpc/rl_requirements.txt, and
-# ENVIRONMENT_MAP §3 verify (`→ 2.8.0+cu128 / 0.11.0`):
-#   python 3.12 | torch 2.8.0+cu128 | vllm 0.11.0 | ray 2.51.1 | flash-attn 2.8.3
-#   transformers >=4.51.0,<=4.57.3 | flashinfer-jit-cache 0.5.2+cu128
-# NOTE: MarinSkyRL's pyproject.toml ALSO carries a newer (FSDP2-CP "Stage 1/7")
-# vllm-extra pin of vllm==0.20.2rc0 / torch==2.11.0 — that set MIRRORS the Jupiter
-# production SIF, which is built FROM SOURCE (cu13) per-cluster and is NOT what the
-# portable marin_venv resolves to. The committed uv.lock has not been regenerated
-# against those pins; its requires-dist still resolves the vllm extra to 0.11.0 /
-# torch 2.8.0. This portable wheel image therefore tracks the LOCK (the live
-# deps-only env), not the from-source SIF pins. (The cluster builds its vLLM fork
-# from source; this image uses the matching prebuilt wheel — vLLM 0.11.0.)
+# =============================================================================
+# Version pins TRACK THE LIVE JUPITER PRODUCTION STACK (the from-source SIF),
+# NOT the portable uv.lock. Ground truth for each pin:
+#   - torch 2.11.0+cu128  : MarinSkyRL skyrl-train/pyproject.toml `vllm` extra
+#       (`torch==2.11.0`, comment "MIRROR the production SIF
+#       skyrl_megatron_vllm0202rc0_r3.sif … torch 2.11.0, vLLM 0.20.2rc0"); and
+#       the vLLM fork's requirements/cuda.txt (`torch==2.11.0`). A Leonardo
+#       from-source build of this same fork commit independently PROVED the fork
+#       REQUIRES torch 2.11.0 — its `_C_stable_libtorch` extension uses the
+#       `TORCH_BOX` macro absent from torch 2.9/2.10
+#       (agent_logs/2026-06-23_leonardo_eval-qwen35_env_build.md §5).
+#   - vLLM 0.20.2rc0      : built FROM SOURCE from OUR FORK (no public wheel for
+#       the fork's 0.20.2rc0). Fork = mlfoundations/vllm @ penfever/working,
+#       PINNED to commit 76259c63a45e57c0d1cbaca3480aae52ebbfccd1 (NOT a floating
+#       branch). Same commit the Jupiter/Leonardo envs build.
+#   - torchvision 0.26.0  : skyrl-train `vllm` extra + fork requirements/cuda.txt.
+#   - flash-attn 2.6.3    : skyrl-train `vllm` extra (paired with torch 2.11;
+#       the CP path uses SDPA, flash-attn is only the non-CP fallback). vLLM
+#       serving uses its OWN bundled vllm_flash_attn (built from the fork source),
+#       not this standalone package.
+#   - ray 2.51.1          : skyrl-train base deps.
+#   - transformers        : fork requirements/common.txt
+#       (>=4.56.0, !=5.0..5.4, !=5.5.0); skyrl-train base requires >=4.51.0.
+#       The fork's deps resolve transformers within that band.
+#   - python 3.12         : skyrl-train requires-python ==3.12.*
+#   - CUDA 12.8 (devel)   : matches the pytorch-cu128 wheel index that
+#       skyrl-train pins torch/torchvision to (`[tool.uv.sources] torch =
+#       {index="pytorch-cu128"}`). The Jupiter prod SIF is a cu130 build, but the
+#       *version pins* are index-agnostic and resolve fine against cu128, which
+#       also publishes torch-2.11 wheels — and the CoreWeave H100 driver runs
+#       cu128 natively. A *devel* base is required (vs the old -runtime base) so
+#       `nvcc` is present for the from-source vLLM + flash-attn compiles.
 #
-FROM nvidia/cuda:12.8.0-cudnn-runtime-ubuntu22.04
+# Build is GPU-COUNT-AGNOSTIC and needs no live GPU (only nvcc): the from-source
+# vLLM + flash-attn compiles run on a CPU builder.
+# =============================================================================
+FROM nvidia/cuda:12.8.0-cudnn-devel-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -40,6 +63,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     ca-certificates \
     build-essential \
+    cmake \
+    ninja-build \
     python3 \
     python3-pip \
     python3-venv \
@@ -73,7 +98,7 @@ COPY docker ./docker
 COPY chat_templates ./chat_templates
 
 # Install base project (without conflicting ML dependencies)
-ENV UV_HTTP_TIMEOUT=300
+ENV UV_HTTP_TIMEOUT=600
 ENV UV_RETRIES=5
 RUN . /opt/openthoughts/.venv/bin/activate && \
     uv pip install -e ".[cloud]" && \
@@ -83,8 +108,8 @@ RUN . /opt/openthoughts/.venv/bin/activate && \
 # MarinSkyRL Repository (cloned BEFORE install — editable installs resolve the
 # `skyrl-gym -> ../skyrl-gym` path symlink that uv's [tool.uv.sources] path
 # source points at; installing from a git URL would instead pull skyrl-gym from
-# PyPI). This mirrors hpc/setup_rl_env.sh (clone → editable skyrl-gym → editable
-# skyrl-train).
+# PyPI). This mirrors hpc/setup_rl_env.sh (clone -> editable skyrl-gym ->
+# editable skyrl-train).
 # =============================================================================
 # The installable package is skyrl-train/ (import name `skyrl_train`).
 # Runtime entrypoint module: skyrl_train.entrypoints.main_base.
@@ -94,6 +119,20 @@ ENV SKYRL_BRANCH=penfever/working
 RUN git clone --branch $SKYRL_BRANCH https://github.com/marin-community/MarinSkyRL.git $SKYRL_HOME
 
 # =============================================================================
+# vLLM FORK (built FROM SOURCE at a PINNED commit)
+# =============================================================================
+# The Jupiter production stack runs vLLM 0.20.2rc0 from OUR fork, not a public
+# wheel. We clone the fork at the pinned commit and build it from source against
+# the torch 2.11.0 we install below. Pinned to a commit (NOT the floating branch)
+# for reproducibility.
+ENV VLLM_FORK_REPO=https://github.com/mlfoundations/vllm.git
+ENV VLLM_FORK_COMMIT=76259c63a45e57c0d1cbaca3480aae52ebbfccd1
+ENV VLLM_FORK_DIR=/opt/vllm-fork
+
+RUN git clone $VLLM_FORK_REPO $VLLM_FORK_DIR && \
+    git -C $VLLM_FORK_DIR checkout $VLLM_FORK_COMMIT
+
+# =============================================================================
 # RL Environment Setup (separate venv due to dependency conflicts)
 # =============================================================================
 ENV RL_ENV_DIR=/opt/openthoughts/envs/rl
@@ -101,40 +140,61 @@ ENV RL_ENV_DIR=/opt/openthoughts/envs/rl
 # Create RL environment with Python 3.12 (MarinSkyRL pins requires-python ==3.12.*)
 RUN uv venv --python 3.12 $RL_ENV_DIR
 
-# Multi-arch wheel hint: the RL stack ships prebuilt CUDA wheels for both
-# linux/amd64 (x86_64) and linux/arm64 (GH200/aarch64). TORCH_CUDA_ARCH_LIST is
-# kept BROAD so any from-source kernel compile (e.g. flash-attn fallback) covers
-# both A100 (8.0) and Hopper/GH200 (9.0); harmless for the prebuilt-wheel path.
+# TORCH_CUDA_ARCH_LIST covers the GPUs that run this image:
+#   - 9.0  = Hopper (CoreWeave iris-gpu = 8xH100 nodes; Jupiter GH200)
+#   - 8.0  = A100 (Leonardo / cross-cluster twin)
+# Both included so the from-source vLLM + flash-attn kernels run everywhere.
 ENV TORCH_CUDA_ARCH_LIST="8.0;9.0"
-# Bound any incidental CUDA compile parallelism (mirrors setup_rl_env.sh).
-ENV MAX_JOBS=4
+# Bound the CUDA compile parallelism (the from-source vLLM build is heavy; this
+# trades wall-time for RAM headroom on the builder).
+ENV MAX_JOBS=8
+ENV NVCC_THREADS=2
+# Build vLLM for CUDA (not CPU/ROCm).
+ENV VLLM_TARGET_DEVICE=cuda
 
-# Install the RL stack, mirroring hpc/setup_rl_env.sh's CUDA path:
-#  1. pin torch / vllm / ray / flash-attn / transformers FIRST (constrains the
-#     resolver to the lock-resolved stack: torch 2.8.0+cu128 / vllm 0.11.0 /
-#     ray 2.51.1 / flash-attn 2.8.3). torch comes from the cu128 wheel index.
-#  2. editable-install skyrl-gym from the local clone (resolves the path source).
-#  3. editable-install skyrl-train (NO [vllm] extra) with --no-build-isolation so
-#     it reuses the pre-installed torch/flash-attn rather than rebuilding them.
-#     The [vllm] extra is deliberately OMITTED: its only purpose is to drag in
-#     vllm/torch/flash-attn, which we already pinned above — and in the current
-#     pyproject that extra pins torch==2.11.0 / vllm==0.20.2rc0 (the from-source
-#     SIF set), which would CONFLICT with the lock-resolved 2.8.0/0.11.0 stack.
-#     (Same approach as hpc/setup_rl_env.sh.)
-#  4. re-assert the vllm/transformers pins (deps may have nudged them).
+# Install the RL stack:
+#  1. Pin the EXACT live-Jupiter stack FIRST (torch 2.11.0+cu128 from the cu128
+#     wheel index, torchvision 0.26.0, ray 2.51.1, flash-attn 2.6.3,
+#     transformers in the fork's accepted band). This constrains the resolver so
+#     nothing below renudges torch.
+#  2. Build the vLLM FORK from source against that torch:
+#       - `use_existing_torch.py` strips the fork's own torch==2.11.0 / torchvision
+#         / torchaudio pins from its requirements so it builds against the torch
+#         we just installed (no re-resolve / re-download of torch).
+#       - rewrite `nvidia-cutlass-dsl[cu13]` -> `nvidia-cutlass-dsl` for the cu128
+#         (CUDA 12) build (mirrors the fork's own docker/Dockerfile, which does the
+#         same sed when CUDA major == 12).
+#       - install the fork's python deps (requirements/common.txt + cuda.txt) so
+#         flashinfer/xgrammar/etc. are present.
+#       - compile + editable-install the fork extension (`-e .`,
+#         --no-build-isolation so it reuses the installed torch; FetchContent
+#         git-clones cutlass/vllm-flash-attn/triton_kernels/deepgemm/flashmla/
+#         qutlass at configure time — this build HAS internet, unlike the Leonardo
+#         offline compute nodes, so no SRC_DIR pre-staging is needed).
+#  3. editable-install skyrl-gym then skyrl-train (NO [vllm] extra — vllm/torch/
+#     flash-attn are already provided above; --no-build-isolation reuses them).
+#  4. re-assert the vllm import works and pin transformers within band.
 #  5. editable-install the OT-Agent project for the HPC utilities.
 RUN . $RL_ENV_DIR/bin/activate && \
     uv pip install --extra-index-url https://download.pytorch.org/whl/cu128 \
-        "torch==2.8.0" \
-        "vllm==0.11.0" \
+        "torch==2.11.0" \
+        "torchvision==0.26.0" \
         "ray[default]==2.51.1" \
-        "transformers>=4.51.0,<=4.57.3" \
-        "flash-attn==2.8.3" && \
+        "transformers>=4.56.0,!=5.0.*,!=5.1.*,!=5.2.*,!=5.3.*,!=5.4.*,!=5.5.0" \
+        "flash-attn==2.6.3" \
+        "setuptools_scm" "setuptools>=77.0.3,<81.0.0" "wheel" "packaging" "ninja" "cmake" && \
+    cd $VLLM_FORK_DIR && \
+    python use_existing_torch.py && \
+    sed -i 's/^nvidia-cutlass-dsl\[cu13\]>=/nvidia-cutlass-dsl>=/' requirements/cuda.txt && \
+    uv pip install -r requirements/common.txt -r requirements/cuda.txt && \
+    MAX_JOBS=$MAX_JOBS NVCC_THREADS=$NVCC_THREADS TORCH_CUDA_ARCH_LIST="$TORCH_CUDA_ARCH_LIST" \
+        VLLM_TARGET_DEVICE=cuda \
+        uv pip install -e . --no-build-isolation --no-deps -v && \
     uv pip install -e "$SKYRL_HOME/skyrl-gym" --no-build-isolation && \
     uv pip install -e "$SKYRL_HOME/skyrl-train" --no-build-isolation && \
-    uv pip install "vllm==0.11.0" "transformers>=4.51.0,<=4.57.3" && \
     uv pip install Jinja2 pyyaml omegaconf "hydra-core>=1.3.2" wandb && \
-    uv pip install -e /opt/openthoughts
+    uv pip install -e /opt/openthoughts && \
+    python -c "import torch, vllm; print('torch', torch.__version__, 'vllm', vllm.__version__)"
 
 # Set up PYTHONPATH for MarinSkyRL.
 # `/sky/workdir` (runtime-synced source) is prepended by the launcher so it wins;
