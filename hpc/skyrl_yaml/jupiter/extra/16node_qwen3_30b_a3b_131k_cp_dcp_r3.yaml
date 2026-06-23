@@ -495,6 +495,16 @@ container:
     - /e/data1
   pydeps: /e/scratch/jureap59/feuer1/sif_pydeps_longctx_titan022:/e/scratch/jureap59/feuer1/sif_pydeps
   extra_env:
+    # --- [EPDIAG] TEMP diagnostic (2026-06-23 residual EP-desync probe; REVERT after the run) ---
+    EPDIAG: 1
+    APPTAINERENV_EPDIAG: 1
+    EPDIAG_CP: 2
+    APPTAINERENV_EPDIAG_CP: 2
+    EPDIAG_EP: 8
+    APPTAINERENV_EPDIAG_EP: 8
+    EPDIAG_SP: 1
+    APPTAINERENV_EPDIAG_SP: 1
+    # --- end [EPDIAG] ---
     SKYRL_GDN_MASK_FLA: 1
     PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
     APPTAINERENV_PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
