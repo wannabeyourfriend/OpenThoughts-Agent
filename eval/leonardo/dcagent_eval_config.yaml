@@ -55,11 +55,12 @@ verifier:
   max_timeout_sec:
   disable: false
 
-metrics:
-  - type: mean-drop-ei
-    kwargs: {}
-  - type: accuracy-drop-ei
-    kwargs: {}
+# NOTE: no `metrics:` block. The old `mean-drop-ei` / `accuracy-drop-ei` types are
+# a deprecated penfever/temp-override-era artifact that NO Marin-branch harbor
+# supports — their presence raises `JobConfig ValidationError: Input should be
+# 'sum','min','max','mean' or 'uv-script'` and kills every trial before any
+# rollout. The canonical hpc/harbor_yaml/eval/dcagent_eval_defaults.yaml omits the
+# block entirely (harbor uses its default reward metric); mirror that here.
 
 agents:
 - name: terminus-2
