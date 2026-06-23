@@ -86,29 +86,39 @@ DCFT="${WORK}/code/OpenThoughts-Agent"
 unset PYTHONPATH
 
 # Conda activation (x86_64 — no LD_LOADER wrapper needed).
-# Per-model conda env override (listener sets EVAL_CONDA_ENV from a
-# baseline_model_configs `conda_env:` entry). Default otagent; eval-qwen35 is
-# the env that vLLM-serves qwen3_5/3.6 (tmax-9b/27b) — see ENVIRONMENT_MAP §2f.
-EVAL_CONDA_ENV="${EVAL_CONDA_ENV:-otagent}"
+# The MAIN shell always runs in `otagent` — that is the env with harbor, the
+# eval orchestrator/CLI, proxychains, the DB client and the uploader. A per-model
+# `conda_env:` override (listener -> EVAL_CONDA_ENV) selects a DIFFERENT env for
+# the vLLM SERVE ONLY (e.g. eval-qwen35 for qwen3_5 tmax-9b/27b — the only env
+# with the qwen3_5 vLLM impl; ENVIRONMENT_MAP §2f). Activating it for the whole
+# job would break harbor (`PackageNotFoundError: harbor`), so we scope it to the
+# serve subprocess via SERVE_PYTHON_BIN + SERVE_ENV_PREFIX below.
 source "${WORK}/miniforge3/etc/profile.d/conda.sh"
-conda activate "$EVAL_CONDA_ENV"
-echo "Conda env: $EVAL_CONDA_ENV (prefix $CONDA_PREFIX)"
+conda activate otagent
+echo "Conda env (main/harbor): otagent (prefix $CONDA_PREFIX)"
 
 # All build deps (CUDA, libstdc++, etc.) managed via conda — no module loads.
 # Prepend conda's lib to ensure its libstdc++ wins over any system/module versions.
 export LD_LIBRARY_PATH="${CONDA_PREFIX}/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
-# eval-qwen35 LOAD-BEARING serve flags (ENVIRONMENT_MAP §2f). Without these the
-# fork-vLLM serve crashes: CXXABI_1.3.15 (bundled vllm_flash_attn needs conda
-# gcc-14 libstdc++ ahead on the path — already prepended above), the flashinfer
-# sampler JIT-link fails `-lcuda` (disable it), and the libcuda stub must be on
-# LIBRARY_PATH for any runtime JIT link. tmax is a VL arch served text-only via
-# --limit-mm-per-prompt image=0,video=0 (passed through EVAL_VLLM_EXTRA_ARGS).
+# --- Per-model SERVE env selection -------------------------------------------
+# Default: serve from the same otagent env (SERVE_PYTHON_BIN set after PYTHON_BIN
+# resolves below). eval-qwen35: point the serve at that env's python AND carry
+# its ENVIRONMENT_MAP §2f load-bearing env vars (without them the fork-vLLM serve
+# crashes): conda gcc-14 libstdc++ ahead on LD path for CXXABI_1.3.15 (bundled
+# vllm_flash_attn), VLLM_USE_FLASHINFER_SAMPLER=0 (else flashinfer sampler JIT
+# link fails `-lcuda`), the libcuda stub on LIBRARY_PATH, FLASH_ATTN backend.
+# These apply ONLY to the serve srun (env prefix), NOT the otagent main shell.
+EVAL_CONDA_ENV="${EVAL_CONDA_ENV:-otagent}"
+SERVE_CONDA_PREFIX="${WORK}/miniforge3/envs/${EVAL_CONDA_ENV}"
+SERVE_ENV_PREFIX=()
 if [ "$EVAL_CONDA_ENV" = "eval-qwen35" ]; then
-    export VLLM_USE_FLASHINFER_SAMPLER=0
-    export LIBRARY_PATH="${CONDA_PREFIX}/targets/x86_64-linux/lib/stubs${LIBRARY_PATH:+:$LIBRARY_PATH}"
-    export VLLM_ATTENTION_BACKEND=FLASH_ATTN
-    echo "[eval-qwen35] serve env: VLLM_USE_FLASHINFER_SAMPLER=0 VLLM_ATTENTION_BACKEND=FLASH_ATTN LIBRARY_PATH=$LIBRARY_PATH"
+    SERVE_ENV_PREFIX=( env \
+        "LD_LIBRARY_PATH=${SERVE_CONDA_PREFIX}/lib:${LD_LIBRARY_PATH}" \
+        "VLLM_USE_FLASHINFER_SAMPLER=0" \
+        "LIBRARY_PATH=${SERVE_CONDA_PREFIX}/targets/x86_64-linux/lib/stubs${LIBRARY_PATH:+:$LIBRARY_PATH}" \
+        "VLLM_ATTENTION_BACKEND=FLASH_ATTN" )
+    echo "[eval-qwen35] serve env: python=${SERVE_CONDA_PREFIX}/bin/python VLLM_USE_FLASHINFER_SAMPLER=0 VLLM_ATTENTION_BACKEND=FLASH_ATTN"
 fi
 
 # Strip inherited LD_PRELOAD (proxychains from login node).
@@ -153,9 +163,18 @@ export HF_HUB_OFFLINE=0  # Login nodes pre-downloaded; set to 1 after download
 HARBOR_SRC="${WORK}/code/harbor/src"
 export PYTHONPATH="${HARBOR_SRC}:${DCFT}:${PYTHONPATH:-}"
 
-PYTHON_BIN="$(which python)"
+PYTHON_BIN="$(which python)"   # otagent — harbor / DB / uploads / pre-download
 echo "Python: $($PYTHON_BIN --version)"
 echo "PYTHONPATH: $PYTHONPATH"
+
+# vLLM SERVE interpreter: the per-model conda env's python (eval-qwen35 for
+# qwen3_5), or otagent's python when no override. Only the serve uses this.
+if [ "$EVAL_CONDA_ENV" != "otagent" ] && [ -x "${SERVE_CONDA_PREFIX}/bin/python" ]; then
+    SERVE_PYTHON_BIN="${SERVE_CONDA_PREFIX}/bin/python"
+else
+    SERVE_PYTHON_BIN="$PYTHON_BIN"
+fi
+echo "Serve python ($EVAL_CONDA_ENV): $SERVE_PYTHON_BIN"
 
 # ==============================================================================
 # Proxy Setup: SSH tunnel from compute node → login node
@@ -296,7 +315,7 @@ export HF_HUB_OFFLINE=1  # Prevent further network access during vLLM startup
 
 echo "Starting vLLM server for model: $MODEL"
 source "$DCFT/eval/build_vllm_cmd.sh"
-build_vllm_cmd "$PYTHON_BIN" "$MODEL" "$GPU_MEMORY_UTIL"
+build_vllm_cmd "$SERVE_PYTHON_BIN" "$MODEL" "$GPU_MEMORY_UTIL"
 
 # ==============================================================================
 # Build model_info for hosted_vllm (harbor #339 hard-requires it; see Jupiter
@@ -311,7 +330,8 @@ fi
 MODEL_INFO_JSON="{\"max_input_tokens\":${MI_MAX_MODEL_LEN},\"max_output_tokens\":${MI_MAX_OUTPUT},\"input_cost_per_token\":0,\"output_cost_per_token\":0}"
 echo "[model_info] $MODEL_INFO_JSON"
 
-srun --overlap --gres=gpu:4 "${VLLM_CMD[@]}" \
+# Serve under the per-model env prefix (eval-qwen35 §2f vars; empty for otagent).
+srun --overlap --gres=gpu:4 "${SERVE_ENV_PREFIX[@]}" "${VLLM_CMD[@]}" \
     > "$RUN_DIR/vllm.log" 2>&1 &
 VLLM_PID=$!
 
