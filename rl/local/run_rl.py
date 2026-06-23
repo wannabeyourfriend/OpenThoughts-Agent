@@ -69,6 +69,15 @@ class LocalRLConfig:
     experiments_dir: str = "experiments"
     gpus: int = 4
     cpus: int = 0  # 0 = auto-detect
+    # Multi-node placement. num_nodes=1 (default) preserves the single-node
+    # local-Ray behavior exactly. num_nodes>1 is used by the iris GPU launcher
+    # (rl/cloud/launch_rl_iris.py), where an external controller has already
+    # bootstrapped one cross-node Ray cluster and exported RAY_ADDRESS — this
+    # runner then ATTACHES to it instead of starting a local cluster, and
+    # gpus_per_node drives the SkyRL placement (policy/ref num_nodes,
+    # num_inference_engines).
+    num_nodes: int = 1
+    gpus_per_node: int = 0  # 0 = use `gpus` (single-node case)
     ray_port: int = 6379
     master_port: int = 12345
     skyrl_overrides: List[str] = field(default_factory=list)
@@ -234,6 +243,10 @@ class LocalRLRunner:
         # Start Ray and run SkyRL
         return self._run_with_ray(parsed.entrypoint, hydra_args)
 
+    def _gpus_per_node(self) -> int:
+        """GPUs per node, defaulting to total `gpus` for the single-node case."""
+        return self.config.gpus_per_node or self.config.gpus
+
     def _build_exp_args(self) -> Dict[str, Any]:
         """Build exp_args dict mimicking HPC launcher."""
         return {
@@ -242,8 +255,8 @@ class LocalRLRunner:
             "model_path": self.config.model_path,
             "train_data": self.config.train_data,
             "val_data": self.config.val_data,
-            "num_nodes": 1,  # Local = single node
-            "gpus_per_node": self.config.gpus,
+            "num_nodes": self.config.num_nodes,
+            "gpus_per_node": self._gpus_per_node(),
             "cpus_per_node": self.config.cpus,
             "tensor_parallel_size": self.config.tensor_parallel_size,
             "ray_port": self.config.ray_port,
@@ -256,12 +269,12 @@ class LocalRLRunner:
         os.environ["TENSOR_PARALLEL_SIZE"] = str(self.config.tensor_parallel_size)
         os.environ["NUM_INFERENCE_ENGINES"] = str(
             compute_num_inference_engines(
-                1,  # num_nodes = 1 for local
-                self.config.gpus,
+                self.config.num_nodes,
+                self._gpus_per_node(),
                 self.config.tensor_parallel_size,
             )
         )
-        os.environ["POLICY_NUM_NODES"] = "1"
+        os.environ["POLICY_NUM_NODES"] = str(self.config.num_nodes)
 
         # Export path
         export_path = derive_skyrl_export_path(
@@ -278,8 +291,11 @@ class LocalRLRunner:
         os.makedirs(wandb_dir, exist_ok=True)
         os.environ["WANDB_DIR"] = wandb_dir
 
-        # CUDA settings
-        os.environ.setdefault("CUDA_VISIBLE_DEVICES", ",".join(str(i) for i in range(self.config.gpus)))
+        # CUDA settings. Only pin visibility in the single-node local case; on a
+        # multi-node Ray cluster each node's task already sees its own 8 GPUs and
+        # Ray/SkyRL place workers per-node, so pinning here would be wrong.
+        if self.config.num_nodes <= 1:
+            os.environ.setdefault("CUDA_VISIBLE_DEVICES", ",".join(str(i) for i in range(self.config.gpus)))
 
         print("\nEnvironment configured:")
         print(f"  TENSOR_PARALLEL_SIZE={os.environ['TENSOR_PARALLEL_SIZE']}")
@@ -288,7 +304,26 @@ class LocalRLRunner:
         print(f"  WANDB_DIR={wandb_dir}")
 
     def _run_with_ray(self, entrypoint: str, hydra_args: List[str]) -> int:
-        """Start local Ray cluster and run SkyRL."""
+        """Start (or attach to) a Ray cluster and run SkyRL.
+
+        Two modes:
+        - Multi-node attach: when RAY_ADDRESS is already set in the environment
+          (the iris GPU controller bootstrapped one cross-node Ray cluster and
+          exported it), skip ``ray.init`` here and let the SkyRL entrypoint's
+          own ``ray.init()`` attach to that cluster. This is the path the
+          multi-node iris launcher takes.
+        - Single-node local: start a local Ray cluster spanning this node's GPUs
+          (unchanged default behavior).
+        """
+        # Multi-node: a controller already stood up the cluster and exported
+        # RAY_ADDRESS. SkyRL's initialize_ray() calls bare ray.init(), which
+        # honors RAY_ADDRESS — so we run the driver directly without touching Ray.
+        external_ray = bool(os.environ.get("RAY_ADDRESS")) and self.config.num_nodes > 1
+        if external_ray:
+            print(f"\nAttaching to external Ray cluster at {os.environ['RAY_ADDRESS']} "
+                  f"(num_nodes={self.config.num_nodes}, gpus_per_node={self._gpus_per_node()})")
+            return self._run_skyrl(entrypoint, hydra_args)
+
         try:
             import ray
         except ImportError:
@@ -443,6 +478,23 @@ def create_parser() -> argparse.ArgumentParser:
         help="Number of CPUs (0 = auto-detect).",
     )
 
+    parser.add_argument(
+        "--num_nodes",
+        type=int,
+        default=1,
+        help="Number of nodes (default 1 = single-node local Ray). >1 attaches to "
+             "an external Ray cluster via RAY_ADDRESS (used by the iris GPU launcher).",
+    )
+    parser.add_argument("--num-nodes", dest="num_nodes", help=argparse.SUPPRESS)
+
+    parser.add_argument(
+        "--gpus_per_node",
+        type=int,
+        default=0,
+        help="GPUs per node (0 = use --gpus; set for multi-node placement).",
+    )
+    parser.add_argument("--gpus-per-node", dest="gpus_per_node", help=argparse.SUPPRESS)
+
     # Network arguments
     parser.add_argument(
         "--ray_port",
@@ -509,6 +561,8 @@ def main() -> None:
         experiments_dir=args.experiments_dir,
         gpus=args.gpus,
         cpus=args.cpus,
+        num_nodes=int(args.num_nodes),
+        gpus_per_node=int(args.gpus_per_node),
         ray_port=args.ray_port,
         master_port=args.master_port,
         skyrl_overrides=skyrl_overrides,
