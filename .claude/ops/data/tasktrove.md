@@ -30,7 +30,7 @@ The Harbor agentic coding/SWE task sets — the `exp_rpt_*` (repo-PR-test), `exp
 | DCAgent__exp_rpt_e2egit-v2 | 500 | |
 | DCAgent__exp_rpt_issue | 4,830 | |
 | DCAgent__exp_rpt_multifile | 4,907 | |
-| DCAgent__exp_rpt_nemotron-cpp | 5,000 | |
+| DCAgent__exp_rpt_nemotron-cpp | 5,000 | VACUOUS VERIFIER (test embeds reference impl, never #includes agent header → empty /app passes). Regenerated → laion/exp_rpt_nemotron-cpp-v2 (800 tasks, oracle-validated, agent-linked gtest, empty-solution→0). Use v2. |
 | DCAgent__exp_rpt_nemotron-junit | 5,000 | |
 | DCAgent__exp_rpt_pr | 4,793 | |
 | DCAgent__exp_rpt_pymethods2test-large | 5,000 | the a3/explore-tis RL family base set |
