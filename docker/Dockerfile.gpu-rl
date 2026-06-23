@@ -1,13 +1,36 @@
 # syntax=docker/dockerfile:1
 #
-# Docker image for RL training with SkyRL
+# Docker image for RL training with MarinSkyRL (skyrl-train)
 #
-# This image includes a separate RL environment due to dependency conflicts:
-#   - RL (SkyRL): torch==2.8.0, vllm==0.11.0
-#   - datagen:    torch==2.9.0, vllm==0.11.2
+# This image includes a SEPARATE RL environment due to dependency conflicts with
+# the datagen/base stack (see hpc/rl_requirements.txt: "INCOMPATIBLE with the
+# datagen environment"):
+#   - RL (MarinSkyRL skyrl-train[vllm]): torch==2.8.0+cu128, vllm==0.11.0, ray==2.51.1
+#   - base/datagen:                      torch 2.9.x, vllm 0.16.x
+# The dual-venv split is therefore KEPT.
 #
-# The RL environment is installed at /opt/openthoughts/envs/rl
-# SkyRL is cloned to /opt/skyrl
+# The RL environment is installed at /opt/openthoughts/envs/rl.
+# MarinSkyRL is cloned to /opt/skyrl (for examples/terminal_bench entrypoints).
+#
+# DEPS-ONLY image (see docker/build_and_push.sh): contains dependencies only,
+# never the live source. Source is synced at runtime via SkyPilot to /sky/workdir
+# and PYTHONPATH is set so the synced clone wins over anything baked here.
+#
+# Version pins MIRROR the actually-running MarinSkyRL `marin_venv`
+# (`uv sync --extra vllm` against the committed skyrl-train/uv.lock, the build
+# documented in .claude/ops/leonardo/ENVIRONMENT_MAP.md §2c). Ground truth, all
+# three agreeing — uv.lock requires-dist, OT-Agent hpc/rl_requirements.txt, and
+# ENVIRONMENT_MAP §3 verify (`→ 2.8.0+cu128 / 0.11.0`):
+#   python 3.12 | torch 2.8.0+cu128 | vllm 0.11.0 | ray 2.51.1 | flash-attn 2.8.3
+#   transformers >=4.51.0,<=4.57.3 | flashinfer-jit-cache 0.5.2+cu128
+# NOTE: MarinSkyRL's pyproject.toml ALSO carries a newer (FSDP2-CP "Stage 1/7")
+# vllm-extra pin of vllm==0.20.2rc0 / torch==2.11.0 — that set MIRRORS the Jupiter
+# production SIF, which is built FROM SOURCE (cu13) per-cluster and is NOT what the
+# portable marin_venv resolves to. The committed uv.lock has not been regenerated
+# against those pins; its requires-dist still resolves the vllm extra to 0.11.0 /
+# torch 2.8.0. This portable wheel image therefore tracks the LOCK (the live
+# deps-only env), not the from-source SIF pins. (The cluster builds its vLLM fork
+# from source; this image uses the matching prebuilt wheel — vLLM 0.11.0.)
 #
 FROM nvidia/cuda:12.8.0-cudnn-runtime-ubuntu22.04
 
@@ -57,28 +80,66 @@ RUN . /opt/openthoughts/.venv/bin/activate && \
     uv pip install pyyaml jinja2
 
 # =============================================================================
+# MarinSkyRL Repository (cloned BEFORE install — editable installs resolve the
+# `skyrl-gym -> ../skyrl-gym` path symlink that uv's [tool.uv.sources] path
+# source points at; installing from a git URL would instead pull skyrl-gym from
+# PyPI). This mirrors hpc/setup_rl_env.sh (clone → editable skyrl-gym → editable
+# skyrl-train).
+# =============================================================================
+# The installable package is skyrl-train/ (import name `skyrl_train`).
+# Runtime entrypoint module: skyrl_train.entrypoints.main_base.
+ENV SKYRL_HOME=/opt/skyrl
+ENV SKYRL_BRANCH=penfever/working
+
+RUN git clone --branch $SKYRL_BRANCH https://github.com/marin-community/MarinSkyRL.git $SKYRL_HOME
+
+# =============================================================================
 # RL Environment Setup (separate venv due to dependency conflicts)
 # =============================================================================
 ENV RL_ENV_DIR=/opt/openthoughts/envs/rl
 
-# Create RL environment with Python 3.12
+# Create RL environment with Python 3.12 (MarinSkyRL pins requires-python ==3.12.*)
 RUN uv venv --python 3.12 $RL_ENV_DIR
 
-# Install RL dependencies (SkyRL with vllm from penfever fork)
+# Multi-arch wheel hint: the RL stack ships prebuilt CUDA wheels for both
+# linux/amd64 (x86_64) and linux/arm64 (GH200/aarch64). TORCH_CUDA_ARCH_LIST is
+# kept BROAD so any from-source kernel compile (e.g. flash-attn fallback) covers
+# both A100 (8.0) and Hopper/GH200 (9.0); harmless for the prebuilt-wheel path.
+ENV TORCH_CUDA_ARCH_LIST="8.0;9.0"
+# Bound any incidental CUDA compile parallelism (mirrors setup_rl_env.sh).
+ENV MAX_JOBS=4
+
+# Install the RL stack, mirroring hpc/setup_rl_env.sh's CUDA path:
+#  1. pin torch / vllm / ray / flash-attn / transformers FIRST (constrains the
+#     resolver to the lock-resolved stack: torch 2.8.0+cu128 / vllm 0.11.0 /
+#     ray 2.51.1 / flash-attn 2.8.3). torch comes from the cu128 wheel index.
+#  2. editable-install skyrl-gym from the local clone (resolves the path source).
+#  3. editable-install skyrl-train (NO [vllm] extra) with --no-build-isolation so
+#     it reuses the pre-installed torch/flash-attn rather than rebuilding them.
+#     The [vllm] extra is deliberately OMITTED: its only purpose is to drag in
+#     vllm/torch/flash-attn, which we already pinned above — and in the current
+#     pyproject that extra pins torch==2.11.0 / vllm==0.20.2rc0 (the from-source
+#     SIF set), which would CONFLICT with the lock-resolved 2.8.0/0.11.0 stack.
+#     (Same approach as hpc/setup_rl_env.sh.)
+#  4. re-assert the vllm/transformers pins (deps may have nudged them).
+#  5. editable-install the OT-Agent project for the HPC utilities.
 RUN . $RL_ENV_DIR/bin/activate && \
-    uv pip install "skyrl[vllm] @ git+https://github.com/penfever/SkyRL.git@penfever/working" && \
-    uv pip install Jinja2 pyyaml ray[default] && \
+    uv pip install --extra-index-url https://download.pytorch.org/whl/cu128 \
+        "torch==2.8.0" \
+        "vllm==0.11.0" \
+        "ray[default]==2.51.1" \
+        "transformers>=4.51.0,<=4.57.3" \
+        "flash-attn==2.8.3" && \
+    uv pip install -e "$SKYRL_HOME/skyrl-gym" --no-build-isolation && \
+    uv pip install -e "$SKYRL_HOME/skyrl-train" --no-build-isolation && \
+    uv pip install "vllm==0.11.0" "transformers>=4.51.0,<=4.57.3" && \
+    uv pip install Jinja2 pyyaml omegaconf "hydra-core>=1.3.2" wandb && \
     uv pip install -e /opt/openthoughts
 
-# =============================================================================
-# SkyRL Repository (for examples/terminal_bench entrypoints)
-# =============================================================================
-ENV SKYRL_HOME=/opt/skyrl
-ENV SKYRL_BRANCH=penfever/working
-
-RUN git clone --branch $SKYRL_BRANCH https://github.com/penfever/SkyRL.git $SKYRL_HOME
-
-# Set up PYTHONPATH for SkyRL
+# Set up PYTHONPATH for MarinSkyRL.
+# `/sky/workdir` (runtime-synced source) is prepended by the launcher so it wins;
+# here we ensure the baked clone's package root (skyrl-train/) and the project
+# root are importable as a fallback.
 ENV PYTHONPATH="$SKYRL_HOME/skyrl-train:/opt/openthoughts"
 
 # =============================================================================
