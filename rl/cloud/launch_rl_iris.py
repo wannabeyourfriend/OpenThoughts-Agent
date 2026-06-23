@@ -187,8 +187,10 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--rendezvous-dir", "--rendezvous_dir", dest="rendezvous_dir", default=None,
         help="Shared object-store/path (gs://, s3://, or shared dir) for the multi-node "
-             "Ray head/worker rendezvous. Required for --num-nodes>1. On CoreWeave use an "
-             "s3:// (R2) URI both nodes can reach.",
+             "Ray head/worker rendezvous. Required for --num-nodes>1. On cw-us-east-02a "
+             "use an s3:// (R2) URI under the cluster's marin-na bucket, e.g. "
+             "s3://marin-na/iris/rl-rdv/<job>; the cluster injects working R2 creds into "
+             "every task pod (iris-task-env Secret), so no external creds are needed.",
     )
 
     # --- Iris submission args (mirror launch_eval_iris.py / IrisLauncher) ---
@@ -420,20 +422,26 @@ def main() -> int:
         env_vars["OT_AGENT_IRIS_RENDEZVOUS_DIR"] = args.rendezvous_dir
     env_vars["OT_AGENT_IRIS_RAY_PORT"] = str(args.ray_port)
     # Forward the launch host's secrets (mirrors launch_eval_iris.py passthrough).
+    #
+    # IMPORTANT — do NOT forward AWS_*/R2_* here. The cw-us-east-02a cluster
+    # projects an `iris-task-env` k8s Secret into EVERY task pod via `envFrom`
+    # (because storage.remote_state_dir is an s3:// URI), and that secret already
+    # carries the correct in-cluster R2 credentials + endpoint
+    # (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_ENDPOINT_URL / AWS_REGION /
+    # FSSPEC_S3). In K8s, explicit container `env` entries take precedence over
+    # `envFrom`, so forwarding the launch host's AWS_* (which point at a
+    # DIFFERENT account and lack AWS_ENDPOINT_URL) would CLOBBER the pod's R2
+    # creds and make the s3://marin-na rendezvous (multi-node) silently target
+    # real AWS S3 instead of R2. Let the cluster-injected R2 creds win; the
+    # fsspec rendezvous in start_rl_iris_controller.py uses default credential
+    # discovery and picks them up.
     for k in (
         "HF_TOKEN", "WANDB_API_KEY", "WANDB_ENTITY", "WANDB_PROJECT",
         "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
-        "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_ENDPOINT_URL",
-        "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY",
     ):
         v = os.environ.get(k)
         if v:
             env_vars[k] = v
-    # Alias R2 creds → AWS_* so fsspec/s3 (the rendezvous on CoreWeave) can read.
-    if env_vars.get("R2_ACCESS_KEY_ID") and "AWS_ACCESS_KEY_ID" not in env_vars:
-        env_vars["AWS_ACCESS_KEY_ID"] = env_vars["R2_ACCESS_KEY_ID"]
-    if env_vars.get("R2_SECRET_ACCESS_KEY") and "AWS_SECRET_ACCESS_KEY" not in env_vars:
-        env_vars["AWS_SECRET_ACCESS_KEY"] = env_vars["R2_SECRET_ACCESS_KEY"]
 
     iris_config = IrisConfig.load(args.cluster_config)
     bundle = iris_config.provider_bundle()
