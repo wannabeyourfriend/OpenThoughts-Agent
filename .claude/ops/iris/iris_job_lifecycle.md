@@ -91,7 +91,7 @@ sources, in order:
 # Iris-side state (1=PENDING 2=starting 3=RUNNING 4=SUCCEEDED 5=FAILED 6=KILLED)
 $IRIS --cluster=marin query "SELECT job_id, state FROM jobs WHERE state IN (1,2,3) AND job_id LIKE '/benjaminfeuer/%' ORDER BY job_id DESC" -f csv
 
-# Full-history analyzer (paginates the whole log; don't eyeball --tail)
+# Full-history analyzer (paginates the WHOLE log via time windows; do NOT eyeball --tail)
 /Users/benjaminfeuer/miniconda3/envs/otagent/bin/python scripts/iris/analyze_job_history.py /benjaminfeuer/<job> --refresh
 #   sidecar JSON: total_runtime_s, iris_preemption_count, cycles[], serving_summary.{gen_tps,running}, non_empty_trials/total_trial_dirs, harbor_exception_stats
 
@@ -99,6 +99,20 @@ $IRIS --cluster=marin query "SELECT job_id, state FROM jobs WHERE state IN (1,2,
 python -m hpc.iris_fetch_daemon status      # heartbeat should be ALIVE
 $IRIS --cluster=marin job logs -f /benjaminfeuer/<job>    # live workload logs (controller tunnel)
 ```
+> **⚠️ Never trust `iris job logs <job> --tail --max-lines N` for stats or for
+> debugging.** It truncates by line count from the *tail* only — verbose Ray
+> state-dumps + fd-monitor frames crowd out the lines you care about, so it
+> **under-samples throughput by 10–100×** and silently drops most of the run. The
+> rollout/Harbor warning lines (e.g. a per-episode `AttributeError` raised in a Ray
+> generator-worker actor → `generate/errors/*`) and the throughput emissions live
+> deep in the body, not the tail. **Use `analyze_job_history.py` instead** — it
+> paginates the entire log via fixed `--since-ms` + `--no-tail` time windows and
+> filters at the python level, so its stats are trustworthy and it recovers the
+> full history. For debugging a specific error, run it (or its windowed-pagination
+> technique) over the whole job duration and grep the unfiltered windows — a single
+> `--tail`/`--max-lines` call (even `--max-lines 200000`) will miss body lines the
+> windowed walk recovers.
+
 Outputs land in `~/.ot-agent/runs/<job>/` (daemon rsync) + `.iris-job.log`. Use
 the productive-trial rate (`non_empty/total`) and `harbor_exception_stats` as the
 health signal; gen tok/s varies by dataset (short-task sets run lower by nature).
