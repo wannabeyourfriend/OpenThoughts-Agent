@@ -1,0 +1,58 @@
+# CINECA Leonardo (A100-64GB, x86_64) cluster configuration for the eval listener.
+#
+#   python eval/unified_eval_listener.py --cluster-config eval/clusters/leonardo.yaml ...
+#
+# Why a cluster config (vs the bare --sbatch-script path): without it the
+# listener falls back to Jupiter-shaped hardware defaults (gpus_per_node 8,
+# cpus_per_node 96, ~1.8 TB/node) and computes --cpus-per-task / --mem that a
+# Leonardo node (4 GPU, 32 CPU, ~512 GB) cannot satisfy → "CPU count per node
+# can not be satisfied". The hardware block below makes the per-GPU CPU/mem
+# proportioning resolve to Leonardo-valid values. It also populates
+# CONDA_ENV_PATHS so a per-model `conda_env:` override (eval-qwen35 for the
+# qwen3_5 tmax models) resolves to a real prefix.
+#
+# Sourced by user bfeuer00.
+
+# cluster_name controls which dotenv the sbatch auto-sources (hpc/dotenv/${CLUSTER_NAME}.env).
+cluster_name: leonardo
+
+# --- SLURM defaults --------------------------------------------------------
+slurm_partition: boost_usr_prod
+slurm_account: AIFAC_5C0_290
+slurm_time: "23:59:00"      # Leonardo boost_usr_prod 24h cap
+
+# --- Conda environments ----------------------------------------------------
+# Prefix paths (the dir containing bin/python). eval-qwen35 is the ONLY env that
+# vLLM-serves model_type: qwen3_5 (tmax-9b/27b) — see ENVIRONMENT_MAP §2f.
+conda_envs:
+  otagent: /leonardo_work/AIFAC_5C0_290/bfeuer00/miniforge3/envs/otagent
+  eval-qwen35: /leonardo_work/AIFAC_5C0_290/bfeuer00/miniforge3/envs/eval-qwen35
+
+# --- Paths -----------------------------------------------------------------
+paths:
+  project_root: /leonardo_work/AIFAC_5C0_290/bfeuer00/code/OpenThoughts-Agent
+  hf_cache: /leonardo_work/AIFAC_5C0_290/bfeuer00/data/hub
+  eval_jobs_dir: /leonardo_work/AIFAC_5C0_290/bfeuer00/eval_jobs
+  eval_logs_dir: eval/leonardo/logs
+  listener_logs_dir: experiments/listener_logs
+  sbatch_script: eval/leonardo/unified_eval_harbor.sbatch
+  dp_sbatch_script: eval/leonardo/unified_eval_harbor.sbatch
+  harbor_src: /leonardo_work/AIFAC_5C0_290/bfeuer00/code/harbor/src
+  datasets_dirs:
+    - /leonardo_work/AIFAC_5C0_290/bfeuer00/data/hub
+  secrets_file: ~/secrets.env
+
+# --- Proxy / no-internet support ------------------------------------------
+# Compute nodes have no internet; the Leonardo sbatch is self-contained — it
+# opens a SOCKS5 SSH tunnel to a login node via eval/leonardo/start_proxy_tunnel.sh
+# and wraps HF/Daytona traffic in proxychains4 internally. No listener-side proxy.
+proxy:
+  enabled: false
+
+# --- Hardware --------------------------------------------------------------
+hardware:
+  gpus_per_node: 4            # A100-64GB
+  cpus_per_node: 32           # Ice Lake, 32 cores/node
+  mem_per_node_mb: 490000     # ~512 GB; leave headroom under the node limit
+  arch: x86_64
+  cuda_home: /leonardo_work/AIFAC_5C0_290/bfeuer00/miniforge3/envs/otagent
