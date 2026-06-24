@@ -78,6 +78,10 @@ done
 
 # Fresh ckpt dir per job (no cross-job resume).
 export CKPT_DIR=$SF/opd_ckpts/${SLURM_JOB_NAME}_${SLURM_JOB_ID}
+# Empty-variable / unsafe-path guard: NEVER `rm -rf ""` or `rm -rf /`.
+if [ -z "$CKPT_DIR" ] || [ "$CKPT_DIR" = "/" ] || [ "${CKPT_DIR#$SF/}" = "$CKPT_DIR" ]; then
+  echo "FATAL: refusing to rm CKPT_DIR='$CKPT_DIR' (empty or outside $SF/)." >&2; exit 1
+fi
 rm -rf "$CKPT_DIR"
 
 # Offline / cache env (compute nodes have no internet)

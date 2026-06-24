@@ -56,6 +56,10 @@ export NUM_GPUS=4                                  # GPUs PER NODE (Leonardo A10
 GRID_CELL="${SLURM_JOB_NAME#grid_mn_}"
 [ -z "$GRID_CELL" -o "$GRID_CELL" = "$SLURM_JOB_NAME" ] && GRID_CELL="${SLURM_JOB_ID:-cell}"
 export CKPT_DIR=$SF/grid_ckpts/mn_$GRID_CELL
+# Empty-variable / unsafe-path guard: NEVER `rm -rf ""` or `rm -rf /`.
+if [ -z "$CKPT_DIR" ] || [ "$CKPT_DIR" = "/" ] || [ "${CKPT_DIR#$SF/}" = "$CKPT_DIR" ]; then
+  echo "FATAL: refusing to rm CKPT_DIR='$CKPT_DIR' (empty or outside $SF/)." >&2; exit 1
+fi
 rm -rf "$CKPT_DIR"
 
 # Offline / cache env (compute nodes have no internet)

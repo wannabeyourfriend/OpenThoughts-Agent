@@ -85,16 +85,49 @@ if [ "$THINK_MODE" = "forced" ]; then
 fi
 
 # RESUME_MODE controls checkpoint resumption across an afterany restart CHAIN.
-#   null (default)  -> one-shot smoke semantics: WIPE the per-run ckpt dir, no resume.
+#   null            -> one-shot / fresh semantics: WIPE the per-run ckpt dir, no resume.
 #   latest          -> chain semantics: PRESERVE the ckpt dir + resume from the latest ckpt
 #                      (passed through to hydra as trainer.resume_mode=latest). The head run
 #                      of a chain finds an empty/fresh dir and starts at step 0; restarts resume.
-export RESUME_MODE=${RESUME_MODE:-null}
+#
+# FAIL-SAFE (2026-06-24): RESUME_MODE has NO destructive default. It MUST be set EXPLICITLY to a
+# recognized value. An unset/misconfigured RESUME_MODE used to fall through to the `null` branch
+# and silently `rm -rf "$CKPT_DIR"` — on 2026-06-24 that wiped rlvr7500_w0's global_step_50.
+# Now: empty or unrecognized -> hard error BEFORE any destructive op. Deletion happens ONLY on the
+# EXPLICIT `null` (fresh) value the grid intentionally launches per-cell with — never as a fallback.
+if [ -z "${RESUME_MODE+x}" ] || [ -z "$RESUME_MODE" ]; then
+  echo "FATAL: RESUME_MODE is unset/empty. It MUST be set explicitly to one of: null (fresh, WIPES ckpt) | latest (resume)." >&2
+  echo "       Refusing to proceed — would risk deleting $WORK/rl_ckpts/$RUN_NAME" >&2
+  exit 1
+fi
+case "$RESUME_MODE" in
+  null|latest) ;;   # recognized
+  *) echo "FATAL: RESUME_MODE='$RESUME_MODE' is not recognized. Valid: null (fresh, WIPES ckpt) | latest (resume)." >&2
+     echo "       Refusing to proceed — would risk deleting $WORK/rl_ckpts/$RUN_NAME" >&2
+     exit 1 ;;
+esac
+export RESUME_MODE
 
 # Per-run ckpt dir on $WORK (scratch-fast quota is tight; ckpt OFF in the smoke anyway).
 export CKPT_DIR=$WORK/rl_ckpts/$RUN_NAME
+# Destruction is gated on the EXPLICIT `null` (fresh) intent only — NOT a default/fallback.
 if [ "$RESUME_MODE" = "null" ]; then
-  rm -rf "$CKPT_DIR"   # smoke / non-resumable: always start clean
+  # Empty-variable / unsafe-path guard: NEVER `rm -rf ""` or `rm -rf /`.
+  if [ -z "$CKPT_DIR" ] || [ "$CKPT_DIR" = "/" ] || [ "${CKPT_DIR#$WORK/}" = "$CKPT_DIR" ]; then
+    echo "FATAL: refusing to rm CKPT_DIR='$CKPT_DIR' (empty or outside $WORK/)." >&2
+    exit 1
+  fi
+  # Defense in depth: if real checkpoints exist, log LOUDLY what we are about to destroy so it is
+  # visible in the .out. Honor an opt-out: set CLEAN_CKPT=0 to SKIP the wipe (resume manually).
+  if compgen -G "$CKPT_DIR/global_step_*" >/dev/null 2>&1; then
+    echo "WARNING: RESUME_MODE=null (explicit fresh) -> about to DELETE existing checkpoints in $CKPT_DIR:" >&2
+    ls -d "$CKPT_DIR"/global_step_* >&2 || true
+  fi
+  if [ "${CLEAN_CKPT:-1}" = "0" ]; then
+    echo ">>> CLEAN_CKPT=0 set: SKIPPING wipe of $CKPT_DIR (RESUME_MODE=null requested fresh, but opt-out honored)."
+  else
+    rm -rf "$CKPT_DIR"   # explicit fresh: start clean (grid launches per-cell with RESUME_MODE=null)
+  fi
 fi
 
 # Offline / cache env (compute nodes have no internet).

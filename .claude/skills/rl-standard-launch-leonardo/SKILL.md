@@ -230,12 +230,17 @@ the head with `RAY_ADDRESS` set. Multi-node gotchas it handles (keep them):
   - **⚠️ DESTRUCTIVE GOTCHA — pass `RESUME_MODE`/`DATA_DIR` via `--export`, NOT positionally.**
     `sbatch_delphi_math_rl_multinode.sh` reads `RESUME_MODE` + `DATA_DIR` from the **environment**;
     its positional parser only strips `MODEL_PATH/RUN_NAME/STAGE/DATASET/THINK/THINK_MODE/DELPHI_TEMPLATE`.
-    Passing `RESUME_MODE=latest`/`DATA_DIR=…` as positional `KEY=val` tokens does TWO bad things: (1) they
-    leak to hydra → `Could not override 'RESUME_MODE'` → head FAILS; and (2) since `RESUME_MODE` never
-    reaches the env, the script falls to its **default `null` branch whose `rm -rf "$CKPT_DIR"` WIPES the
-    checkpoint** *before* the hydra error fires — silently destroying any resume-from-ckpt. (This deleted
-    `rlvr7500_w0`'s `global_step_50` on 2026-06-24, forcing a fresh retrain.) Correct form:
-    `sbatch --export=ALL,DATA_DIR=<path>,RESUME_MODE=latest sbatch_delphi_math_rl_multinode.sh <positional MODEL_PATH/RUN_NAME/… only>`.
+    Passing `RESUME_MODE=latest`/`DATA_DIR=…` as positional `KEY=val` tokens leaks them to hydra →
+    `Could not override 'RESUME_MODE'` → head FAILS. (Historically this ALSO meant `RESUME_MODE` never
+    reached the env, the script fell to its **default `null` branch whose `rm -rf "$CKPT_DIR"` WIPED the
+    checkpoint** *before* the hydra error fired — silently destroying any resume-from-ckpt. This deleted
+    `rlvr7500_w0`'s `global_step_50` on 2026-06-24, forcing a fresh retrain.) **FIXED 2026-06-24:** the
+    script now has NO destructive default — an unset/invalid `RESUME_MODE` is a HARD `exit 1` *before* any
+    `rm`, and the wipe is gated on the EXPLICIT `null` value (+ non-empty/in-`$WORK` path guard, a loud
+    WARNING listing the `global_step_*` it will delete, and a `CLEAN_CKPT=0` opt-out). So you MUST now pass
+    `RESUME_MODE` explicitly even for a fresh cell. Correct form:
+    `sbatch --export=ALL,DATA_DIR=<path>,RESUME_MODE=latest sbatch_delphi_math_rl_multinode.sh <positional MODEL_PATH/RUN_NAME/… only>`
+    (fresh cell: `…,RESUME_MODE=null …`).
 - **24h wall:** `boost_usr_prod` caps at `23:59:00`; OPD full runs (~24 min/step) only
   fit ~18–20 steps per slot → ckpt every few steps and chain `--dependency=afterany:`.
 - **Completion → run `rl-job-cleanup`** (cancel pending retries, consolidate/upload to

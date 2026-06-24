@@ -78,7 +78,17 @@ export NUM_GPUS=${NUM_GPUS:-4}
 # `OSError [Errno 122] Disk quota exceeded` and FAILED all 12 cells. $WORK has 88T free.
 # Location-only change; NO hparam/science change.
 export CKPT_DIR=$WORK/rl_ckpts/$RUN_NAME
-rm -rf "$CKPT_DIR"
+# Empty-variable / unsafe-path guard: NEVER `rm -rf ""` or `rm -rf /`. This script is always-fresh
+# (trainer.resume_mode=null hardcoded below) so the wipe IS the explicit intent — but never on a
+# malformed path. (Opt out with CLEAN_CKPT=0.)
+if [ -z "$CKPT_DIR" ] || [ "$CKPT_DIR" = "/" ] || [ "${CKPT_DIR#$WORK/}" = "$CKPT_DIR" ]; then
+  echo "FATAL: refusing to rm CKPT_DIR='$CKPT_DIR' (empty or outside $WORK/)." >&2; exit 1
+fi
+if compgen -G "$CKPT_DIR/global_step_*" >/dev/null 2>&1; then
+  echo "WARNING: about to DELETE existing checkpoints in $CKPT_DIR (always-fresh run):" >&2
+  ls -d "$CKPT_DIR"/global_step_* >&2 || true
+fi
+[ "${CLEAN_CKPT:-1}" = "0" ] || rm -rf "$CKPT_DIR"
 
 # Offline / cache env (compute nodes have no internet).
 export HF_HUB_OFFLINE=1
