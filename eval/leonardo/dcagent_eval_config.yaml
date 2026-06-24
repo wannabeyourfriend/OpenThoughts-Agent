@@ -45,9 +45,16 @@ environment:
   type: daytona
   force_build: true
   delete: true
-  override_cpus: 2
-  override_memory_mb: 4096
-  override_storage_mb: 4096
+  # NOTE: no override_cpus / override_memory_mb / override_storage_mb. Setting
+  # them clobbers each task's per-task default sandbox dimensions (harbor
+  # environments/base.py::_maybe_override_task_env_config overwrites
+  # task_env_config.{cpus,memory_mb,storage_mb} when the override is non-None),
+  # which is NOT what the tb2/v2/swebench listener presets intend — those presets
+  # forward dcagent_eval_config_no_override.yaml precisely so harbor INHERITS the
+  # environment-declared (per-task) sandbox sizes. A fixed 2 CPU / 4096 MB mem /
+  # 4096 MB disk override here forced every tmax-9b/27b eval leg onto an undersized
+  # uniform sandbox (the "2/4/4" override). Leave these unset → resources=None →
+  # harbor/Daytona use the task's own declared sizes.
   kwargs: {}
 
 verifier:
