@@ -482,9 +482,21 @@ def main() -> int:
     # real AWS S3 instead of R2. Let the cluster-injected R2 creds win; the
     # fsspec rendezvous in start_rl_iris_controller.py uses default credential
     # discovery and picks them up.
+    #
+    # Daytona credentials MUST be forwarded: agentic RL (terminal_bench / Harbor)
+    # builds a Daytona sandbox per trial, and iris injects only HF/WANDB into the
+    # task pod — nothing else. Without DAYTONA_API_KEY the worker's harbor client
+    # raises DaytonaAuthenticationError on every env build, so no sandbox comes
+    # up, the verifier never runs, and EVERY trajectory finalizes as
+    # VerificationNotCompletedError with reward 0 (observed zeroing an entire
+    # reverify rollout). Mirror the base IrisLauncher passthrough set
+    # (hpc/iris_launch_utils.py) so the same creds reach the RL worker.
     for k in (
         "HF_TOKEN", "WANDB_API_KEY", "WANDB_ENTITY", "WANDB_PROJECT",
+        "DAYTONA_API_KEY", "DAYTONA_JWT_TOKEN", "DAYTONA_ORGANIZATION_ID",
+        "DAYTONA_API_URL",
         "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
+        "GOOGLE_API_KEY", "GEMINI_API_KEY", "TOGETHER_API_KEY",
     ):
         v = os.environ.get(k)
         if v:
