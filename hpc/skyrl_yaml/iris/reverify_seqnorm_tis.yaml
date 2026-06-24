@@ -78,7 +78,7 @@ terminal_bench:
   # injects working in-cluster R2 creds (iris-task-env Secret / envFrom) into every
   # task pod, so fsspec/UPath default credential discovery writes here. This is how
   # the reward-zeroing AttributeError gets captured if it recurs.
-  trials_dir: s3://marin-na/iris/rl-reverify/reverify-1n-fa-on-v2
+  trials_dir: s3://marin-na/iris/rl-rebuild-verify/rebuild-verify-0624
 
   harbor:
     name: terminus-2
