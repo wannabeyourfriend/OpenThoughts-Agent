@@ -134,8 +134,14 @@ RUN . /opt/openthoughts/.venv/bin/activate && \
 # Runtime entrypoint module: skyrl_train.entrypoints.main_base.
 ENV SKYRL_HOME=/opt/skyrl
 ENV SKYRL_BRANCH=penfever/working
+# Pin to a COMMIT (not the floating branch HEAD) for a deterministic image.
+# 2d9feef = "fix(tbench): pass trials_dir as raw str, not Path (preserve remote
+# s3://gs:// URIs)" — the trials_dir fix that previously had to be runtime-sed'd.
+# (It IS the current penfever/working HEAD; pinning makes the image reproducible.)
+ENV SKYRL_COMMIT=2d9feef617fba21d606d221a8ac43707404e3467
 
-RUN git clone --branch $SKYRL_BRANCH https://github.com/marin-community/MarinSkyRL.git $SKYRL_HOME
+RUN git clone --branch $SKYRL_BRANCH https://github.com/marin-community/MarinSkyRL.git $SKYRL_HOME && \
+    git -C $SKYRL_HOME checkout $SKYRL_COMMIT
 
 # =============================================================================
 # vLLM FORK (built FROM SOURCE at a PINNED commit)
@@ -254,6 +260,22 @@ RUN . $RL_ENV_DIR/bin/activate && \
     uv pip install -e /opt/openthoughts && \
     python -c "import torch, vllm, skyrl_train, flash_attn, flash_attn_2_cuda; print('torch', torch.__version__, 'vllm', vllm.__version__, 'flash_attn', flash_attn.__version__, '+ flash_attn_2_cuda OK')" && \
     echo "baked MarinSkyRL HEAD: $(git -C $SKYRL_HOME rev-parse HEAD)"
+
+# (4b) Pin harbor to a COMMIT (deterministic image). The OT-Agent project dep
+# (pyproject.toml) installs harbor from a FLOATING branch
+# (marin-community/harbor@penfever/working), which is left floating for the rest
+# of the stack — but for THIS image we re-install harbor at an immutable commit so
+# the build is reproducible and we KNOW which harbor is baked.
+#   342729d5 = "fix(trial-queue): rmtree trial.paths.trial_dir, not
+#   trial.trial_dir (reward-zeroing AttributeError)" — the reward-zeroing fix that
+#   previously had to be runtime-sed'd. (It IS the current penfever/working HEAD.)
+# --no-deps so this only swaps the harbor source, not its resolved deps.
+ENV HARBOR_COMMIT=342729d574555c4bd88b0ff8ee1b223bbe46bd72
+RUN . $RL_ENV_DIR/bin/activate && \
+    uv pip install --no-deps --force-reinstall \
+        "harbor[daytona] @ git+https://github.com/marin-community/harbor.git@${HARBOR_COMMIT}" && \
+    python -c "import harbor, importlib.metadata as m; print('baked harbor', m.version('harbor'))" && \
+    echo "baked harbor commit: ${HARBOR_COMMIT}"
 
 # Set up PYTHONPATH for MarinSkyRL.
 # `/sky/workdir` (runtime-synced source) is prepended by the launcher so it wins;
