@@ -90,15 +90,19 @@ DEFAULT_CLUSTER = "cw-us-east-02a"
 # it always runs the intended image regardless of node cache state — sidestepping
 # the stale-tag problem entirely without needing imagePullPolicy: Always.
 #
-# This digest == the immutable gitsha tag ``:gpu-rl-1b5a82d6`` (OT-Agent commit
-# 1b5a82d6, "flash_attn 2.8.3 compiled from source"): flash_attn 2.8.3 +
-# flash_attn_2_cuda present, /opt/skyrl baked at MarinSkyRL 6f945cd. Verified on
-# an H100 (real forward) and by a digest-pinned CPU probe on cw-us-east-02a.
+# This digest == the immutable gitsha tag ``:gpu-rl-8bc5bdb4`` (OT-Agent commit
+# 8bc5bdb4, "pin gpu-rl to MarinSkyRL 2d9feef + harbor 342729d5"): flash_attn
+# 2.8.3 + flash_attn_2_cuda present, /opt/skyrl baked at MarinSkyRL 2d9feef
+# (trials_dir raw-str fix), harbor BAKED at 342729d5 (reward-zeroing
+# trial.paths.trial_dir fix) — both fixes now in the image, NO runtime sed
+# patches needed. Validated by a no-runtime-patch RL smoke (reward>0 over >=2
+# steps, num_failed_trajectories=0). Supersedes :gpu-rl-1b5a82d6 (sha256
+# f571b88a) which had working flash_attn but LACKED these two fixes.
 # When the gpu-rl image is rebuilt, bump this digest (use the immutable
 # ``:gpu-rl-<gitsha>`` tag's digest, never the floating ``:gpu-rl``).
 DEFAULT_RL_DOCKER_IMAGE = (
     "ghcr.io/open-thoughts/openthoughts-agent"
-    "@sha256:f571b88a3487b140ef6edfebb617fee8cb4a271bac4d95485c01f5a03efff2fb"
+    "@sha256:df2cb77e49fc078c75e909f0f967af3205b2b7cf1c4656c5ab5cd907e37128d1"
 )
 DEFAULT_GPU_VARIANT = "H100"
 DEFAULT_GPUS_PER_NODE = 8           # gd-8xh100ib-i128 = 8x H100-80GB + IB
