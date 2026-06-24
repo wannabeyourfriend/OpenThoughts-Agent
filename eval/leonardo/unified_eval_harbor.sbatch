@@ -25,7 +25,8 @@
 #   EVAL_N_CONCURRENT       (default: 64)
 #   EVAL_GPU_MEMORY_UTIL    (default: 0.85 — Leonardo A100 64GB OOMs at 0.90+)
 #   EVAL_DAYTONA_THRESHOLD  (default: 3)
-#   EVAL_HARBOR_CONFIG      (default: $DCFT/eval/leonardo/dcagent_eval_config.yaml)
+#   EVAL_CONFIG_YAML        (default: dcagent_eval_config_no_override.yaml; resolved from eval/configs/)
+#   EVAL_ENABLE_THINKING    (default: false)   EVAL_AGENT_PARSER (default: "")
 #   EVAL_DB_JOB_ID          (optional, pre-created Pending job ID)
 # ==============================================================================
 
@@ -45,7 +46,15 @@ RUN_TAG_ARG="${4:-}"
 N_CONCURRENT="${EVAL_N_CONCURRENT:-64}"
 GPU_MEMORY_UTIL="${EVAL_GPU_MEMORY_UTIL:-0.85}"
 DAYTONA_ERROR_THRESHOLD="${EVAL_DAYTONA_THRESHOLD:-999999}"
-HARBOR_CONFIG="${EVAL_HARBOR_CONFIG:-$DCFT/eval/leonardo/dcagent_eval_config.yaml}"
+# Harbor config is listener/preset-driven via EVAL_CONFIG_YAML (resolved below,
+# after DCFT is set) — NOT a custom per-cluster file. The tb2/v2/swebench presets
+# forward dcagent_eval_config_no_override.yaml so harbor inherits each task's
+# declared (per-task) sandbox sizes. Thinking + agent parser are listener-driven
+# too (EVAL_ENABLE_THINKING / EVAL_AGENT_PARSER, mirroring the canonical
+# eval/unified_eval_harbor.sbatch), so no per-cluster config carries them.
+CONFIG_YAML="${EVAL_CONFIG_YAML:-dcagent_eval_config_no_override.yaml}"
+ENABLE_THINKING="${EVAL_ENABLE_THINKING:-false}"
+AGENT_PARSER="${EVAL_AGENT_PARSER:-}"
 DB_JOB_ID="${EVAL_DB_JOB_ID:-}"
 
 # Strip slashes and special chars for file-safe names
@@ -68,7 +77,9 @@ echo "Dataset: $REPO_ID"
 echo "Benchmark ID: ${BENCHMARK_ID:-<auto>}"
 echo "N concurrent: $N_CONCURRENT"
 echo "GPU memory util: $GPU_MEMORY_UTIL"
-echo "Harbor config: $HARBOR_CONFIG"
+echo "Config YAML: $CONFIG_YAML"
+echo "Thinking: $ENABLE_THINKING"
+echo "Agent parser: ${AGENT_PARSER:-<default>}"
 echo "Daytona threshold: $DAYTONA_ERROR_THRESHOLD"
 echo "DB Job ID (pending): ${DB_JOB_ID:-<none>}"
 echo "=============================================="
@@ -81,6 +92,23 @@ echo "=============================================="
 # which is the project dir, not the user dir. Override unconditionally.
 WORK="/leonardo_work/AIFAC_5C0_290/bfeuer00"
 DCFT="${WORK}/code/OpenThoughts-Agent"
+
+# Resolve the harbor config path from CONFIG_YAML (mirrors the canonical
+# eval/unified_eval_harbor.sbatch resolution: eval/configs/ -> eval/leonardo/ -> eval/MBZ/).
+# Presets forward dcagent_eval_config_no_override.yaml (in eval/configs/).
+if [[ "$CONFIG_YAML" == /* ]]; then
+    HARBOR_CONFIG="$CONFIG_YAML"
+elif [ -f "$DCFT/eval/configs/$CONFIG_YAML" ]; then
+    HARBOR_CONFIG="$DCFT/eval/configs/$CONFIG_YAML"
+elif [ -f "$DCFT/eval/leonardo/$CONFIG_YAML" ]; then
+    HARBOR_CONFIG="$DCFT/eval/leonardo/$CONFIG_YAML"
+elif [ -f "$DCFT/eval/MBZ/$CONFIG_YAML" ]; then
+    HARBOR_CONFIG="$DCFT/eval/MBZ/$CONFIG_YAML"
+else
+    echo "ERROR: Harbor config not found: $CONFIG_YAML (looked in eval/configs, eval/leonardo, eval/MBZ)"
+    exit 1
+fi
+echo "Resolved harbor config: $HARBOR_CONFIG"
 
 # Reset PYTHONPATH
 unset PYTHONPATH
@@ -551,6 +579,16 @@ fi
 if [ -n "${EVAL_OVERRIDE_MEMORY_MB:-}" ]; then
     echo "Using memory override: ${EVAL_OVERRIDE_MEMORY_MB}MB"
     EXTRA_HARBOR_ARGS="$EXTRA_HARBOR_ARGS --override-memory-mb $EVAL_OVERRIDE_MEMORY_MB"
+fi
+# Thinking + agent parser are listener-driven (mirror eval/unified_eval_harbor.sbatch),
+# replacing what the deprecated custom Leonardo config used to hardcode.
+if [ "$ENABLE_THINKING" = "true" ]; then
+    echo "Enabling thinking (--agent-kwarg enable_thinking=true)"
+    EXTRA_HARBOR_ARGS="$EXTRA_HARBOR_ARGS --agent-kwarg enable_thinking=true"
+fi
+if [ -n "$AGENT_PARSER" ]; then
+    echo "Using agent parser: $AGENT_PARSER"
+    EXTRA_HARBOR_ARGS="$EXTRA_HARBOR_ARGS --agent-kwarg parser=$AGENT_PARSER"
 fi
 
 echo "[DEBUG] EXTRA_HARBOR_ARGS=$EXTRA_HARBOR_ARGS"
