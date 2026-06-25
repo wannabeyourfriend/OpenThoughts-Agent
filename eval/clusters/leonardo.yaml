@@ -16,6 +16,23 @@
 # cluster_name controls which dotenv the sbatch auto-sources (hpc/dotenv/${CLUSTER_NAME}.env).
 cluster_name: leonardo
 
+# --- Per-model serve overrides ---------------------------------------------
+# Default path for the per-model vLLM serving overrides (conda_env,
+# tensor_parallel_size, data_parallel_size, trust_remote_code,
+# limit_mm_per_prompt, ...). The listener resolves --baseline-model-configs as:
+#   CLI flag > this cluster-config key > None.
+# Pinning it here makes the overrides apply even if an operator forgets the CLI
+# flag. WHY THIS EXISTS: on 2026-06-25 the 6 Qwen3.5/3.6-35B-A3B (model_type
+# qwen3_5_moe) eval legs (jobs 47840673/674/677/692/693/694) FAILED because the
+# listener was launched WITHOUT --baseline-model-configs, so the per-model
+# `conda_env: eval-qwen35` (+ TP=2/DP=2/trust_remote_code) override never loaded
+# and the serve silently fell back to otagent (vanilla vLLM 0.16 / transformers
+# 4.x, TP=1) -> "model type qwen3_5_moe not recognized by installed Transformers".
+# The eval-qwen35 env itself is correct (fork-vLLM @ 76259c63a + transformers
+# 5.12.1, both qwen3_5 AND qwen3_5_moe registered; ENVIRONMENT_MAP §2f) — the
+# bug was purely the missing config flag.
+baseline_model_configs: eval/configs/baseline_model_configs_minimal.yaml
+
 # --- SLURM defaults --------------------------------------------------------
 slurm_partition: boost_usr_prod
 slurm_account: AIFAC_5C0_290

@@ -3945,8 +3945,24 @@ def build_config(args: argparse.Namespace) -> ListenerConfig:
     harbor_config = args.harbor_config or preset_config.get("harbor_config")
     eval_config = parse_harbor_eval_config(harbor_config)
 
-    # Baseline model configs for per-model vLLM overrides
-    baseline_model_configs_path = args.baseline_model_configs
+    # Baseline model configs for per-model vLLM overrides.
+    # Resolution: CLI flag > cluster config ("baseline_model_configs") > None.
+    # Letting the cluster config supply a default keeps per-model serve overrides
+    # (conda_env / tensor_parallel_size / trust_remote_code / limit_mm_per_prompt)
+    # in force even if an operator forgets --baseline-model-configs. Omitting it
+    # silently fell every per-model-conda_env model (e.g. the qwen3_5_moe 35B-A3B
+    # set) back to the default otagent/vLLM-0.16 serve env (TP=1, no
+    # trust_remote_code) -> "model type qwen3_5_moe not recognized" (2026-06-25,
+    # jobs 47840673/674/677/692/693/694).
+    baseline_model_configs_path = args.baseline_model_configs or _cc("baseline_model_configs")
+    if baseline_model_configs_path:
+        src = "CLI" if args.baseline_model_configs else "cluster-config"
+        log(f"Baseline model configs: {baseline_model_configs_path} (from {src})")
+    else:
+        log("WARNING: no --baseline-model-configs and none in cluster config — "
+            "per-model serve overrides (conda_env / TP / trust_remote_code) will "
+            "NOT apply; models needing a non-default serve env (e.g. qwen3_5_moe "
+            "-> eval-qwen35) will fall back to the default env and likely crash.")
 
     # API model configs for per-model API serving (no-op if file missing)
     api_model_config_path = args.api_model_config
