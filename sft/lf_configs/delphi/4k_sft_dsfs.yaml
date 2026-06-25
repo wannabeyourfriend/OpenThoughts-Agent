@@ -1,0 +1,100 @@
+### 4k-context instruction-following SFT for the Delphi RL scaling-laws series (marin #6279)
+#
+# Purpose: give each of the 27 Delphi midtrained checkpoints (and their base models) basic
+# instruction-following + chat formatting (+ a CoT-warmup slice) before RL on MATH-500. NOT a
+# math-teaching stage. One shared config across ALL scales (447M @ 3e18 -> 9.7B @ 1e22) and mixes
+# (p33m67/p50m50/p67m33) so runs are directly comparable. Per run, only `model_name_or_path`,
+# `hub_model_id`, and the instruction dataset vary (all set at launch).
+#
+# Template = delphi (custom; registered in the LLaMA-Factory fork, src/llamafactory/data/template.py).
+# It is the Llama-3 header/turn format (<|start_header_id|>...<|eot_id|>, EOS=<|eot_id|>) PLUS the
+# canonical reasoning/tool tokens (<|start_think|>/<|end_think|>, <|tool_call|>...). The Delphi
+# tokenizer is the Llama-3 tokenizer (vocab 128256) with NO chat_template and NO ChatML tokens, so
+# `qwen3` would shred every example; `delphi` is the right family. PREREQUISITES per checkpoint:
+# run sft/delphi/prepare_delphi_tokenizer.py (reserved-slot rename + mean-init) and use the fork
+# with the `delphi` template registered. LF auto-persists the chat_template into the saved tokenizer.
+#
+# cutoff_len = 4096 = the Delphi pretrain/midtrain sequence length. NOTE the checkpoint's
+# rope_scaling(original_max_position_embeddings=8192) is NOT inert at <=4096 — it reshapes the
+# mid-band frequencies the weights trained on; it's load-bearing, just don't run past 4096 here.
+# Samples >4096 are truncated (LLaMA-Factory truncates, does not drop) — fine for instruction SFT.
+#
+# Datasets are REGISTERED in sft/delphi/dataset_info.json (4 instruction + delphi_warmup), each with
+# its own ShareGPT columns/tags (the four instruction sets use 3 different schemas, so global CLI
+# tags can't parse a heterogeneous mix). Launch with `--dataset_dir sft/delphi` and a 90/10 mix:
+#   --dataset <instr>,delphi_warmup --mix_strategy interleave_under --interleave_probs 0.9,0.1
+# (<instr> in {tulu3, magpie, wildchat_1.1m, wildchat_386k}; see SFT_COLDSTART_GRID.md.)
+#
+# LR = 2e-5: one conventional, shared SFT LR for all 27 (comparability + low divergence risk). The
+# README's per-checkpoint *midtraining* LRs (0.83/0.67/0.50/0.33 x base-peak-LR, ~1e-3 scale) are a
+# "don't exceed" reference only — they are 50-100x a normal SFT LR and would diverge if used here.
+# Override --learning_rate only for a deliberate, separately-labeled LR ablation; keep it fixed for
+# the controlled 27-run set.
+
+### HPC Launch Settings
+global_batch_size: 16
+# gradient_accumulation_steps = global_batch_size // (num_nodes * gpus_per_node)
+
+### model
+model_name_or_path: laion/delphi-3e18-p33m67-k0p20-lr83-a003   # PLACEHOLDER — overridden per run via --model_path
+trust_remote_code: true
+attn: fa2
+enable_liger_kernel: true
+optim: adamw_torch_fused
+
+### method
+stage: sft
+do_train: true
+finetuning_type: full
+deepspeed: sft/lf_configs/deepspeed/ds_z3_accelerate.json
+include_mfu: true
+
+### dataset
+# dataset(s) passed at launch from the registry (--dataset_dir sft/delphi). Do NOT hardcode `dataset:`.
+template: delphi
+cutoff_len: 4096
+overwrite_cache: true
+preprocessing_num_workers: 16
+dataloader_persistent_workers: true
+dataloader_pin_memory: true
+dataloader_num_workers: 4
+
+### output
+logging_steps: 5
+save_strategy: "steps"
+# save_steps = S* = ceil(N_min / global_batch_size) = ceil(385700 / 16) = 24107
+# (N_min = smallest dataset, wildchat_386k). Saving at S* preserves the
+# compute-matched checkpoint for every cell (grid protocol). save_total_limit=4
+# keeps S* + later multiples + final for the largest dataset (~70k steps -> 3
+# save points) without pruning S*. These are checkpointing-cadence knobs only —
+# they do NOT affect the optimization, so the LR x dataset comparison is unaffected.
+save_steps: 24107
+save_total_limit: 4
+load_best_model_at_end: false
+logging_strategy: "steps"
+plot_loss: true
+report_to: wandb
+
+### train
+learning_rate: 1.0e-5
+num_train_epochs: 1.0
+max_grad_norm: 1.0
+adam_beta2: 0.98
+lr_scheduler_type: cosine
+warmup_ratio: 0.1
+bf16: true
+pure_bf16: false
+gradient_checkpointing: true
+ddp_timeout: 180000000
+# push_to_hub: false — Leonardo compute nodes hit the unreachable hub at run
+# start (canary fix §9.5); model saves locally, upload from the login node
+# post-run via the sbatch-tunnel pattern (SFT_LEONARDO_INSTRUCTIONS §7).
+push_to_hub: false
+
+### Multi-node shared-FS dataset prep (fixes per-node datasets.map cache race on GPFS).
+### Forces GLOBAL main_process_first so only the global rank-0 tokenizes/writes the
+### shared HF datasets cache; all other ranks barrier then read. Without this, node-local
+### mains (e.g. rank 4) race rank 0 on the same GPFS cache dir -> FileNotFoundError ->
+### NCCL watchdog SIGABRT -> idle to walltime. Infra/correctness flag only; no optimization
+### hparam changes, so the controlled comparison is unaffected.
+data_shared_file_system: true
