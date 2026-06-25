@@ -37,9 +37,61 @@ Deploy this each cron sweep to produce ONE comprehensive update across all activ
 > each cluster you sweep. No cluster-specific values are inlined here.
 
 ## 1. Gather (per cluster)
+
+> **Scope = Leonardo + CoreWeave(iris) + TACC(Vista).** Jupiter is SKIPPED (MDC downtime until ~2026-07-12 —
+> re-add as a 4th cluster when it returns). Leonardo + TACC are SLURM (`squeue`/`sacct`); CoreWeave is a k8s/iris
+> controller backend with NO ssh — state-poll the iris lifecycle, not squeue. Each cluster's `ops` doc carries
+> its binding gotchas (STEP 0).
+
+**SLURM clusters (Leonardo, TACC) — squeue/sacct:**
 - `squeue -u <user> -t RUNNING` (running) + `sacct -u <user> -S <-Nh> -X` (terminal states since last sweep).
+  Leonardo `<user>`=`bfeuer00` via `ssh Leonardo`; TACC `<user>`=`penfever` via `ssh TACCVista`.
 - **Validate squeue succeeded** — an empty result can be a **false-drain flake** (saturated login node /
-  slurmctld timeout). Before trusting "drained", re-check via `sacct` and/or a different login node.
+  slurmctld timeout). Before trusting "drained", re-check via `sacct` and/or a different login node (Leonardo
+  login02/03/04).
+
+**Leonardo gather/triage particulars:** hardened `ssh Leonardo` (ControlMaster; host keys rotate, benign — do
+NOT flag). GPFS — never `find`/`du`; locate logs via `scontrol show job <id> -o` `StdOut=`/`%Z`. The eval
+**log-path trap**: if the `scontrol` `StdOut=` path doesn't exist, read `data_<jobid>.out` in the job's `%Z`
+workdir before judging liveness (a path mismatch, not a death). `AgentTimeoutError` / `ContextLengthExceeded` are
+EXPECTED passthrough exceptions in agentic eval (still scored) — never the cause of a hang. A Leonardo standard-eval
+results JSON **without `Mean:` lines** is the expected shape, not a broken run. Campaign-driver: the 4 rl_dlp Delphi
+standard-GRPO cells + the flawed-summ agentic-eval harvest+refill-to-8 (the canonical `eval-agentic-launch` listener:
+`PYTHONPATH=$PWD … --baseline-model-configs … --require-priority-list --priority-file …`; both flags load-bearing;
+single multi-model listener, never `&`-per-leg). HF upload = the sbatch-tunnel path (login node SIGKILLs at ~100s);
+needs the fresh `~/.ssh/leonardo_daytona` step-ca cert (expires ~12h). ckpts/exports → `$WORK`, never `$SCRATCH_FAST`.
+
+**CoreWeave(iris) gather/triage particulars — STATE-POLL, not squeue, not a log-string watch:**
+- `export KUBECONFIG=~/.kube/coreweave-iris-gpu` in the same shell FIRST (the Mac default kubeconfig points at a
+  DIFFERENT cluster → wrong-context "0 pods/not found"). Use the **otagent-env iris binary**
+  `/Users/benjaminfeuer/miniconda3/envs/otagent/bin/iris` (the marin `.venv` iris has a broken `kubernetes` import
+  and cannot drive cw). All `iris`/`kubectl` calls SYNCHRONOUS (never background).
+- Per active job, poll the authoritative lifecycle:
+  `PY=/Users/benjaminfeuer/miniconda3/envs/otagent/bin/python; $PY scripts/iris/watch_job_state.py /benjaminfeuer/<job> --once --json`
+  and/or `iris --cluster=cw-us-east-02a job summary --json` (authoritative). `iris … query` over the jobs table
+  (state 1=PENDING 2=BUILDING 3=RUNNING) lists live jobs. **Treat "running-but-0-pods / record disappeared" as
+  TERMINAL** — the silent-wedge signature (a clean kill/eviction/preempt emits no terminal log line + reaps pods,
+  so a content-watch sits idle while the job is gone). Log-content greps (`scripts/iris/analyze_job_history.py`,
+  `sel_rows`/`EPDIAG`) are for SCIENCE/throughput ONLY, never liveness. Full log via
+  `iris … job logs --since-ms <submitted_at_ms> --no-tail` (finelog keeps the whole log; only `--tail` caps lines).
+- RL bring-up signals (fresh launches): gang/leafgroup Kueue admission (pods SchedulingGated until atomically
+  admitted = normal), `apply_ep`/mesh-load, weights resolving. `shm_broadcast …60s` + a transient ghcr-EOF
+  ImagePullBackOff self-heal are BENIGN bring-up noise. `--max-retries ≥1` re-brings-up the gang on a transient
+  HF-weight-resolution flake (time-cost, not a fault). The **per-run Monitors are a complementary finer-grained
+  layer** for active-debugging runs — this 3h cron is the baseline; don't substitute one for the other.
+
+**TACC(Vista) gather/triage particulars:** `ssh TACCVista` (ControlMaster live, hardened single-string ssh).
+`salloc` is BLOCKED → sbatch; uv/builds go in a CPU `-p gg` sbatch, never the shared login node. Compute nodes have
+FULL internet → **NO proxy/SOCKS/step-ca cert** (contrast Leonardo). GPUs are NOT a SLURM gres (whole-node alloc);
+RealMemory misreported. Agentic eval runs through the v6 listener with `--cluster-config eval/clusters/tacc.yaml`
+(`sbatch_script`=`eval/tacc/eval_harbor.sbatch`, `eval_jobs_dir`=`/scratch/10635/penfever/eval_jobs`) — **newly
+integrated, currently validated by a canary**, so sanity-check the canary's traces uploaded + registered before
+relying on it. Harvest finished TACC evals the same way as Leonardo (`eval-agentic-cleanup` if auto-register failed).
+
+**Cross-cluster liveness + inode checks (apply per cluster — the SLURM form below for Leonardo/TACC; the iris
+state-poll above is CoreWeave's liveness equivalent. The inode-headroom check is a JSC/GPFS concern — DORMANT
+while Jupiter is down, re-arm when it returns; Leonardo's bind is disk quota, not inodes — ckpts/exports → `$WORK`,
+never the chronically-over-quota `$SCRATCH_FAST`; CoreWeave artifacts go to HF/R2, no POSIX tree to reap):**
 - **LIVENESS CHECK — `RUNNING` is NOT proof of progress (catches silent wedges).** A job can hold its
   allocation for hours while hung (engine deadlock, NCCL stall, generation-buffer wedge) — squeue still
   says RUNNING. For EVERY RUNNING job, `stat -c%y <StdOut>` and compare the log mtime to "now": if a job
@@ -102,8 +154,11 @@ ONE table.** Extraction pointers:
   JSON has numeric scores — a COMPLETED job can carry an empty `results:{}`**, extract MATH500/AIME24-mean±se/gsm8k,
   fill the row, flip to ✅). On a failure state, diagnose per §3.3 of `EVAL_CONVENTION.md` + log. The tracker file
   carries the jobids, so no run-state needs to live here — just read the grid each sweep and advance pending rows.
-- **Cluster working-tree hygiene (every sweep, per cluster — the divergence keeps re-accumulating):** run
-  `git -C <cluster repo> status --short` on each cluster you touch. If untracked/modified files have piled up
+- **Cluster working-tree hygiene (every sweep, per SLURM cluster — the divergence keeps re-accumulating):** applies
+  to the clusters that hold a clone — **Leonardo + TACC** (CoreWeave has NO clone: the iris launcher uploads the
+  local Mac workspace to `/app` per launch, so a local commit takes effect on the next launch with no push/pull and
+  no on-cluster tree to drift). run
+  `git -C <cluster repo> status --short` on each SLURM cluster you touch. If untracked/modified files have piled up
   (ad-hoc launch scripts, priority lists, sft/eval configs, `.bak`s, generated manifests, stray `&1` redirect
   junk), **triage them back to the local ground-truth clone** — same treatment as the manual reconciliation:
   rsync the files local, **TRACK** the reusable/canonical ones (commit locally → supervisor pushes; place at
@@ -140,6 +195,6 @@ Skip clusters that are unreachable (note it) rather than blocking.
 
 ## Operating notes (folded from memory 2026-06-14)
 
-- **Scope = Jupiter + Leonardo** (Perlmutter DROPPED 2026-06-05, not in use — do NOT ssh it until re-enabled). Each cron pass covers BOTH clusters in the same response.
+- **Scope = Leonardo + CoreWeave(iris) + TACC(Vista).** **Jupiter is SKIPPED** (MDC hard downtime until ~2026-07-12 — re-add it as a 4th cluster when it returns; Perlmutter DROPPED 2026-06-05, still not in use — do NOT ssh it). Each cron pass covers ALL THREE active clusters in the same response. CoreWeave is iris/k8s (NO ssh — state-poll the lifecycle, §1); Leonardo + TACC are SLURM (`squeue`/`sacct`).
 - **Validate that `squeue` succeeded before trusting a 0-count.** A slurmctld timeout prints `slurm_load_jobs error: Socket timed out` / `error:` with NO job lines → a naive `squeue | grep -c <name>` reads 0 → false "drained". Treat an errored squeue as UNKNOWN (keep waiting). Prefer a positive done-signal: confirm terminal state via `sacct -j <ids> --format=State` (slurmdbd survives slurmctld outages). This is mandatory before any destructive datagen consolidate+delete — a false-drain once re-leaked secrets by re-uploading an unscrubbed chunk. (login01 fork-saturation is a second false-empty-squeue cause → re-check via login02/03/04, see `ops/jupiter/ops.md`.)
 - **Spike-mitigation ablations OVERRIDE the cancel-on-collapse rule.** When a job_name contains `zclip`/`staleclip`/`stale_clip`/`z_clip`/`maxgn09_hint`/`shaped_entropy` or any spike-mitigation tag, do NOT autonomously scancel on the 2/4 collapse signals — observing whether the mechanism damps the spike IS the experiment. Still REPORT the signals prominently (mark "ablation observation, not actionable"). Standard runs (a3/a2/a1-base, no tag) DO follow the cancel+salvage rule. A real crash/NaN/SIGSEGV is still a genuine failure → diagnose.

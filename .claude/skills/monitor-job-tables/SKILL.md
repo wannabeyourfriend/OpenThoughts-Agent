@@ -18,6 +18,21 @@ description: >-
 > login node to use (login01 false-drains), and the debug-token caveats (`opCount dead` is benign noise, not
 > `EngineDeadError`). The extraction commands below assume you already know each job's real log path from ops.
 >
+> **Active clusters = Leonardo + CoreWeave(iris) + TACC(Vista).** Jupiter is SKIPPED (MDC downtime until
+> ~2026-07-12 — re-add when it returns). Log-location + state-poll differ by cluster type:
+> - **Leonardo / TACC (SLURM)** — log path via `scontrol show job <id> -o` `StdOut=`/`%Z` (`ssh Leonardo` /
+>   `ssh TACCVista`). Leonardo's GPFS `find`/`du` ban + login-node false-drains apply; TACC compute nodes have
+>   internet (no proxy), GPUs are whole-node (not a SLURM gres), RealMemory misreported.
+> - **CoreWeave (iris/k8s, NO ssh)** — there is no SLURM `.out` and no log path to `stat`. **Liveness = STATE-POLL
+>   the iris lifecycle**, never a log-string grep: `export KUBECONFIG=~/.kube/coreweave-iris-gpu` first, then the
+>   **otagent-env iris binary** `/Users/benjaminfeuer/miniconda3/envs/otagent/bin/iris`:
+>   `scripts/iris/watch_job_state.py /benjaminfeuer/<job> --once --json` and/or
+>   `iris --cluster=cw-us-east-02a job summary --json` (authoritative). **"running-but-0-pods / record disappeared"
+>   = TERMINAL** (the silent-wedge signature — a clean kill/eviction/preempt emits no terminal log line + reaps
+>   pods). Pull metrics/science from the full log via `iris … job logs --since-ms <submitted_at_ms> --no-tail`
+>   (finelog keeps the whole log; only `--tail` caps lines) + `scripts/iris/analyze_job_history.py` (`sel_rows`/
+>   `EPDIAG` are SCIENCE-only, never liveness). All `iris`/`kubectl` calls SYNCHRONOUS.
+>
 > **Log-path trap (Leonardo agentic eval) — verify the StdOut path EXISTS before concluding "dead."** For
 > some Leonardo eval jobs `scontrol`'s `StdOut=` points at a name that was never created (e.g.
 > `eval_<name>_<jobid>.out`) while the **real live log is `data_<jobid>.out`** in the same dir. A sweep that
@@ -27,19 +42,23 @@ description: >-
 > and read THAT** before judging liveness — absence at the scontrol path is a path mismatch, not a death.
 
 Report **every** active and recently-terminated job, **bucketed by type**, each in the format below.
-**Unify cross-cluster runs of the same type into ONE table** (one RL table spanning Jupiter+Leonardo,
-etc.). A separate table for jobs still filling their generation buffer (no metrics yet). The five
-buckets: **RL · SFT · Datagen · Eval · Catch-all**.
+**Unify cross-cluster runs of the same type into ONE table.** The **RL table is cross-cluster — Leonardo
+standard-GRPO rows + CoreWeave agentic/MoE rows in the SAME table** (Jupiter rows return when it does);
+similarly unify eval across Leonardo + TACC. A separate table for jobs still filling their generation buffer
+(no metrics yet). The five buckets: **RL · SFT · Datagen · Eval · Catch-all**.
 
 Cross-cutting (every bucket):
 - **Chain-restart TIMEOUTs are normal, NOT failures** — when a 12h/24h job TIMEOUTs and its `afterany`
   successor is RUNNING/PENDING, report it as a normal restart (note the successor), not a death.
 - **Completion → the matching cleanup skill**: RL → by flavor — agentic (Harbor/Daytona)→`rl-job-cleanup`,
   standard non-agentic GRPO (Delphi/rlvr/dapo math cells)→`rl-standard-job-cleanup`; SFT→`sft-job-cleanup`,
-  datagen→`datagen-job-cleanup`, eval→`eval-agentic-cleanup`. **Cleanup is not done until the artifact's
-  on-disk `trace_jobs/`/`tasks/` tree is `rm`'d + inode reclaim verified** — leaving it after HF upload is
-  the #1 inode leak (the shared `datasets` project on `/e/data1` runs over its soft limit). Inode limits +
-  how-to-check each sweep → `ops/jupiter/ops.md` (`#inode-allocations`).
+  datagen→`datagen-job-cleanup`, eval→`eval-agentic-cleanup` (Leonardo OR TACC). A COMPLETED **CoreWeave RL**
+  run routes the same way (agentic→`rl-job-cleanup`, standard→`rl-standard-job-cleanup`) — but its artifacts go
+  to HF / R2, NOT a POSIX scratch tree, so there is **no on-disk `trace_jobs/`/`tasks/` to reap** (the inode rule
+  below is GPFS/JSC-specific). **On the GPFS clusters, cleanup is not done until the artifact's on-disk
+  `trace_jobs/`/`tasks/` tree is `rm`'d + inode reclaim verified** — leaving it after HF upload is the #1 inode
+  leak (the shared `datasets` project on `/e/data1` runs over its soft limit). Inode limits + how-to-check →
+  `ops/jupiter/ops.md` (`#inode-allocations`) — DORMANT while Jupiter is down, re-arm when it returns.
 - **Genuine FAILED (exit≠0, not a wall TIMEOUT) → diagnose + dated `agent_logs/` entry**; recurring
   identical failures ≠ transient.
 
@@ -60,9 +79,14 @@ Columns: Job, Step (`cur/max`), Reward, Policy Loss, Grad Norm, Trend. **Entropy
 mandatory, not optional** — include `policy_entropy` + TIS `log_ratio` + `grad_norm` (in Trend or extra
 columns). A run can look fine on reward+grad while entropy silently collapses; without entropy in the
 table you can't apply the collapse rule below. If a metric isn't emitted yet (step 0 filling cohort),
-mark `—` and move on. Step from the `.out` (tqdm `Training Step Progress: N/M` or `trainer/global_step`);
-chain-restart logs may carry the tqdm step but not the WANDB_MIRROR dict — pull reward/grad from the
-chain's logs.
+mark `—` and move on. **Leonardo (SLURM) RL** step from the `.out` (tqdm `Training Step Progress: N/M` or
+`trainer/global_step`); chain-restart logs may carry the tqdm step but not the WANDB_MIRROR dict — pull
+reward/grad from the chain's logs. **CoreWeave (iris) RL** has NO SLURM `.out` — get the lifecycle state from
+the state-poll (`watch_job_state.py … --json` / `iris … job summary --json`; see the header), and pull
+step/reward/grad/entropy from the finelog (`iris … job logs --since-ms <submitted_at_ms> --no-tail`) or WANDB.
+For a fresh CoreWeave launch still in bring-up (gang/leafgroup Kueue admission, `apply_ep`/mesh-load, weights
+resolving — `shm_broadcast …60s` + a transient ghcr ImagePullBackOff self-heal are BENIGN) put it in the
+buffer-filling table with `—` metrics until the first step lands.
 
 ### Metrics to track per RL run (priority order)
 **Core 5 (always):** `reward/avg_raw_reward` (primary), `reward/avg_pass_at_8` (less noisy than raw),
