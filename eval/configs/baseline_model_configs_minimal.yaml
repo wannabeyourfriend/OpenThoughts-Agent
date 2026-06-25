@@ -263,11 +263,18 @@ models:
   # VLLM_ATTENTION_BACKEND=FLASH_ATTN, conda libstdc++ on LD path, libcuda stub)
   # is exported by the Leonardo sbatch when conda_env=eval-qwen35.
   #
-  # TP=4: weights ~34.4B bf16 ≈ ~69 GB > 64 GB → needs TP≥2; TP=4 (one full
-  # Leonardo node) divides num_attention_heads 16 cleanly (4 heads/GPU) and gives
-  # ~17 GB/card weights with ample KV headroom (the 2 KV heads are < TP so they
-  # REPLICATE — legal vLLM GQA, mirrors the RL-config geometry; the hybrid arch
-  # makes only 10/40 layers grow KV so 32k is cheap). Matches tmax-9b's TP=4.
+  # TP=2 + DP=2 (2026-06-25): mirrors the PROVEN allenai/tmax-27b DP=2/TP=2 eval
+  # geometry on the same Leonardo 4×A100-64GB node (jobs 47773531/654/810 — DP=2/TP=2
+  # gave AgentTimeout=0 vs higher-TP problems). These are A3B MoE (~34.4B total /
+  # ~3.2B ACTIVE) — TP only needs to be big enough to FIT the weights; TP=4 just
+  # adds wasteful comms overhead on the tiny active-param compute. Geometry: weights
+  # ~69 GB bf16 → TP=2 ≈ 34.5 GB/GPU, fits 64 GB with KV headroom at 32k (the hybrid
+  # arch grows KV on only 10/40 layers so 32k is cheap). TP=2 divides 16 attn heads
+  # (8/GPU); 2 KV heads / TP=2 = 1 KV head/GPU (legal GQA, no replication); 256
+  # experts / TP=2 = 128/GPU. DP=2 runs 2 native vLLM replicas → 2× throughput.
+  # Total GPUs = TP×DP = 4 = one full Leonardo node (sbatch derives gres from TP×DP).
+  # data_parallel_size is read by the listener → EVAL_VLLM_DATA_PARALLEL_SIZE →
+  # vLLM --data-parallel-size, exactly like the tmax-27b entry above.
   # max_model_len 32768: eval parity with every neighbor (native ctx is 262144
   # but eval contexts cap at 32k; no YaRN/rope_scaling needed — 32768 << 262144).
   # NO tool_call_parser / reasoning_parser: Pattern D for terminus-2 (it parses
@@ -277,7 +284,8 @@ models:
   # the multimodal path entirely; mirrors the tmax qwen3_5 entries).
   "Qwen/Qwen3.6-35B-A3B":
     conda_env: eval-qwen35
-    tensor_parallel_size: 4
+    tensor_parallel_size: 2
+    data_parallel_size: 2
     max_model_len: 32768
     swap_space: 32
     trust_remote_code: true
@@ -286,7 +294,8 @@ models:
 
   "Qwen/Qwen3.5-35B-A3B":
     conda_env: eval-qwen35
-    tensor_parallel_size: 4
+    tensor_parallel_size: 2
+    data_parallel_size: 2
     max_model_len: 32768
     swap_space: 32
     trust_remote_code: true
