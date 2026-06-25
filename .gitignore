@@ -448,3 +448,20 @@ data/nemotron_gym/output_v2/
 # submitted cell, from launch_*_grid.sh) — ephemeral run output, not curated inputs (those are the
 # tracked *_grid_cells.txt). Regenerate by relaunching the grid.
 hpc/skyrl_yaml/leonardo/*_manifest.txt
+
+# Round 2 (2026-06-25): more recurring Leonardo working-tree junk.
+# Editor/script backup copies (*.bak) — e.g. dataset_info.json.bak, sbatch_gsm8k_grid.sh.bak —
+# are transient snapshots written by the launch drivers (launch_54.sh §9.4 cp-then-sed); the
+# tracked file is the non-.bak original. No tracked .bak exists, so this is safe.
+*.bak
+# Per-sweep reeval campaign priority files (one model per file) are auto-generated each refill by
+# the eval refill loop — ephemeral campaign scratch, regenerated, not curated. (The curated eval
+# priority lists live under eval/lists/ and are tracked individually.)
+reeval_priority_*.txt
+# Wave-launch SLURM jobid dumps (one line per submitted cell, written by wave*_launch.sh) —
+# per-run output, regenerated each launch. The reusable launchers themselves are tracked.
+wave*_jobids.txt
+# Repo-root gen_only_delphi.py is a leftover DUPLICATE of the canonical tracked
+# scripts/gen_only_delphi.py (round-1 relocated it to scripts/). Anchored to root so it never
+# re-enters git as a near-dup; the tracked scripts/ copy is unaffected.
+/gen_only_delphi.py
