@@ -169,6 +169,18 @@ trial progression) — see `eval-agentic-launch` §4 for the greps.
 generating; **all trials done but job RUNNING → zombie (cancel)**; instant-fail (`n_output_tokens: None`,
 `finished_at`≈`started_at`) → tunnel not really carrying traffic; repeated `Bearer token invalid` → Daytona
 auth degradation.
+
+### NOT a reliability problem — a high `AgentTimeoutError` fraction
+A large timeout share — **even a majority of trials** — is EXPECTED on hard / long-horizon / long-output
+benchmarks and does **NOT** make the eval score unreliable or warrant flagging the harvested delta.
+`AgentTimeoutError` is a harbor `passthrough_exception` → the trial is **still scored by the verifier** (an
+unfinished task simply scores as not-solved), so a timed-out trial reflects genuine model capability on that
+task, not a measurement artifact. As long as the comparison baseline ran the same harness, the score + delta
+**stand** — do not down-weight, re-flag, or call a leg "untrustworthy"/"timeout-inflated" on timeout rate
+alone (this was a recurring mis-flag in campaign sweeps). The ONLY timeout-related red flag is the infra
+case below: essentially *every* trial failing with **zero completions / no `result.json`** is a stall, not a
+score. (See `feedback_context_overflow_not_failure_cause`.)
+
 **On completion → `eval-agentic-cleanup`** IF auto-upload/register failed. **EXEMPT:** `DCAgent2/*`
 grid/throughput/OOM **measurement** runs — report as calibration, don't treat as production.
 
