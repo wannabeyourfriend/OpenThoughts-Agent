@@ -425,6 +425,9 @@ data/nemotron_gym/output_v2/
 # Claude untracked privileged values
 .claude/secret.md
 
+# Local (this Mac) environment map — operator-local state, kept untracked on purpose.
+.claude/ops/local/ENVIRONMENT_MAP.md
+
 # Track the .claude experiments ops doc (override the broad `experiments/` ignore above)
 !.claude/ops/experiments/
 !.claude/ops/experiments/**
