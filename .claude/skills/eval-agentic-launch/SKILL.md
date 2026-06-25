@@ -137,6 +137,21 @@ Per-model serve settings (`conda_env` — e.g. `eval-qwen35` for qwen3_5 — `te
 the preset forwards `--config-yaml dcagent_eval_config_no_override.yaml` so harbor inherits per-task
 sandbox sizes (no per-cluster config). Presets default `--enable-thinking` on.
 
+> **🚧 `--baseline-model-configs` is LOAD-BEARING — omitting it SILENTLY drops every per-model override.**
+> The flag has **no built-in default**; `load_baseline_model_configs(None)` returns `{}` with no error and
+> (older code) no log line, so the serve falls back to the cluster's DEFAULT conda env (e.g. `otagent` =
+> vanilla vLLM 0.16 / transformers 4.x, `TP=1`, `trust_remote_code=no`) and **none** of `conda_env` /
+> `tensor_parallel_size` / `data_parallel_size` / `max_model_len` / `limit_mm_per_prompt` apply. This is not
+> hypothetical: on 2026-06-25 six **Qwen3.5/3.6-35B-A3B** legs were launched without the flag → fell back to
+> `otagent` → `ValidationError: model type qwen3_5_moe not recognized by installed Transformers` (the
+> `eval-qwen35` env was fine; the flag was missing). **ALWAYS pass `--baseline-model-configs
+> eval/configs/baseline_model_configs_minimal.yaml`** for any model needing a non-default serve env (all
+> qwen3_5/3.6, the tmax models, anything with a per-model `conda_env`/TP/DP override). Mitigation now in
+> place (still pass it explicitly): the listener resolves it **CLI flag → cluster-config `baseline_model_configs:`
+> key → None** and **WARNs loudly** when neither is set; `eval/clusters/leonardo.yaml` carries a top-level
+> default. Confirm it loaded: the listener logs `Loaded N baseline model config(s)` + `Using conda env
+> '<env>' for <model>` — if you DON'T see those, the override was dropped and you're serving on the default env.
+
 > **🚧 Concurrent-submit guard — ONE listener enqueues many legs; do NOT fire N concurrent `--once`
 > processes.** A refill of several legs (e.g. all flawed-summ legs, or the three ID legs across a list)
 > is **one** listener invocation that submits every leg internally — `run_iteration()` loops the legs
