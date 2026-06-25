@@ -1420,8 +1420,8 @@ polaris = HPC(
         "TORCH_DISABLE_ADDR2LINE": "1",
     },
     # Note: Polaris uses PBS Pro, not SLURM. The HPC model is used for env config,
-    # eval listener, and datagen — not for sbatch submission. PBS job scripts are
-    # separate (eval/polaris/*.pbs).
+    # eval listener, and datagen — not for sbatch submission. (The eval/polaris/*.pbs
+    # job scripts were retired/removed in the 2026-06-25 eval/ cleanup.)
     default_time_limit="24:00:00",
     max_time_limit="24:00:00",
     num_nodes_slow=10,
