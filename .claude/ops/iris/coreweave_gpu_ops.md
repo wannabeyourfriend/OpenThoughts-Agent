@@ -87,7 +87,7 @@ Log-content greps (`scripts/iris/analyze_job_history.py`) are for the sel_rows /
 only** — never for liveness/terminal detection. (The launch HOW-TO's §8 carries the full monitoring rule.)
 
 **Finelog retains the FULL job log — it is NOT capped at ~1600 init lines** (an earlier note claimed a storage
-cap; that was wrong — see CORRECTED memory `iris-finelog-retains-only-init`). The whole log, init → crash, is
+cap; that was wrong). The whole log, init → crash, is
 retrievable by **time-window pagination** with the **cw-capable iris binary**
 (`/Users/benjaminfeuer/miniconda3/envs/otagent/bin/iris` — the marin `.venv` iris has a broken `kubernetes`
 import and CANNOT drive cw). The only real truncation is `--tail`'s line cap; `--since-ms <submitted_at_ms>
