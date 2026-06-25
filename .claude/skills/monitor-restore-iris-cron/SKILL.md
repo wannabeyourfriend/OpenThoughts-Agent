@@ -1,6 +1,6 @@
 ---
 name: monitor-restore-iris-cron
-description: Re-register the every-3-hours Iris job-monitor cron (status check + datagen auto-rescue/keep-2-in-flight) if it has been lost. Use at the start of a new session, after a restart, or when the user asks to restore/check the datagen-eval monitoring cron.
+description: Re-register the every-3-hours Iris job-monitor cron (status check + datagen auto-rescue/keep-2-in-flight) if it has been lost. Covers BOTH the marin TPU cluster and the CoreWeave GPU cluster (cw-us-east-02a). Use at the start of a new session, after a restart, or when the user asks to restore/check the datagen-eval monitoring cron.
 ---
 
 # monitor-restore-iris-cron
@@ -41,17 +41,30 @@ cron prompt below is canonical; copy it verbatim into `CronCreate`.
   (auto-rescue, keep-2-in-flight) are **datagen-only**; eval jobs are
   monitor-only (they self-sync to Supabase+HF). See the `datagen-launch-iris` and
   `eval-agentic-launch-iris` skills.
+- **Two clusters.** The cron queries both the **marin** TPU cluster and the
+  **`cw-us-east-02a`** CoreWeave GPU cluster. The marin `.venv` iris now carries
+  the `[controller]` deps so it drives CoreWeave too — but the CoreWeave query
+  MUST be prefixed `KUBECONFIG=~/.kube/coreweave-iris-gpu`, else iris falls back
+  to the shell-default kubeconfig (`~/.kube/lambdaconfig`) and errors with
+  `Invalid kube-config file … Expected object with name`. GPU-RL jobs on
+  CoreWeave are **monitor-only** (no rescue, no keep-2 — those are TPU-datagen
+  concepts); their pods GC on terminal, so logs come from the persistent finelog
+  server. Other CoreWeave GPU configs exist (`coreweave*` = US-WEST-04A,
+  CI/smoke) but are NOT in scope unless the user runs jobs there.
 
 ## Canonical cron prompt (copy verbatim into CronCreate)
 
 ```
-Every-3-hours status check on ALL Iris jobs for user benjaminfeuer (datagen + eval + anything else).
+Every-3-hours status check on ALL Iris jobs for user benjaminfeuer (datagen + eval + GPU-RL + anything else), across BOTH the marin TPU cluster and the CoreWeave GPU cluster.
 
-1. Active jobs (ALL job types):
-   /Users/benjaminfeuer/Documents/marin/.venv/bin/iris --cluster=marin query "SELECT job_id, state FROM jobs WHERE state IN (1,2,3) AND job_id LIKE '/benjaminfeuer/%' ORDER BY job_id DESC LIMIT 20" -f csv
-   Also query state IN (4,5,6) LIMIT 8 to catch jobs that went terminal since the last tick.
+1. Active jobs (query BOTH clusters):
+   1a. marin (TPU):
+       /Users/benjaminfeuer/Documents/marin/.venv/bin/iris --cluster=marin query "SELECT job_id, state FROM jobs WHERE state IN (1,2,3) AND job_id LIKE '/benjaminfeuer/%' ORDER BY job_id DESC LIMIT 20" -f csv
+   1b. cw-us-east-02a (CoreWeave GPU) — KUBECONFIG prefix is REQUIRED (else iris uses the wrong shell-default kubeconfig and errors):
+       KUBECONFIG=~/.kube/coreweave-iris-gpu /Users/benjaminfeuer/Documents/marin/.venv/bin/iris --cluster=cw-us-east-02a query "SELECT job_id, state FROM jobs WHERE state IN (1,2,3) AND job_id LIKE '/benjaminfeuer/%' ORDER BY job_id DESC LIMIT 20" -f csv
+   For EACH cluster also query state IN (4,5,6) LIMIT 8 to catch jobs that went terminal since the last tick. If the cw query errors (cluster down / creds), report that and continue with marin — do not fail the whole tick.
 
-2. For each ACTIVE job, run the analyzer (job-type-agnostic):
+2. For each ACTIVE marin (TPU) datagen/eval job, run the harbor analyzer (TPU/harbor-shaped — does NOT apply to CoreWeave GPU-RL jobs; handle those per class D):
    /Users/benjaminfeuer/miniconda3/envs/otagent/bin/python /Users/benjaminfeuer/Documents/OpenThoughts-Agent/scripts/iris/analyze_job_history.py <job_id> --output /tmp/$(basename <job_id>)_history.md --refresh
    Report from the .json sidecar: runtime_h, iris_preemption_count, cycles total/served, samples (serving_summary.gen_tps.n), gen tok/s mean/peak, Running mean/peak, non_empty/total trials = rate, t_first_serve, top harbor_exception_stats.
 
@@ -62,6 +75,8 @@ Every-3-hours status check on ALL Iris jobs for user benjaminfeuer (datagen + ev
    B. **Eval** (`eval-%`): launched per the eval-agentic-launch-iris skill. These **auto-sync to Supabase + HF on completion** (`--upload_to_database`), build sandboxes at runtime (force_build:true, MAIN Daytona org) and need **NO rescue and NO keep-2-in-flight** — they are one-off. **ALWAYS report the leading metric (running accuracy / mean reward) for each in-flight eval** — pull the `<done>/<total> Mean: <X>` figure from the harbor progress line in `/Users/benjaminfeuer/Documents/marin/.venv/bin/iris --cluster=marin job logs <job_id>` (the analyzer sidecar does NOT capture it). Also report productive trial rate + harness exceptions, and on a terminal job whether results landed (Supabase/HF). Do NOT auto-relaunch eval jobs.
 
    C. **Other** job types: report state + a one-line health read; take no autonomous write action.
+
+   D. **GPU-RL** (CoreWeave `cw-us-east-02a`, e.g. `rl-iris-%` / `rl-%` — MarinSkyRL GRPO on whole H100x8 nodes, possibly gang-scheduled multi-node `replicas>1`): **monitor-only — NO rescue, NO keep-2-in-flight, NO auto-relaunch** (those are TPU-datagen concepts and do not apply). The harbor analyzer in §2 does NOT apply (no harbor trial sidecars). For each in-flight GPU-RL job report state + the latest RL progress by reading the persistent finelog (pods GC on terminal): `KUBECONFIG=~/.kube/coreweave-iris-gpu /Users/benjaminfeuer/Documents/marin/.venv/bin/iris --cluster=cw-us-east-02a job logs <job_id> --max-lines 100000 --no-tail` then grep `WANDB_MIRROR kind=train step=` for the latest `trainer/global_step`, `loss/avg_raw_reward`, and `generate/num_failed_trajectories`/`generate/errors`. For multi-node confirm `All N Ray node(s) joined`. On a terminal job report exit state (4=SUCCEEDED). Note: finelog retention is finite — older runs' step lines may have aged out (report what survives). NEVER kill/relaunch GPU-RL jobs.
 
 STANDING ACTIONS — DATAGEN JOBS ONLY (override read-only; see memories auto_rescue_banked_trials, datagen_keep_two_in_flight):
 4. AUTO-RESCUE (datagen only): if a datagen job is terminal (4/5/6) with productive trials banked in GCS that did NOT auto-upload (HF repo missing/stale), rescue automatically — no need to ask: rsync gs://marin-models-{us,eu}/ot-agent/<job>/<job>/ → /tmp/<job>_traces, then /Users/benjaminfeuer/miniconda3/envs/otagent/bin/python /Users/benjaminfeuer/Documents/OpenThoughts-Agent/scripts/harbor/make_and_upload_trace_dataset.py --job_dir /tmp/<job>_traces --repo_id penfever/<slug>-qwen3.5-122b-32k-traces --episodes last --filter none --skip_register (source /Users/benjaminfeuer/Documents/secrets.env first). Report final row count + update the tracker.
