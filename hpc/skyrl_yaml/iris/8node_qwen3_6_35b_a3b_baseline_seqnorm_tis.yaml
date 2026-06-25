@@ -279,6 +279,16 @@ terminal_bench:
 # =============================================================================
 trainer:
   strategy: fsdp2
+  # GatedDeltaNet packing leak (tmax-aligned, REQUIRED for trustworthy metrics):
+  # SkyRL defaults use_sample_packing TRUE, but the GDN conv1d + chunked-delta-rule
+  # carry recurrent/conv state ACROSS packed-sequence boundaries (no seq_idx /
+  # cu_seqlens threaded into the GDN kernels), leaking state between independent
+  # sequences -> WRONG per-token logprobs + INFLATED KL. tmax measured
+  # vllm_vs_local_logprob_diff_mean ~0.21 WITH packing vs ~0.02 WITHOUT. Disabling
+  # packing is the minimal correct setting for this hybrid arch. (The alternative
+  # is porting tmax's qwen3_5_packing_patch.py to thread seq_idx/cu_seqlens through
+  # the GDN path; revisit only if packing throughput becomes necessary.)
+  use_sample_packing: false
   # NO CP => keep the default flash-attn forward (faster than ring-SDPA, and at
   # 131k flash avoids materializing the score matrix — see MEMORY (B)).
   # attn_backend / flash_attn left at SkyRL defaults (flash-attn ON).
