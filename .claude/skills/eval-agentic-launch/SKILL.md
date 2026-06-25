@@ -117,6 +117,11 @@ sbatch_script / hardware / conda_envs / paths, so you no longer pass `--sbatch-s
 `--n-concurrent` / `--gpu-memory-util`:
 ```bash
 # inside a tmux session (the listener runs minutes/model — pre-download; nohup/disown are unreliable)
+# PYTHONPATH MUST include the repo root — the listener imports first-party top-level packages
+# (`database`, `eval`, `hpc`). A bare `python eval/unified_eval_listener.py` from a one-liner that
+# didn't set it dies with `ModuleNotFoundError: No module named 'database'`. Run from the repo root
+# (cd $WORKDIR) AND export it:
+export PYTHONPATH="$PWD:${PYTHONPATH:-}"   # $PWD = the OpenThoughts-Agent repo root
 python eval/unified_eval_listener.py \
   --cluster-config eval/clusters/<cluster>.yaml \
   --baseline-model-configs eval/configs/baseline_model_configs_minimal.yaml \
