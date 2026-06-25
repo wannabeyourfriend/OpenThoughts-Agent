@@ -392,18 +392,28 @@ RUN . $RL_ENV_DIR/bin/activate && \
 # expert_parallel.py defines `class ExpertParallel(ParallelStyle)` — exactly the
 # import apply_ep needs.
 #
-# TORCH-2.11 COMPAT + WHY --no-deps: torchtitan is pure-python (the EP path only
-# uses torch.distributed.tensor APIs) and at a1fdd7e its pyproject pins NO torch
-# (no torch==/torch>= requirement), so it does NOT rebuild or renudge our
-# from-source torch 2.11.0 / vLLM-fork / flash-attn stack. We install with
-# --no-deps so its UNRELATED transitive deps (torchdata/datasets/tokenizers/
-# tensorboard/tyro/...) cannot re-resolve and clobber a protected package in this
-# carefully-pinned RL venv — apply_ep imports none of them. (MarinSkyRL's own
-# Stage-0 note confirms: "torchtitan ... does NOT rebuild torch ... moves no
-# protected package (torch/TE/transformers/numpy/flash-attn/mcore)".)
-# torchtitan is pure-python (trivial) -> it is NOT wheel-cached (only vLLM/flash-
+# TORCH-2.11 COMPAT + WHY --no-deps + WHY tyro IS STILL NEEDED:
+# torchtitan is pure-python (the EP path only uses torch.distributed.tensor APIs)
+# and at a1fdd7e its pyproject pins NO torch, so it does NOT rebuild or renudge our
+# from-source torch 2.11.0 / vLLM-fork / flash-attn stack. We install --no-deps so
+# its UNRELATED transitive deps (torchdata/datasets/tokenizers/tensorboard/...)
+# cannot re-resolve and clobber a protected package in this carefully-pinned RL
+# venv. BUT `torchtitan/__init__.py` is EAGER: importing the package (even just
+# `torchtitan.distributed.expert_parallel`) runs __init__ -> quantization/float8.py
+# -> config/manager.py -> `import tyro`. `tyro` is NOT a transitive of torch/
+# transformers/datasets, so a bare `--no-deps torchtitan` leaves it ABSENT and the
+# ExpertParallel import-assert below dies with `ModuleNotFoundError: No module
+# named 'tyro'` (the production Jupiter SIF ships torchtitan 0.2.2 WITH tyro; the
+# skyrl-train `[ep]` extra installs torchtitan WITH deps). So we install tyro
+# EXPLICITLY. Install tyro WITH its deps (it itself eager-imports
+# docstring-parser/rich/shtab/typing-extensions — a bare `--no-deps tyro` would
+# just move the ModuleNotFoundError one hop), but install torchtitan --no-deps (so
+# torchtitan's heavy/unrelated dep set can't clobber a protected package). tyro's
+# deps are light pure-python and don't touch torch/transformers/numpy/flash-attn.
+# torchtitan+tyro are pure-python (trivial) -> NOT wheel-cached (only vLLM/flash-
 # attn, the nvcc compiles, are). This step stays cheap on every rebuild.
 RUN . $RL_ENV_DIR/bin/activate && \
+    uv pip install "tyro" && \
     uv pip install --no-deps \
         "torchtitan @ git+https://github.com/pytorch/torchtitan.git@a1fdd7e" && \
     python -c "from torchtitan.distributed.expert_parallel import ExpertParallel; print('torchtitan ExpertParallel import OK (apply_ep EP>1 unblocked)')"
