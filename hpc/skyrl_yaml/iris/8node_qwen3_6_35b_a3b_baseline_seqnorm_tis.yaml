@@ -369,7 +369,15 @@ trainer:
       # internally per layer) — so pinning that one class wraps every decoder
       # layer; the vision tower is correctly excluded (text-only RL).
       wrap_policy:
-        transformer_layer_cls_to_wrap: Qwen3_5MoeDecoderLayer
+        # MUST be a LIST (get_fsdp_wrap_policy iterates this value; a bare scalar
+        # string is iterated CHARACTER-BY-CHARACTER -> "Could not find the
+        # transformer layer class to wrap" — the v5 failure). The hybrid arch
+        # (10 full-attn + 30 GatedDeltaNet) uses the SINGLE Qwen3_5MoeDecoderLayer
+        # class. After the Stage-1 text-CausalLM unwrap (model_wrapper.py ->
+        # qwen3_5_vlm.unwrap_to_text_causal_lm) the decoder layers sit at the top
+        # level and _no_split_modules drops the vision class, so this pin (and the
+        # autodetect path) both resolve.
+        transformer_layer_cls_to_wrap: ["Qwen3_5MoeDecoderLayer"]
       # MESH: EP=8 x FSDP=4 = 32 policy GPU = 4 CoreWeave nodes. CP=1 (NO CP).
       # MoE dim-0 guard (num_experts//EP)%FSDP==0: 256/EP8=32; 32/FSDP4=8 -> VALID.
       fsdp_size: 4
@@ -393,7 +401,15 @@ trainer:
       # Mirror the policy wrap-policy pin (see policy.fsdp_config above) — inert
       # here (no RefWorker built), but kept consistent.
       wrap_policy:
-        transformer_layer_cls_to_wrap: Qwen3_5MoeDecoderLayer
+        # MUST be a LIST (get_fsdp_wrap_policy iterates this value; a bare scalar
+        # string is iterated CHARACTER-BY-CHARACTER -> "Could not find the
+        # transformer layer class to wrap" — the v5 failure). The hybrid arch
+        # (10 full-attn + 30 GatedDeltaNet) uses the SINGLE Qwen3_5MoeDecoderLayer
+        # class. After the Stage-1 text-CausalLM unwrap (model_wrapper.py ->
+        # qwen3_5_vlm.unwrap_to_text_causal_lm) the decoder layers sit at the top
+        # level and _no_split_modules drops the vision class, so this pin (and the
+        # autodetect path) both resolve.
+        transformer_layer_cls_to_wrap: ["Qwen3_5MoeDecoderLayer"]
       fsdp_size: 4
       expert_model_parallel_size: 8
       moe_router_replay: true
