@@ -39,7 +39,7 @@ PY
 | table | what it holds | key columns |
 |---|---|---|
 | `sandbox_jobs` | **one row per (model × benchmark) eval job** — the scores | `model_id`, `benchmark_id`, `metrics` (jsonb), `stats` (jsonb), `job_status`, `n_rep_eval`, `n_trials`, `username`, `hf_traces_link`, `slurm_job_id` |
-| `models` | registered models | `id`, `name` (HF repo, e.g. `laion/<run>-<step>-<size>`) |
+| `models` | registered models | `id`, `name` (HF repo, e.g. `laion/<run>-<step>-<size>`), `base_model_id` (**self-FK → `models.id`**), `dataset_id`, `agent_id`, `dataset_names`, `duplicate_of` |
 | `benchmarks` | benchmark catalog | `id`, `name`, `duplicate_of` (→ canonical benchmark id, for families) |
 | `agents` | harness/agent rows | `id`, `name` |
 | `sandbox_trial_model_usage` | per-trial model usage (FK→models) | `model_id` — **watch for cross-user FKs before deleting a model** |
@@ -190,7 +190,25 @@ fields and resolve FKs). Full flags are in `OpenThoughts-Agent/CLAUDE.md`.
 - **Register a model** (after an HF upload): `scripts/database/manual_db_push.py`
   `--hf-model-id <repo> --base-model <hf> --dataset-name <name|comma,list> [--training-type RL]`
   (defaults to SFT; pass `RL` for RL models). Multi-dataset → comma-list sets
-  `dataset_names`.
+  `dataset_names`. **The `--base-model <hf>` flag is NOT stored as text** — it's resolved to the
+  `models` row of that base and stored as `base_model_id` (the self-FK). So a wrong `--base-model`
+  registers a wrong *uuid pointer*, fixed by repointing it (next bullet), not by editing a string.
+- **Repair a mis-registered base model** (`base_model_id` points at the wrong base, e.g. a 27B model
+  registered against the 9B base): a **single-column repoint**, NOT a re-register. Both the model and
+  its correct base are `models` rows — find both by `name` (`ilike`), then update only `base_model_id`.
+  It does **not** touch `sandbox_jobs`/scores or the row's own `id` (so no cross-user FK breakage — the
+  models table has no per-row owner; writes are scoped by `id`), and the new value must be a valid
+  `models.id`. Guard the write on the *old* value so it's idempotent + can't clobber a since-fixed row:
+  ```python
+  idname = {m["id"]: m["name"] for m in c.table("models").select("id,name").execute().data}
+  wrong  = c.table("models").select("id,name,base_model_id").ilike("name","%<model-stub>%").execute().data
+  RIGHT  = next(i for i,n in idname.items() if n == "<correct/base-hf-name>")   # the base's models.id
+  for m in wrong:                                  # may be >1 sibling row — check each
+      assert idname.get(RIGHT)                     # target base row exists
+      c.table("models").update({"base_model_id": RIGHT}).eq("id", m["id"]).eq("base_model_id", m["base_model_id"]).execute()
+  ```
+  Then re-read to confirm the new base resolves correctly, that sibling rows you did NOT mean to touch
+  (e.g. the real 9B model) still point at their own base, and that the `sandbox_jobs` count is unchanged.
 - **Register/repair an eval job** (auto-upload failed): `scripts/database/manual_db_eval_push.py`
   `--job-dir trace_jobs/<RUN_TAG> [--hf-repo …] [--skip-hf] [--forced-update]`.
   **Verify the registered model name afterward** — for vLLM-served models the
