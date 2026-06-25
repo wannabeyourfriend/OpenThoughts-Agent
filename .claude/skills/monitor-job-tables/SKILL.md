@@ -17,6 +17,14 @@ description: >-
 > to locate logs safely (`scontrol show job <id> -o` `StdOut=`/`%Z` — **never `find`/`du` on GPFS**), which
 > login node to use (login01 false-drains), and the debug-token caveats (`opCount dead` is benign noise, not
 > `EngineDeadError`). The extraction commands below assume you already know each job's real log path from ops.
+>
+> **Log-path trap (Leonardo agentic eval) — verify the StdOut path EXISTS before concluding "dead."** For
+> some Leonardo eval jobs `scontrol`'s `StdOut=` points at a name that was never created (e.g.
+> `eval_<name>_<jobid>.out`) while the **real live log is `data_<jobid>.out`** in the same dir. A sweep that
+> `stat`s only the scontrol path sees "no log / silent" and can wrongly declare a healthy run dead (this
+> caused a false "tmax-27b silently dead" call on a job that was 255/267 trials done, vLLM 200-OK, alive). If
+> the scontrol StdOut doesn't exist, **`ls` the job's `%Z` workdir for `data_<jobid>.out` (or any `*_<jobid>.out`)
+> and read THAT** before judging liveness — absence at the scontrol path is a path mismatch, not a death.
 
 Report **every** active and recently-terminated job, **bucketed by type**, each in the format below.
 **Unify cross-cluster runs of the same type into ONE table** (one RL table spanning Jupiter+Leonardo,
@@ -170,6 +178,14 @@ trial progression) — see `eval-agentic-launch` §4 for the greps.
 generating; **all trials done but job RUNNING → zombie (cancel)**; instant-fail (`n_output_tokens: None`,
 `finished_at`≈`started_at`) → tunnel not really carrying traffic; repeated `Bearer token invalid` → Daytona
 auth degradation.
+**Before calling an eval "dead," confirm you read the RIGHT log + a CURRENT window.** Check the actual live
+log (`data_<jobid>.out` if the scontrol StdOut path is absent — see the log-path trap up top), and count
+`result.json` over the WHOLE run, not just the recent tail. A burst of `litellm.Timeout` / `AgentTimeoutError`
+in the last window is usually the hard-trial tail of a nearly-done run (a high timeout fraction is expected —
+see below), NOT "0 productive / unreachable vLLM." Verify vLLM is actually down (no recent `200 OK` POSTs)
+before blaming the engine; `delete=false` Daytona sandboxes accumulate to a BOUNDED steady-state (TTL-reaped),
+which is not an unbounded "leak." (History: a tail-window misread called a 255/267-done, vLLM-alive tmax-27b
+"silently dead.")
 
 ### NOT a reliability problem — a high `AgentTimeoutError` fraction
 A large timeout share — **even a majority of trials** — is EXPECTED on hard / long-horizon / long-output
