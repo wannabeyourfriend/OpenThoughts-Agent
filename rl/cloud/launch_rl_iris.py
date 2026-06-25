@@ -101,23 +101,30 @@ DEFAULT_CLUSTER = "cw-us-east-02a"
 # When the gpu-rl image is rebuilt, bump this digest (use the immutable
 # ``:gpu-rl-<gitsha>`` tag's digest, never the floating ``:gpu-rl``).
 #
-# ⚠️ PENDING REBUILD (gates the CoreWeave EP=8 RL jobs): the Dockerfile.gpu-rl now
-# bakes torchtitan a1fdd7e (the `ExpertParallel` import-assert at build time → the
-# EP>1 MoE unblock) AND is restructured to install vLLM-fork + flash-attn from
-# CACHED WHEELS (docker/wheelhouse/, built once by docker/build_wheels.sh — see
-# docker/README.gpu-rl-wheelcache.md). That image has NOT yet been built/pushed:
-# the build is a from-source x86_64 CUDA compile that cannot run on the arm64 dev
-# Mac (QEMU + Docker Desktop RAM). The digest below is the LAST-GOOD pre-torchtitan
-# image (still launches dense/non-EP arms). To finish:
-#   1) on an x86_64 host:  source ~/secrets.env && ./docker/build_wheels.sh
-#   2)                     ./docker/build_and_push.sh gpu-rl   (pushes :gpu-rl + :gpu-rl-<gitsha>)
-#   3) capture the new digest:
-#        docker buildx imagetools inspect ghcr.io/open-thoughts/openthoughts-agent:gpu-rl-<gitsha>
-#   4) replace the sha256 below with that digest + refresh this comment.
-# Until then EP=8 jobs will still hit `ModuleNotFoundError: torchtitan` on THIS digest.
+# This digest BAKES torchtitan a1fdd7e (+ tyro): the `ExpertParallel` import-assert
+# (step-4a of Dockerfile.gpu-rl) PASSED in-build → the EP>1 MoE unblock is proven.
+# The CoreWeave EP=8 RL jobs (30B-A3B 131k, 35B) no longer hit
+# `ModuleNotFoundError: torchtitan`. Also baked: vLLM-fork 76259c63 + flash-attn
+# 2.8.3 (flash_attn_2_cuda present) + MarinSkyRL 2d9feef + harbor 342729d5.
+#
+# BUILT IN-CLUSTER ON COREWEAVE (not the arm64 Mac): the image is amd64 + a
+# from-source x86 CUDA compile that QEMU/Docker-Desktop can't do locally, and iris
+# has NO in-cluster build primitive (`iris build` = LOCAL buildx). The build ran as
+# an iris job with KANIKO (BuildKit needs CAP_SYS_ADMIN/bind-mounts the cluster
+# denies — privileged is silently downgraded; nodes run gVisor). Context = the
+# iris-synced /app bundle; WHEEL_SOURCE=wheel-builder compiled the wheels inline
+# (~3h, cpu48/mem512GB/disk400GB — mem≥512GB needed to avoid the wheel-packaging
+# OOM). ghcr push via the GitHub PAT (`gh auth token`, write:packages), NOT the
+# Docker-Hub DOCKER_TOKEN in secrets.env. Procedure: agent_logs/2026-06-25_*.md.
+#
+# Digest == the immutable gitsha tag :gpu-rl-6bd571b4 (OT-Agent commit 6bd571b4,
+# "fix(gpu-rl): in-cluster build fixes — uv index-strategy, pip wheel, tyro").
+# Single-platform linux/amd64 manifest, 13 layers ~21.5 GB. The floating :gpu-rl
+# tag resolves to the same digest. When the image is rebuilt, bump this digest
+# (use the immutable :gpu-rl-<gitsha> tag's digest, never the floating :gpu-rl).
 DEFAULT_RL_DOCKER_IMAGE = (
     "ghcr.io/open-thoughts/openthoughts-agent"
-    "@sha256:df2cb77e49fc078c75e909f0f967af3205b2b7cf1c4656c5ab5cd907e37128d1"
+    "@sha256:2055412f56ac7ee4f69e24762e5a7b25ba6958ae020b7a266e02fa0cde8553fc"
 )
 DEFAULT_GPU_VARIANT = "H100"
 DEFAULT_GPUS_PER_NODE = 8           # gd-8xh100ib-i128 = 8x H100-80GB + IB
