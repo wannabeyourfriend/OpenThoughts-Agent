@@ -91,7 +91,11 @@ CODE / CONFIG EDITS → edit LOCALLY on the active branches:
 /Users/benjaminfeuer/Documents/harbor, /Users/benjaminfeuer/Documents/MarinSkyRL.
 Local clones are GROUND TRUTH — clusters never diverge (no untracked/divergent changes, no hand-editing,
 no patch-by-rsync). Sync the three Python repos by commit+push, then `git pull` on the cluster (editable
-installs, live after pull). vLLM (compiled fork `mlfoundations/vllm`) → commit+push the fork, then BUILD
+installs, live after pull). EVERY SWEEP, run `git status --short` on each cluster repo and triage any
+accumulated untracked/modified drift back to local: TRACK reusable files (commit local → push), GITIGNORE
+recurring transient junk (`*.bak`, `*_manifest.txt`, `&1`, ephemeral `reeval_priority_*`); reconcile the
+cluster with `git pull`, NEVER `git reset --hard` while live jobs depend on uncommitted state (procedure in
+`monitor-cron-sweep` §4). vLLM (compiled fork `mlfoundations/vllm`) → commit+push the fork, then BUILD
 FROM SOURCE on the cluster from that commit (never rsync edits / hand-patch); every cluster keeps an env
 with our fork built for it (some envs may run vanilla vLLM).
 

@@ -102,6 +102,19 @@ ONE table.** Extraction pointers:
   JSON has numeric scores — a COMPLETED job can carry an empty `results:{}`**, extract MATH500/AIME24-mean±se/gsm8k,
   fill the row, flip to ✅). On a failure state, diagnose per §3.3 of `EVAL_CONVENTION.md` + log. The tracker file
   carries the jobids, so no run-state needs to live here — just read the grid each sweep and advance pending rows.
+- **Cluster working-tree hygiene (every sweep, per cluster — the divergence keeps re-accumulating):** run
+  `git -C <cluster repo> status --short` on each cluster you touch. If untracked/modified files have piled up
+  (ad-hoc launch scripts, priority lists, sft/eval configs, `.bak`s, generated manifests, stray `&1` redirect
+  junk), **triage them back to the local ground-truth clone** — same treatment as the manual reconciliation:
+  rsync the files local, **TRACK** the reusable/canonical ones (commit locally → supervisor pushes; place at
+  the path matching tracked siblings, e.g. `eval/lists/*.txt`, `sft/lf_configs/`, real launchers under
+  `scripts/` or the relevant dir), and **GITIGNORE** the recurring transient/generated set (`*.bak`,
+  `*_manifest.txt`, `&1`, ephemeral per-sweep `reeval_priority_*` scratch). Diff any tracked-but-modified file
+  vs origin first (identical → stale HEAD, no action). Then reconcile the cluster with **`git pull`
+  (fast-forward) — NEVER `git reset --hard`** while live jobs depend on uncommitted working-tree state (it
+  would wipe in-flight untracked work). Dispatch a triage subagent if the set is large; it commits locally,
+  the supervisor pushes, the cluster `git pull`s. This is recurring janitorial work — do it each sweep so the
+  tree doesn't drift unbounded, not just when asked.
 - **Chain-restart TIMEOUT** (12h/24h wall) with a successor RUNNING/PENDING → **normal, not a failure** —
   note the successor.
 - **Genuine FAILED** (exit≠0, not a wall TIMEOUT) → diagnose (read the first real traceback, often masked by
