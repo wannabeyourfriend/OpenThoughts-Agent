@@ -54,7 +54,8 @@ Supabase + HuggingFace.
 ```
 eval/
 ├── unified_eval_listener.py    # daemon / one-shot SLURM submitter
-├── unified_eval_harbor.sbatch  # vLLM serve + harbor run + DB upload
+├── jupiter/eval_harbor.sbatch  # Jupiter (GH200) per-cluster sbatch: vLLM serve + harbor run + DB upload
+├── leonardo/eval_harbor.sbatch # Leonardo (x86_64) per-cluster fork of the above
 ├── build_vllm_cmd.sh           # consumes EVAL_VLLM_* env from listener
 ├── check_progress.py           # progress + result dashboard
 ├── snapshot_download.py        # pre-download HF caches

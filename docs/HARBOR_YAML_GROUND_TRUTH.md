@@ -7,7 +7,7 @@ config is authoritative," the answer is: **here.** No other location holds a *re
 config (the one documented exception below is not part of the central launch surface).
 
 > **NO symlinks.** As of commit `b355163f` there are no `eval/configs/dcagent_*` compat
-> symlinks. Both `unified_eval_harbor.sbatch` resolvers and the listener's
+> symlinks. Both `eval/{jupiter,leonardo}/eval_harbor.sbatch` resolvers and the listener's
 > `_resolve_agent_name_from_config_yaml()` take a `--config-yaml <basename>` and resolve it
 > **directly** from `hpc/harbor_yaml/eval/configs/`. Edit configs here; there is no second
 > place to keep in sync.
@@ -59,8 +59,8 @@ sync. The multiplier lives IN the file (not a CLI default). See
 
 The live SLURM path takes a **bare basename** on `--config-yaml` and resolves it directly
 from `hpc/harbor_yaml/eval/configs/`:
-- `eval/leonardo/unified_eval_harbor.sbatch` (the LIVE Leonardo path) and the root
-  `eval/unified_eval_harbor.sbatch` resolve the basename against `hpc/harbor_yaml/eval/configs/`.
+- `eval/leonardo/eval_harbor.sbatch` (the LIVE Leonardo path) and the
+  `eval/jupiter/eval_harbor.sbatch` (Jupiter path) resolve the basename against `hpc/harbor_yaml/eval/configs/`.
 - All `eval/presets/*.yaml` forward `config_yaml: dcagent_eval_config_no_override.yaml`.
 - The listener's `_resolve_agent_name_from_config_yaml()` resolves the same way.
 

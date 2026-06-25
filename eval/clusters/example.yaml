@@ -47,8 +47,8 @@ paths:
   listener_logs_dir: experiments/listener_logs
 
   # SLURM submission templates (relative to project_root).
-  sbatch_script: eval/unified_eval_harbor.sbatch
-  dp_sbatch_script: eval/unified_eval_harbor_dp.sbatch
+  sbatch_script: eval/jupiter/eval_harbor.sbatch
+  dp_sbatch_script: eval/jupiter/eval_harbor_dp.sbatch
 
   # Editable harbor checkout (the agent runtime).
   harbor_src: <path-to-harbor-checkout>/src   # e.g. ~/harbor/src

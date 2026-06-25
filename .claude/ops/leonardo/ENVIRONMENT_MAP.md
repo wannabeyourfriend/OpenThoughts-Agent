@@ -37,7 +37,7 @@ Last verified: **2026-06-14** (from `notes/leonardo.md` + the MarinSkyRL canary)
 ### 2a. `otagent` conda — orchestration + eval + datagen + agentic (the default)
 - **Path:** `/leonardo_work/AIFAC_5C0_290/bfeuer00/miniforge3/envs/otagent/` (activate via the `ops.md` preamble).
 - **Stack:** **torch 2.9.1+cu128**, **vLLM 0.16.0 built FROM SOURCE** against that torch (the from-source vLLM build recipe + env scrubbing is in `notes/leonardo.md` "Install"), **flash_attn 2.8.3+cu128torch2.9** (prebuilt x86 wheel from mjun0812 release **v0.9.0**, NOT the aarch64 wheel Jupiter uses).
-- **Use for:** everything that isn't SkyRL-RL or Qwen3.5-SFT — `hpc.launch`, the unified eval listener (`eval/leonardo/unified_eval_harbor.sbatch`, TP=4, 1 node, 24h), datagen, uploads. `proxychains` is provided by this env (compute-node internet).
+- **Use for:** everything that isn't SkyRL-RL or Qwen3.5-SFT — `hpc.launch`, the unified eval listener (`eval/leonardo/eval_harbor.sbatch`, TP=4, 1 node, 24h), datagen, uploads. `proxychains` is provided by this env (compute-node internet).
 - **Build gotchas (from-source vLLM):** set `CUDA_HOME=$CONDA_PREFIX`, `CUDACXX/CMAKE_CUDA_COMPILER=$CONDA_PREFIX/bin/nvcc`, `LD_LIBRARY_PATH=$CONDA_PREFIX/lib:…`; `mamba install cmake ninja`; `VLLM_TARGET_DEVICE=cuda … uv pip install vllm==0.16.0 --no-build-isolation`. `-DCMAKE_CUDA_FLAGS=--allow-unsupported-compiler` if the host compiler is rejected.
 
 ### 2b. `sft-qwen35` conda — Qwen3.5 (9B/27B) SFT

@@ -11,7 +11,7 @@ Key v6 features over v5:
   - Persistent sliding-window batch_size across iterations
   - hf_overrides support in baseline model configs
   - Supabase queries wrapped in try/except for resilience
-Uses unified_eval_harbor.sbatch as the SLURM job template.
+Uses eval/jupiter/eval_harbor.sbatch as the SLURM job template.
 
 
 ===============================================================================
@@ -47,7 +47,7 @@ FLAG REFERENCE
     Example: --datasets "DCAgent/dev_set_v2,DCAgent2/terminal_bench_2"
 
 --sbatch-script, -s <path>
-    Path to the sbatch template. Default: unified_eval_harbor_v4.sbatch (or
+    Path to the sbatch template. Default: eval/jupiter/eval_harbor.sbatch (or
     whatever the preset specifies). Only change this if you have a custom sbatch.
 
 
@@ -950,7 +950,7 @@ def scan_jobs_dir_for_resume(
 # via the shared eval.presets catalog (the same catalog the Iris launcher
 # consumes). Each preset is a flat mapping that can configure:
 #   - datasets: list of HF dataset repos
-#   - sbatch_script: sbatch script to use (default: unified_eval_harbor_v4.sbatch)
+#   - sbatch_script: sbatch script to use (default: eval/jupiter/eval_harbor.sbatch)
 #   - log_suffix: suffix for log file
 #   - check_hf_exists: validate model exists on HuggingFace
 #   - n_concurrent: Harbor --n-concurrent (default: 64)
@@ -1059,7 +1059,7 @@ DEFAULT_SLURM_PARTITION = "booster"
 DEFAULT_SLURM_ACCOUNT = ""  # empty = use sbatch header default
 DEFAULT_ENABLE_THINKING = False
 DEFAULT_TP_SIZE = 1
-DEFAULT_SBATCH_SCRIPT = "eval/unified_eval_harbor.sbatch"
+DEFAULT_SBATCH_SCRIPT = "eval/jupiter/eval_harbor.sbatch"
 
 # Fallback defaults (used when no --cluster-config is provided).
 # Empty strings force explicit cluster config — no implicit Jupiter defaults.
@@ -1211,7 +1211,7 @@ class ListenerConfig:
     pack_jobs: bool = False  # Pack multiple jobs onto same node via --nodelist
     # DP: data-parallel multi-node eval
     dp_nodes: int = 0  # 0 = single-node (default), >0 = use DP sbatch with N nodes
-    dp_sbatch_script: str = "eval/unified_eval_harbor_dp.sbatch"
+    dp_sbatch_script: str = "eval/jupiter/eval_harbor_dp.sbatch"
     # Inherit: seed _submitted_jobs from previous listener logs
     inherit_log: Optional[List[str]] = None
     # Cluster config (loaded from --cluster-config YAML)
@@ -3965,7 +3965,7 @@ def build_config(args: argparse.Namespace) -> ListenerConfig:
     jobs_dirs = args.jobs_dir or [os.environ.get("EVAL_JOBS_DIR", fallback_jobs_dir)]
 
     # Resolve DP sbatch script: Cluster config > Default
-    dp_sbatch_script = _cc_p("dp_sbatch_script", "eval/unified_eval_harbor_dp.sbatch")
+    dp_sbatch_script = _cc_p("dp_sbatch_script", "eval/jupiter/eval_harbor_dp.sbatch")
 
     # agent_envs: resolve from preset. Format: "KEY_NAME,KEY_NAME=ENVVAR,KEY=literal"
     # - "SERPAPI_API_KEY" → reads os.environ["SERPAPI_API_KEY"], passes as SERPAPI_API_KEY=<value>

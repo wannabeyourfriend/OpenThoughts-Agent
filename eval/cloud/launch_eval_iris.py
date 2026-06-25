@@ -164,7 +164,7 @@ class EvalIrisLauncher(IrisLauncher):
                 ignored["n_concurrent"] = preset["n_concurrent"]
 
         # Result-affecting agent kwargs → harbor --agent-kwarg, replicating how
-        # unified_eval_harbor.sbatch maps them (parser=<v>, enable_thinking=true).
+        # eval/jupiter/eval_harbor.sbatch maps them (parser=<v>, enable_thinking=true).
         existing_kwarg_keys = {kw.split("=", 1)[0] for kw in (args.agent_kwarg or [])}
 
         agent_parser = preset.get("agent_parser")

@@ -1,12 +1,12 @@
 # Scoping: fixed Daytona snapshot template (`--no-force-build`) for the Iris eval path
 
 **Status:** scoping / not implemented. **Author context:** the SLURM eval path
-(`unified_eval_harbor.sbatch`) already supports this; the Iris eval launcher
+(`eval/jupiter/eval_harbor.sbatch`) already supports this; the Iris eval launcher
 (`eval/cloud/launch_eval_iris.py`) does not. This doc scopes porting it.
 
 ## The capability (what SLURM already does)
 
-`unified_eval_harbor.sbatch` (lines ~790-793): when `EVAL_SNAPSHOT_NAME` is set,
+`eval/jupiter/eval_harbor.sbatch` (lines ~790-793): when `EVAL_SNAPSHOT_NAME` is set,
 it appends to the harbor command:
 
 ```

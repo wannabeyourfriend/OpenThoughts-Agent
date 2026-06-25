@@ -179,14 +179,14 @@ coupling), not absolute.
 
 **Single cross-cluster entrypoint:** the canonical v6 listener `eval/unified_eval_listener.py` takes
 `--cluster-config eval/clusters/<cluster>.yaml` (each cluster-config carries its own `sbatch_script` + log-dir;
-the Leonardo config points `sbatch_script` at `eval/leonardo/unified_eval_harbor.sbatch`).
+the Leonardo config points `sbatch_script` at `eval/leonardo/eval_harbor.sbatch`).
 To launch a Leonardo agentic-eval campaign (in tmux on Leonardo, after the preamble):
 ```bash
 python eval/unified_eval_listener.py --cluster-config eval/clusters/leonardo.yaml --preset <tb2|swebench|v2|...> \
   --require-priority-list --priority-file <list> --pre-download --once --verbose
 ```
 
-**Load-bearing gotcha:** `eval/leonardo/unified_eval_harbor.sbatch` MUST pass `--jobs-dir "$EVAL_JOBS_DIR"`
+**Load-bearing gotcha:** `eval/leonardo/eval_harbor.sbatch` MUST pass `--jobs-dir "$EVAL_JOBS_DIR"`
 to harbor (fixed 2026-06-20, commit `b56f9c1c`) — without it harbor writes trials to the wrong dir and the
 Supabase auto-register silently no-ops. Eval auto-registration to Supabase is BY DESIGN (the
 `enable_db_registration:false` guardrail applies to RL/SFT *training* YAMLs, not evals). Depends on the

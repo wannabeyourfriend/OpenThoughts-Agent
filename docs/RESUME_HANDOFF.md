@@ -38,7 +38,7 @@ where NNNNN is the *original* fire's vLLM port. All retries logged as
 **Cause**: `config.json::agents[0].kwargs.api_base` is frozen at the original
 fire's port. The new fire's vLLM listens on a *different* port.
 
-**Fix** (already in `eval/unified_eval_harbor.sbatch:829-834`): sed-rewrite
+**Fix** (already in `eval/jupiter/eval_harbor.sbatch:829-834`): sed-rewrite
 the api_base in `<run_dir>/config.json` to the current `${VLLM_PORT}`
 immediately before `harbor jobs resume`. Backup written to `config.json.bak-port`.
 
@@ -269,7 +269,7 @@ python -c "from database.unified_db.utils import get_sandbox_job_by_name; \
 |---|---|
 | `eval/check_resume_needed.py` | Inspector — classifier, reject mechanism |
 | `eval/resume_chunked.py` | Orchestrator — chunked fires per (preset, org) |
-| `eval/unified_eval_harbor.sbatch:828-859` | G10/G12 sed patch + harbor jobs resume call |
+| `eval/jupiter/eval_harbor.sbatch:828-859` | G10/G12 sed patch + harbor jobs resume call |
 | `eval/unified_eval_listener.py:910-913` | DONE classification (the line `--resume-error-threshold -1` overrides) |
 | `database/unified_db/utils.py::get_sandbox_job_by_name` | G13 ORDER BY fix |
 | `harbor-fix/src/harbor/cli/jobs.py:304` | Harbor Bug #1 patch (default None) |

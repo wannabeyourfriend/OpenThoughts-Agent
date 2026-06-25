@@ -65,7 +65,7 @@ What the Iris launcher does with each preset field:
     list are skipped (logged).
   - `n_concurrent` → `--n_concurrent`, only when you didn't pass `--n_concurrent`.
 - **Applied (result-affecting agent kwargs — mapped exactly as the SLURM
-  `unified_eval_harbor.sbatch` does):**
+  `eval/jupiter/eval_harbor.sbatch` does):**
   - `agent_parser` → harbor `--agent-kwarg parser=<value>` (e.g. `swebench` →
     `parser=xml`), unless you already passed a `parser=` `--agent_kwarg`.
   - `enable_thinking: true` → harbor `--agent-kwarg enable_thinking=true`, unless

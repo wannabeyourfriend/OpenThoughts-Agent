@@ -35,8 +35,8 @@ paths:
   eval_jobs_dir: /leonardo_work/AIFAC_5C0_290/bfeuer00/eval_jobs
   eval_logs_dir: eval/leonardo/logs
   listener_logs_dir: experiments/listener_logs
-  sbatch_script: eval/leonardo/unified_eval_harbor.sbatch
-  dp_sbatch_script: eval/leonardo/unified_eval_harbor.sbatch
+  sbatch_script: eval/leonardo/eval_harbor.sbatch
+  dp_sbatch_script: eval/leonardo/eval_harbor.sbatch
   harbor_src: /leonardo_work/AIFAC_5C0_290/bfeuer00/code/harbor/src
   datasets_dirs:
     - /leonardo_work/AIFAC_5C0_290/bfeuer00/data/hub

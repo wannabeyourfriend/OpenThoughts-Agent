@@ -13,7 +13,7 @@
 # Unified Eval Harbor — Leonardo Cluster (CINECA A100-64GB)
 #
 # Starts vLLM, runs Harbor eval, checks errors, uploads results.
-# Adapted from the canonical eval/unified_eval_harbor.sbatch for Leonardo x86_64.
+# Adapted from the canonical eval/jupiter/eval_harbor.sbatch for Leonardo x86_64.
 #
 # Positional args:
 #   $1 = MODEL (HF model name, e.g. mlfoundations-dev/some_model)
@@ -51,7 +51,7 @@ DAYTONA_ERROR_THRESHOLD="${EVAL_DAYTONA_THRESHOLD:-999999}"
 # forward dcagent_eval_config_no_override.yaml so harbor inherits each task's
 # declared (per-task) sandbox sizes. Thinking + agent parser are listener-driven
 # too (EVAL_ENABLE_THINKING / EVAL_AGENT_PARSER, mirroring the canonical
-# eval/unified_eval_harbor.sbatch), so no per-cluster config carries them.
+# eval/jupiter/eval_harbor.sbatch), so no per-cluster config carries them.
 CONFIG_YAML="${EVAL_CONFIG_YAML:-dcagent_eval_config_no_override.yaml}"
 ENABLE_THINKING="${EVAL_ENABLE_THINKING:-false}"
 AGENT_PARSER="${EVAL_AGENT_PARSER:-}"
@@ -94,7 +94,7 @@ WORK="/leonardo_work/AIFAC_5C0_290/bfeuer00"
 DCFT="${WORK}/code/OpenThoughts-Agent"
 
 # Resolve the harbor config path from CONFIG_YAML (mirrors the canonical
-# eval/unified_eval_harbor.sbatch resolution: hpc/harbor_yaml/eval/configs/ -> eval/leonardo/ -> eval/MBZ/).
+# eval/jupiter/eval_harbor.sbatch resolution: hpc/harbor_yaml/eval/configs/ -> eval/leonardo/ -> eval/MBZ/).
 # Presets forward dcagent_eval_config_no_override.yaml (in hpc/harbor_yaml/eval/configs/).
 if [[ "$CONFIG_YAML" == /* ]]; then
     HARBOR_CONFIG="$CONFIG_YAML"
@@ -604,7 +604,7 @@ if [ -n "${EVAL_OVERRIDE_MEMORY_MB:-}" ]; then
     echo "Using memory override: ${EVAL_OVERRIDE_MEMORY_MB}MB"
     EXTRA_HARBOR_ARGS="$EXTRA_HARBOR_ARGS --override-memory-mb $EVAL_OVERRIDE_MEMORY_MB"
 fi
-# Thinking + agent parser are listener-driven (mirror eval/unified_eval_harbor.sbatch),
+# Thinking + agent parser are listener-driven (mirror eval/jupiter/eval_harbor.sbatch),
 # replacing what the deprecated custom Leonardo config used to hardcode.
 if [ "$ENABLE_THINKING" = "true" ]; then
     echo "Enabling thinking (--agent-kwarg enable_thinking=true)"

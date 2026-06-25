@@ -134,7 +134,7 @@ def build_listener_argv(
     if args.enable_thinking:
         cmd.append("--enable-thinking")
     # Cat 3 (preferred-harness reproduction): pass through Pinggy URL/token so the
-    # sbatch opens a tunnel and the unified_eval_harbor.sbatch resume sed-patch
+    # sbatch opens a tunnel and the eval/jupiter/eval_harbor.sbatch resume sed-patch
     # can rewrite the dir's config.json from the (dead) old Pinggy URL to this
     # new one. Each fire needs its own free pair. resume_chunked.py is single-
     # pair per invocation; for multi-model batches, fire one chunk per pair.

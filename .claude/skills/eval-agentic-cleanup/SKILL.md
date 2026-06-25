@@ -96,7 +96,7 @@ agent calls back to the served model over a public **Pinggy** tunnel. The OLD re
 the stale Pinggy URL into the dir's `config.json` but **did not start a tunnel** → every post-resume trial
 hit `[Errno 111] Connection refused` (100% trial failure; pre-resume ~50% → post-resume ~0%, confirmed on
 JIDs 581168/581169/581170 and 668150/158/165). **PR #31 fixes this:** the resume branch of
-`unified_eval_harbor.sbatch` now starts the Pinggy SSH tunnel (gated on `EVAL_PINGGY_URL`) and exports
+`eval/jupiter/eval_harbor.sbatch` now starts the Pinggy SSH tunnel (gated on `EVAL_PINGGY_URL`) and exports
 `OPENAI_API_BASE`/`OPENAI_BASE_URL` (+ openhands `LLM_BASE_URL`/`LLM_API_KEY`, mini-swe-agent
 `MSWEA_*`/`HOSTED_VLLM_API_BASE`) so the sandboxed agent uses the PUBLIC tunnel URL, not the localhost
 `api_base` saved in `config.json`. **So a Cat-3 resume MUST pass the four passthroughs** so the tunnel +

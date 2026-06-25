@@ -71,7 +71,7 @@ entropy/grad_norm collapse overlay). Run it from the **otagent** env.
 
 **Tool-presence pre-check (the cluster clone may predate `--format standard`).** This tool only landed
 recently; a cluster clone can be older, and a full `git pull` here risks CONFLICTING with live-applied local
-edits (e.g. a running eval's `eval/leonardo/unified_eval_harbor.sbatch`). Confirm the flag exists, and if it
+edits (e.g. a running eval's `eval/leonardo/eval_harbor.sbatch`). Confirm the flag exists, and if it
 does NOT, sync **only this one file** — never a full `git pull`:
 ```bash
 cd $WORK/code/OpenThoughts-Agent
