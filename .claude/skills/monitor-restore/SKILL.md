@@ -63,8 +63,11 @@ were formatted. RL rows MUST include entropy + collapse signals (grad_norm / log
 CHAIN-RESTART TIMEOUTs are NORMAL (note the afterany successor), not failures.
 
 ON SUCCESSFUL COMPLETION (SFT / RL / datagen / eval) → note it + give summary statistics, then:
-- RL or SFT → perform the manual HF upload + DB registration per CLAUDE.md (= the `rl-job-cleanup` /
-  `sft-job-cleanup` skills; run the FULL checklist incl. trace upload + metrics for RL). Do this WITHOUT asking.
+- RL or SFT → perform the manual HF upload + DB registration per CLAUDE.md. Route RL by flavor: AGENTIC RL
+  (Harbor/Daytona/terminal_bench) → `rl-job-cleanup` (run the FULL checklist incl. trace upload + metrics);
+  STANDARD / non-agentic GRPO (the Delphi/rlvr/dapo math cells from `rl-standard-launch-leonardo`; no
+  trace_jobs) → `rl-standard-job-cleanup` (model + metric CSVs only; size suffix from the exported weights;
+  DB-register only if the series is DB-registerable). SFT → `sft-job-cleanup`. Do this WITHOUT asking.
 - Datagen → verify the traces uploaded to HF (penfever org). If NOT, dispatch a subagent to upload them
   manually (= `datagen-job-cleanup`).
 - Eval where DB registration FAILED for a technical reason → WITHOUT asking, dispatch a subagent to perform

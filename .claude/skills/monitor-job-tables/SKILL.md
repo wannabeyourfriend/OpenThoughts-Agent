@@ -26,7 +26,8 @@ buckets: **RL · SFT · Datagen · Eval · Catch-all**.
 Cross-cutting (every bucket):
 - **Chain-restart TIMEOUTs are normal, NOT failures** — when a 12h/24h job TIMEOUTs and its `afterany`
   successor is RUNNING/PENDING, report it as a normal restart (note the successor), not a death.
-- **Completion → the matching cleanup skill**: RL→`rl-job-cleanup`, SFT→`sft-job-cleanup`,
+- **Completion → the matching cleanup skill**: RL → by flavor — agentic (Harbor/Daytona)→`rl-job-cleanup`,
+  standard non-agentic GRPO (Delphi/rlvr/dapo math cells)→`rl-standard-job-cleanup`; SFT→`sft-job-cleanup`,
   datagen→`datagen-job-cleanup`, eval→`eval-agentic-cleanup`. **Cleanup is not done until the artifact's
   on-disk `trace_jobs/`/`tasks/` tree is `rm`'d + inode reclaim verified** — leaving it after HF upload is
   the #1 inode leak (the shared `datasets` project on `/e/data1` runs over its soft limit). Inode limits +

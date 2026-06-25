@@ -76,7 +76,10 @@ ONE table.** Extraction pointers:
 
 ## 4. Flag + hand off (the value of the sweep)
 - **Completion → the matching cleanup skill** (don't inline the whole checklist unless the sweep directive
-  says to act): RL → **`rl-job-cleanup`**, SFT → **`sft-job-cleanup`** (upload + DB register), datagen (all
+  says to act): RL → route by flavor: **agentic** (Harbor/Daytona/terminal_bench) → **`rl-job-cleanup`**;
+  **standard / non-agentic GRPO** (the Delphi/rlvr/dapo math cells from `rl-standard-launch-leonardo`; no
+  `trace_jobs/`) → **`rl-standard-job-cleanup`** (model + metric CSVs only, no trace dataset). SFT →
+  **`sft-job-cleanup`** (upload + DB register), datagen (all
   chunks done) → **`datagen-job-cleanup`** (consolidate + advance the tracker), eval → **`eval-agentic-cleanup`**
   (only if auto-upload/register failed). For RL, recognize **resume-overshoot**: a clean COMPLETED at
   `max_steps` means done → cleanup; spurious past-max chain links should be cancelled.

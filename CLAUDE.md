@@ -13,7 +13,7 @@ piece for the task at hand (skills are also invocable by name via the Skill tool
 
 - **`.claude/skills/<name>/SKILL.md`** — operational how-tos, one per task. By prefix:
   - **launch:** `rl-agentic-launch-jupiter`, `rl-agentic-launch-iris` (MarinSkyRL GRPO on Iris/CoreWeave H100 — gpu-rl Docker image, gang/leafgroup multi-node), `rl-standard-launch-leonardo`, `sft-launch-jupiter`, `sft-launch-leonardo`, `datagen-launch` (agentic Harbor trace-gen), `datagen-standard-launch` (non-agentic: Curator sharded + `generate.py`/`generate_abstract.py`), `eval-agentic-launch`, `eval-standard-launch` (+ the `*-iris` variants).
-  - **cleanup:** `rl-job-cleanup`, `sft-job-cleanup`, `datagen-job-cleanup`, `eval-agentic-cleanup`, `eval-standard-cleanup`.
+  - **cleanup:** `rl-job-cleanup` (AGENTIC Harbor/Daytona RL + companion trace dataset), `rl-standard-job-cleanup` (STANDARD non-agentic GRPO — Delphi/rlvr/dapo math cells; model + metric CSVs only, no traces), `sft-job-cleanup`, `datagen-job-cleanup`, `eval-agentic-cleanup`, `eval-standard-cleanup`.
   - **monitor:** `monitor-cron-sweep` (the sweep procedure), `monitor-job-tables` (the status-table formats + metrics/red-flags), `monitor-restore` (re-create the 3-hourly Jupiter+Leonardo sweep loop), `monitor-restore-iris-cron`.
   - **analysis / data / db:** `analyze-rl-behavior`, `analyze-dataset-token-length`, `datagen-reduce-dataset-snapshots`, `crud-otagent-supabase`.
   - **code (staged change workflow):** `code-create-staged-plan` (design a multi-stage codebase change → `notes/<codebase>/`), `code-execute-staged-plan` (run it gate-by-gate, log progress → `agent_logs/`).
