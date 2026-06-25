@@ -231,3 +231,23 @@ in the cluster.
 - **Standing constraints** (≤6 RUNNING RL/cluster, `enable_db_registration: false`, a3
   CONCLUDED, Daytona snapshot caps HARD, never kill a RUNNING job / `iris cluster
   restart` without permission) — see `CLAUDE.md §Always` + the launch skill §7.
+
+## Marin GitHub-issue monitoring + research (external skills)
+
+CoreWeave/Iris is **Marin's** cluster — when monitoring/triaging/updating the Marin GitHub
+issues this work touches (e.g. the RL-launch-on-Iris workflow issue, cluster/quota threads,
+upstream fixes we depend on), use the **mumwelt skills at `/Users/benjaminfeuer/Documents/mumwelt/mumwelt/skills/`**
+(invocable by name; they shell out to the `mum` CLI over a local offline mirror of all Marin
+activity — GitHub issues/PRs/comments, Discord, W&B, weekly summaries):
+
+- **`marin-context`** — search + cite Marin activity (a specific issue/PR/run, "what was
+  decided + why", who did what). The default for **monitoring** a Marin issue/PR's state +
+  history before commenting on or updating it.
+- **`marin-research`** — multi-subagent deep dive for broad/ambiguous "full picture of X" /
+  retro questions one query won't cover.
+- **`marin-publish`** — render a finished writeup to a linkable gist (htmlpreview) to share.
+
+These give the **context** to monitor + decide; the actual issue/PR **update** still goes
+through the `gh` CLI (the same path used for our Marin-community issue + PR comments). Check
+the mirror's freshness first (the skill prompts if stale). They live OUTSIDE this repo (the
+`mumwelt` checkout), so they're a referenced tool, not a committed part of ot-agent.
