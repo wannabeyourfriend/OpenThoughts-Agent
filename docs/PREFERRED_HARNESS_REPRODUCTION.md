@@ -4,7 +4,7 @@ Per-model recipes for reproducing paper accuracy via the model
 author's intended scaffold (swe-agent / openhands / mini-swe-agent /
 aider) running the **installed-agent CLI inside a Daytona sandbox**,
 talking back to the served model via Pinggy. This is Cat 3 of the
-[`EVAL_GUIDE`](../EVAL_GUIDE.md).
+[`EVAL_GUIDE`](EVAL_GUIDE.md).
 
 Each entry below pins:
 
@@ -55,7 +55,7 @@ Each entry below pins:
 ## §2 — Per-model serving config
 
 The yaml fragments below go into
-[`../configs/baseline_model_configs_minimal.yaml`](../configs/baseline_model_configs_minimal.yaml).
+[`eval/configs/baseline_model_configs_minimal.yaml`](../eval/configs/baseline_model_configs_minimal.yaml).
 Each is the *flipped state* — what to use for the listed scaffold.
 For a Cat 4 flip back to terminus-2, drop the parser lines (see
 EVAL_GUIDE §5).

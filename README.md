@@ -287,17 +287,9 @@ Everything you need to evaluate models lives under `eval/`. Pick the mode that f
    ```
    This creates a run with Daytona sandboxes and prints the aggregated score. Use it to verify that your model + Harbor wiring works before touching HPC.
 
-1. **Cluster-scale Harbor eval (TACC template).** The `eval/tacc/` subtree packages the scripts we use on TACC GH nodes:
-   - Drop database + HF credentials into `eval/tacc/secret.env` (see `eval/tacc/README.md` for the expected keys) and make sure the shared conda env in that README is accessible from your account.
-   - Submit `sbatch eval/tacc/tacc_eval_harbor.sbatch <hf_model_id> <hf_dataset_repo>`; both arguments default to the canonical OT-Agent eval model/dataset if omitted.
-   - The sbatch file loads CUDA/GCC modules, boots a VLLM server, hydrates datasets via `snapshot_download.py`, and then calls `harbor jobs start` with the concurrency specified in line 109 (set `--n-concurrent` here to scale up/down). Behavior is controlled by `eval/tacc/dcagent_eval_config.yaml`.
-   - Logs land in `experiments/logs/` and full Harbor outputs go under `jobs/<RUN_TAG>/`. `eval/tacc/README.md` documents troubleshooting tips plus alternate sbatch variants (`tacc_eval_multi_gpu.sbatch`, `tb2_eval_harbor.sbatch`, SweBench listeners, etc.).
+1. **Cluster-scale Harbor eval (unified listener).** The canonical surface is the root `eval/unified_eval_listener.py` driven by `--cluster-config eval/clusters/<cluster>.yaml`. It serves the model with vLLM inside SLURM, runs trials through Harbor + Daytona, and uploads to Supabase + HuggingFace. See [`docs/EVAL_GUIDE.md`](docs/EVAL_GUIDE.md) for the full fire templates, the five firing categories, the failure-mode catalog, and recovery procedures; [`eval/README.md`](eval/README.md) for the quickstart. To target a new cluster, copy `eval/clusters/example.yaml`.
 
-2. **Other clusters/benchmarks.** The remaining files in `eval/` are copyable templates:
-   - `JSC/launch_tbench.sh` shows how to adapt the flow to JSC (interactive SLURM allocation + reverse tunnel + Apptainer).
-   Reuse these when porting eval to a new site—each script labels the environment variables and SLURM resources you will likely need to swap out.
-
-3. **Launcher-driven evals.** Prefer `python -m hpc.launch --job_type eval ...` whenever you want the same CLI ergonomics as SFT/datagen jobs. Key flags:
+2. **Launcher-driven evals.** Prefer `python -m hpc.launch --job_type eval ...` whenever you want the same CLI ergonomics as SFT/datagen jobs. Key flags:
    - `--datagen_config hpc/datagen_yaml/<model>.yaml` (required). This is the same engine file you would pass to `--job_type datagen` and determines how the vLLM/Ray controller boots. `--trace_model` optionally overrides both `engine.model` and `vllm_server.model_path` so a single YAML can serve multiple finetunes.
    - `--trace_harbor_config hpc/harbor_yaml/<cluster>_eval_*.yaml` (filename must include `_eval_`)
    - Either `--trace_input_path /path/to/tasks` *or* `--harbor_dataset terminal-bench@2.0` (mutually exclusive)
@@ -311,9 +303,9 @@ Everything you need to evaluate models lives under `eval/`. Pick the mode that f
    ```bash
    python -m hpc.launch \
      --job_type eval \
-     --job_name tacc-qwen2-eval \
+     --job_name qwen2-eval \
      --datagen_config hpc/datagen_yaml/qwen3_coder_30b_a3b_vllm_serve.yaml \
-     --trace_harbor_config hpc/harbor_yaml/tacc_eval_daytona_eval.yaml \
+     --trace_harbor_config hpc/harbor_yaml/eval/eval_ctx32k.yaml \
      --trace_input_path $SCRATCH/dev_set_71_tasks \
      --eval_benchmark_repo mlfoundations-dev/dev_set_71_tasks \
      --trace_model hosted_vllm/qwen2.5-7b-instruct \
@@ -328,7 +320,7 @@ Everything you need to evaluate models lives under `eval/`. Pick the mode that f
      --job_type eval \
      --job_name tb2-claude-eval \
      --datagen_config hpc/datagen_yaml/qwen3_coder_30b_a3b_vllm_serve.yaml \
-     --trace_harbor_config hpc/harbor_yaml/tacc_eval_daytona_eval.yaml \
+     --trace_harbor_config hpc/harbor_yaml/eval/eval_ctx32k.yaml \
      --harbor_dataset terminal-bench@2.0 \
      --eval_benchmark_repo DCAgent/dev_set_71_tasks \
      --trace_model anthropic/claude-opus-4-1 \
@@ -343,12 +335,12 @@ Regardless of the path you choose, make sure `DC_AGENT_SECRET_ENV` or the cluste
 
 ##### Eval Lifecycle & Result Uploads
 
-- **Job bookkeeping starts before Harbor launches.** The sbatch drivers (for example `eval/tacc/tacc_eval_harbor.sbatch`) call `database/unified_db/utils.py:create_job_entry_started` to write a Supabase `sandbox_jobs` row with `job_status="Started"`, the intended `n_trials` (Harbor tasks) and `n_rep_eval` (copied from `config.n_attempts`, default 3). This dedupes model/benchmark pairs and records agent/model provenance before GPUs are consumed.
+- **Job bookkeeping starts before Harbor launches.** The sbatch driver (`eval/unified_eval_harbor.sbatch`) calls `database/unified_db/utils.py:create_job_entry_started` to write a Supabase `sandbox_jobs` row with `job_status="Started"`, the intended `n_trials` (Harbor tasks) and `n_rep_eval` (copied from `config.n_attempts`, default 3). This dedupes model/benchmark pairs and records agent/model provenance before GPUs are consumed.
 - **Runs must finish cleanly before we touch the database.** After Harbor exits, the sbatch script inspects `jobs/<RUN_TAG>/result.json` and bails if too many Daytona errors show up (TACC skips the upload if there are >3). Only when the run directory exists and passes that gate do we proceed.
 - **Averaged metrics come straight from Harbor.** `_extract_job_metadata()` (see `database/unified_db/utils.py`) parses `stats.evals.*.metrics` inside `result.json`, grabs the `mean` values that Harbor already computed across repeated attempts, and stores them with `n_total_trials`. We never recompute scores—what Harbor reports is what lands in Supabase.
 - **Trial completeness is enforced.** `_extract_trial_metadata()` refuses to register a trial unless both `agent_execution` and `verifier_result` blocks are present, so partially executed tasks never pollute the leaderboard averages. Harbor’s retry knobs (`--n-attempts`, `n_rep_eval`) ensure enough fully verified trials exist to compute the mean.
 - **Uploads are two-phased.** `upload_eval_results()` first pushes traces to HuggingFace (if `hf_repo_id` is supplied) and then updates the pre-created job row with `job_status="Finished"`, metrics, stats, and the HF dataset URL via `upload_job_and_trial_records()`. Trial + usage rows are inserted in the same pass, so Supabase has both the aggregate score and every per-task attempt. `error_mode` controls whether a failed HF upload rolls everything back or simply marks the job with warnings.
-- **Listeners keep things consistent.** Automations like `eval/tacc/tb2_eval_listener.py` poll Supabase for recent models, detect stale `sandbox_jobs` stuck in `Started`, and only submit new sbatch runs when a model/benchmark pair still needs coverage. That feedback loop guarantees the averages you see on the leaderboard come from completed Harbor jobs with trace artifacts uploaded.
+- **Listeners keep things consistent.** The `eval/unified_eval_listener.py` daemon polls Supabase for recent models, detects stale `sandbox_jobs` stuck in `Started`, and only submit new sbatch runs when a model/benchmark pair still needs coverage. That feedback loop guarantees the averages you see on the leaderboard come from completed Harbor jobs with trace artifacts uploaded.
 
 #### How to Launch an RL Job
 

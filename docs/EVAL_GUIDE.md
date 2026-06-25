@@ -31,7 +31,7 @@ load-bearing for evals:
 | `otagent-fix` | Default. transformers 4.x line. Used by terminus-2 reg eval, OOD presets, and swe-agent / openhands text-tools / mini-swe-agent / aider installed-agent fires. |
 | `otagent2-fix` | transformers 5.x line. Used by axolotl-trained Qwen3 finetunes that crash to load on 4.x (`extra_special_tokens` list bug), Qwen3.5 family, and Pattern C scaffolds that need vLLM ≥ 0.17 for `--reasoning-parser-plugin` (Nemotron-Nano, Qwen3-Coder native). |
 
-Recreate both via the slim yaml recipes in [`envs/`](envs/):
+Recreate both via the slim yaml recipes in [`eval/envs/`](../eval/envs/):
 
 ```bash
 conda env create -f eval/envs/otagent-fix.yml      # primary
@@ -51,7 +51,7 @@ Pinned versions (as of 2026-04-29):
 | daytona | 0.164.0 | 0.164.0 |
 | harbor (editable) | from harbor-fix checkout | from harbor-fix checkout |
 
-See [`envs/README.md`](envs/README.md) for the verification one-liner
+See [`eval/envs/README.md`](../eval/envs/README.md) for the verification one-liner
 and notes on when to retest after a version bump.
 
 ### harbor-fix — pin the patch stack
@@ -81,7 +81,7 @@ pip install -e ~/harbor-fix               # inside each conda env
 
 If you fire Cat 3 (preferred-harness reproductions), also apply the
 three uncommitted installed-agent patches documented in
-[`envs/README.md`](envs/README.md) (aider provider routing, mini-swe-agent
+[`eval/envs/README.md`](../eval/envs/README.md) (aider provider routing, mini-swe-agent
 api-key list, swe-agent venv PATH + set-u guard). Cat 1/2 fires don't
 need them.
 
@@ -175,7 +175,7 @@ Per-preset nuances:
 
 Paper-author scaffold + installed-agent CLI in a Daytona sandbox,
 talking back to the served model via Pinggy. See
-[`docs/PREFERRED_HARNESS_REPRODUCTION.md`](docs/PREFERRED_HARNESS_REPRODUCTION.md)
+[`PREFERRED_HARNESS_REPRODUCTION.md`](PREFERRED_HARNESS_REPRODUCTION.md)
 for the per-model recipes.
 
 ```bash
@@ -551,8 +551,8 @@ and infra-error definitions never drift.
 > re-runs the entire dataset due to a per-trial config mismatch (G12), and
 > can leave the DB row stuck at Pending (G13). Both fixes are committed in
 > this repo. The full cross-cluster catalogue + verification checklist
-> lives at [`eval/docs/RESUME_HANDOFF.md`](docs/RESUME_HANDOFF.md). Apply
-> the harbor-fix patches from `eval/envs/README.md` before relying on
+> lives at [`RESUME_HANDOFF.md`](RESUME_HANDOFF.md). Apply
+> the harbor-fix patches from [`eval/envs/README.md`](../eval/envs/README.md) before relying on
 > resume — without them you'll waste compute or hit 9-10h tail retry loops.
 
 ### Inspect first
@@ -650,7 +650,7 @@ python -c "from database.unified_db.utils import get_sandbox_job_by_name; \
 # expect: "Started"
 ```
 
-If any check fails, see [`eval/docs/RESUME_HANDOFF.md`](docs/RESUME_HANDOFF.md)
+If any check fails, see [`RESUME_HANDOFF.md`](RESUME_HANDOFF.md)
 §Bug G12 / §Bug G13 for the root cause and the corresponding source patches.
 
 ### Fire-cap
@@ -784,11 +784,11 @@ endpoint.
 
 ## See also
 
-- `docs/PREFERRED_HARNESS_REPRODUCTION.md` — per-model recipe lookup
+- [`PREFERRED_HARNESS_REPRODUCTION.md`](PREFERRED_HARNESS_REPRODUCTION.md) — per-model recipe lookup
   with reproduction numbers.
-- `docs/RESUME_HANDOFF.md` — cross-cluster bug catalogue (G10/G12/G13 +
+- [`RESUME_HANDOFF.md`](RESUME_HANDOFF.md) — cross-cluster bug catalogue (G10/G12/G13 +
   harbor #1617 + Bug #2) referenced from §8. Read before relying on
   resume on a new cluster.
-- `clusters/example.yaml`, `hpc/dotenv/example.env` — populate these
+- `eval/clusters/example.yaml`, `hpc/dotenv/example.env` — populate these
   for your cluster before any fire.
 - `python eval/unified_eval_listener.py --help` — full CLI surface.

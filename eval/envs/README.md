@@ -5,6 +5,8 @@ models can't be loaded by the same `transformers` line as the
 default agent runtime — see [otagent-fix vs otagent2-fix](#which-env-when)
 below.
 
+> `EVAL_GUIDE §N` references below point into [`docs/EVAL_GUIDE.md`](../../docs/EVAL_GUIDE.md).
+
 ## Files
 
 - [`otagent-fix.yml`](otagent-fix.yml) — primary env (transformers 4.x).

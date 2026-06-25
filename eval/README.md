@@ -28,7 +28,7 @@ Supabase + HuggingFace.
      --once --dry-run
    ```
 
-3. Read [`EVAL_GUIDE.md`](EVAL_GUIDE.md) for full fire templates,
+3. Read [`docs/EVAL_GUIDE.md`](../docs/EVAL_GUIDE.md) for full fire templates,
    the failure-modes catalog, and recovery procedures.
 
 ## Five firing categories
@@ -41,7 +41,7 @@ Supabase + HuggingFace.
 - **Cat 3 — Preferred-harness reproduction**: paper-author scaffolds
   (swe-agent / openhands / mini-swe-agent / aider) with installed-agent
   CLIs talking to the served model via Pinggy SSH tunnels. See
-  [`docs/PREFERRED_HARNESS_REPRODUCTION.md`](docs/PREFERRED_HARNESS_REPRODUCTION.md).
+  [`docs/PREFERRED_HARNESS_REPRODUCTION.md`](../docs/PREFERRED_HARNESS_REPRODUCTION.md).
 - **Cat 4 — Yaml flip-restore**: temporarily strip Pattern A/B/C
   parsers from a model's baseline-yaml entry to fire it on terminus-2
   (Pattern D), then restore.
@@ -60,9 +60,13 @@ eval/
 ├── snapshot_download.py        # pre-download HF caches
 ├── configs/                    # baseline + scaffold harbor yamls
 ├── clusters/                   # one yaml per SLURM cluster
-├── lists/                      # priority files (one HF model per line)
-└── docs/PREFERRED_HARNESS_REPRODUCTION.md
+└── lists/                      # priority files (one HF model per line)
 ```
+
+Reference docs (centralized under `/docs`):
+[`docs/EVAL_GUIDE.md`](../docs/EVAL_GUIDE.md),
+[`docs/PREFERRED_HARNESS_REPRODUCTION.md`](../docs/PREFERRED_HARNESS_REPRODUCTION.md),
+[`docs/RESUME_HANDOFF.md`](../docs/RESUME_HANDOFF.md).
 
 ## Help
 
