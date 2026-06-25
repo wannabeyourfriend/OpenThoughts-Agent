@@ -86,6 +86,24 @@ $PY scripts/iris/watch_job_state.py /benjaminfeuer/<job> --interval 60     # wat
 Log-content greps (`scripts/iris/analyze_job_history.py`) are for the sel_rows / EPDIAG / throughput **science
 only** — never for liveness/terminal detection. (The launch HOW-TO's §8 carries the full monitoring rule.)
 
+**Finelog retains the FULL job log — it is NOT capped at ~1600 init lines** (an earlier note claimed a storage
+cap; that was wrong — see CORRECTED memory `iris-finelog-retains-only-init`). The whole log, init → crash, is
+retrievable by **time-window pagination** with the **cw-capable iris binary**
+(`/Users/benjaminfeuer/miniconda3/envs/otagent/bin/iris` — the marin `.venv` iris has a broken `kubernetes`
+import and CANNOT drive cw). The only real truncation is `--tail`'s line cap; `--since-ms <submitted_at_ms>
+--no-tail` returns everything:
+```bash
+IRIS=/Users/benjaminfeuer/miniconda3/envs/otagent/bin/iris   # KUBECONFIG=~/.kube/coreweave-iris-gpu
+$IRIS --cluster cw-us-east-02a query \
+  "SELECT job_id,submitted_at_ms,started_at_ms,finished_at_ms,error,exit_code FROM jobs WHERE job_id LIKE '%<job>%'"
+$IRIS --cluster cw-us-east-02a job logs /benjaminfeuer/<job> --since-ms <submitted_at_ms> --max-lines 500000 --no-tail
+```
+Proven 2026-06-25 on dead `rl-131k-cpdcp2r3-v2`: one `--no-tail --since-ms <submit>` returned all **2275** lines
+spanning the full **10:09:08 → 10:16:21** lifetime, recovering the rank-0 fc cause
+(`ModuleNotFoundError: No module named 'torchtitan'` in `fsdp_utils.py:667 apply_ep` — the MoE EP path needs
+torchtitan, not in the gpu-rl image). The analyzer now takes `--cluster` + `--iris-bin` (auto-resolves the
+cw-capable iris) so it works for cw out of the box.
+
 ---
 
 ## Hardware (node shape)

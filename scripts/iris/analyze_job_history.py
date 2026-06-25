@@ -31,8 +31,42 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-IRIS_BIN = "/Users/benjaminfeuer/Documents/marin/.venv/bin/iris"
+import os
+import shutil
+
 GCS_ROOT = "gs://marin-models-us/ot-agent"
+
+
+def resolve_iris_bin() -> str:
+    """Resolve a WORKING iris binary.
+
+    Precedence: ``$IRIS_BIN`` env override → ``iris`` on ``$PATH`` → the otagent
+    conda env's iris (drives CoreWeave ``cw-us-east-02a`` cleanly) → the marin
+    ``.venv`` iris (TPU/marin cluster). The marin ``.venv`` iris has a broken
+    ``kubernetes`` import and CANNOT drive CoreWeave, so it is deliberately LAST.
+    """
+    env_override = os.environ.get("IRIS_BIN")
+    if env_override and Path(env_override).exists():
+        return env_override
+    on_path = shutil.which("iris")
+    if on_path:
+        return on_path
+    candidates = [
+        "/Users/benjaminfeuer/miniconda3/envs/otagent/bin/iris",
+        "/Users/benjaminfeuer/Documents/marin/.venv/bin/iris",
+    ]
+    for cand in candidates:
+        if Path(cand).exists():
+            return cand
+    return "iris"
+
+
+# Resolved once at import; the ``--cluster`` is supplied per-invocation (default
+# below). For CoreWeave pass ``--cluster cw-us-east-02a`` (needs KUBECONFIG set).
+IRIS_BIN = resolve_iris_bin()
+# Default cluster; overridable via --cluster. NOT hardcoded into the query/log
+# helpers any longer — they read module-global CLUSTER, set from argv in main().
+CLUSTER = "marin"
 
 # Iris log line: "[HH:MM:SS] task=<task> | <content>"
 LINE_RE = re.compile(r"^\[(\d{2}):(\d{2}):(\d{2})\] task=(\S+) \| (.*)$")
@@ -156,7 +190,7 @@ class JobAnalysis:
 
 def run_iris_query(sql: str) -> list[dict[str, str]]:
     """Run ``iris query`` and parse CSV. iris prints I-level logs to stderr."""
-    cmd = [IRIS_BIN, "--cluster", "marin", "query", sql, "-f", "csv"]
+    cmd = [IRIS_BIN, "--cluster", CLUSTER, "query", sql, "-f", "csv"]
     proc = subprocess.run(cmd, capture_output=True, text=True, check=True)
     lines = [line for line in proc.stdout.strip().splitlines() if line]
     if not lines:
@@ -183,7 +217,7 @@ def get_job_metadata(job_id: str) -> dict[str, int | str]:
 
 
 def get_job_summary_preemptions(job_id: str) -> int | None:
-    cmd = [IRIS_BIN, "--cluster", "marin", "job", "summary", job_id]
+    cmd = [IRIS_BIN, "--cluster", CLUSTER, "job", "summary", job_id]
     proc = subprocess.run(cmd, capture_output=True, text=True, check=True)
     # "State: running  exit=0  failures=0  preemptions=37"
     m = re.search(r"preemptions=(\d+)", proc.stdout)
@@ -219,7 +253,7 @@ def fetch_filtered_log(
         cmd = [
             IRIS_BIN,
             "--cluster",
-            "marin",
+            CLUSTER,
             "job",
             "logs",
             job_id,
@@ -998,12 +1032,37 @@ def main() -> int:
     ap.add_argument("--refresh", action="store_true", help="ignore cached log")
     ap.add_argument("--warmup-seconds", type=float, default=180.0)
     ap.add_argument(
+        "--cluster",
+        default="marin",
+        help=(
+            "iris cluster to target (default: marin/TPU). For CoreWeave GPU "
+            "jobs pass 'cw-us-east-02a' (requires KUBECONFIG=~/.kube/"
+            "coreweave-iris-gpu in the environment)."
+        ),
+    )
+    ap.add_argument(
+        "--iris-bin",
+        default=None,
+        help=(
+            "Path to the iris binary. Default: auto-resolve ($IRIS_BIN env, then "
+            "iris on PATH, then the otagent-env iris, then the marin .venv iris). "
+            "The marin .venv iris CANNOT drive CoreWeave (broken kubernetes "
+            "import), so for cw-* pass the otagent-env iris or leave default."
+        ),
+    )
+    ap.add_argument(
         "--gsutil-sample",
         type=int,
         default=0,
         help="(unused, accepted for compat) cap GCS trial inspection",
     )
     args = ap.parse_args()
+
+    # Wire cluster + binary into the module globals the helpers read.
+    global CLUSTER, IRIS_BIN
+    CLUSTER = args.cluster
+    if args.iris_bin:
+        IRIS_BIN = args.iris_bin
 
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)

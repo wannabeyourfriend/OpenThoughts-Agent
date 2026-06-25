@@ -1,14 +1,21 @@
 # =============================================================================
-# Qwen3.6-35B-A3B — CoreWeave/Iris RL BASELINE (seqnorm + TIS, EP+FSDP, NO CP/DCP/R3)
+# Qwen3.6-35B-A3B — CoreWeave/Iris RL @ 131k (seqnorm + TIS, EP+FSDP, NO CP/DCP/R3)
 # =============================================================================
 # Target: Qwen/Qwen3.6-35B-A3B  (model_type: qwen3_5_moe ; arch
-#   Qwen3_5MoeForConditionalGeneration). NEW LINE OF INQUIRY — this is the
-#   FIRST-RUNG baseline config whose ONLY job is to prove the brand-new
-#   qwen3_5_moe arch PLACES + TRAINS one step on CoreWeave (cw-us-east-02a,
-#   8x H100-80GB + IB per node), BEFORE layering 131k / CP / DCP / R3.
+#   Qwen3_5MoeForConditionalGeneration). NEW LINE OF INQUIRY. Runs the proven
+#   seqnorm+TIS recipe at 131072 context with NO CP and NO DCP — the HYBRID
+#   architecture (only 10/40 layers are full-attention; the other 30 are
+#   GatedDeltaNet linear-attn with constant recurrent state) makes long-context
+#   KV cheap, so CP/DCP should not be needed (memory math below + in the plan).
+#   On CoreWeave (cw-us-east-02a, 8x H100-80GB + IB per node).
 # UNLAUNCHED. Companion plan: notes/ot-agent/qwen3_6_35b_a3b_rl_plan.md
-#   (read it — the training DATASET, CONTEXT LENGTH, and CP/DCP/R3 sequencing
-#    are OPEN DECISIONS that need supervisor input before launch).
+#   (read it — multimodal/MTP text-only load = Rung-0 validation; CP/DCP/R3
+#    sequencing, success criterion, and concurrency remain OPEN DECISIONS).
+#
+# SUPERVISOR-RESOLVED (2026-06-25):
+#   * DATASET = DCAgent/exp_rpt_pymethods2test-large (same set the 30B line uses;
+#     entrypoint stays the agentic terminal_bench path). Wired via --train_data.
+#   * CONTEXT = 131072, WITHOUT CP or DCP (context_parallel_size 1, dcp 1).
 #
 # -----------------------------------------------------------------------------
 # FETCHED ARCHITECTURE (from HF config.json, transformers 4.57.1 — TRUSTED, not
@@ -27,7 +34,7 @@
 #     vocab_size 248320 ; tie_word_embeddings FALSE ; dtype bfloat16.
 #     max_position_embeddings 262144 (NATIVE) ; rope_theta 1e7 ; mrope_interleaved
 #       true, mrope_section [11,11,10], rope_type "default" (NO YaRN in the
-#       shipped config => any ctx <= 262144 needs NO rope_scaling / hf_overrides).
+#       shipped config => 131072 <= 262144 needs NO rope_scaling / hf_overrides).
 #     MULTIMODAL: top-level config carries vision_config + image/video tokens;
 #       arch is Qwen3_5MoeForConditionalGeneration. MTP: mtp_num_hidden_layers 1.
 #   PARAM COUNT (computed from the above): total ~34.4 B / active ~3.2 B per token
@@ -36,10 +43,11 @@
 #   STRUCTURAL DELTAS vs Qwen3-Coder-30B-A3B (the model behind our 131k config):
 #     * HYBRID linear+full attention (NOT 48 dense-attn layers). Only 10/40
 #       layers grow a length-scaling KV cache; the 30 GDN layers carry small
-#       FIXED recurrent/conv state => KV pressure is FAR lower than the dense 30B
-#       (this is why a TP=4 engine is comfortable, like the 80B-A3B).
-#     * num_key_value_heads = 2 (NOT 4) -> the DCP ceiling is TIGHTER
-#       (dcp <= tp/num_kv_heads): a future DCP=2 needs tp>=4 (vs tp>=8 on the 30B).
+#       FIXED recurrent/conv state => KV pressure is FAR lower than the dense 30B.
+#       THIS is why 131k fits WITHOUT CP/DCP here (the dense 30B needed both).
+#     * num_key_value_heads = 2 (NOT 4). Under TP=4 the 2 KV heads CANNOT shard
+#       to 4 ranks -> they are REPLICATED (each TP GPU holds the FULL KV). This
+#       matters for the KV math below (no /TP division on the KV cache).
 #     * 256 experts top-8 (NOT 128 top-8) ; moe_intermediate_size 512 (small).
 #     * Multimodal + MTP head (the 30B-Coder is text-only, no MTP).
 #   This config is therefore modeled on the Qwen3-Next-80B-A3B HYBRID arm
@@ -47,87 +55,111 @@
 #   dense-attention 30B 131k config — it is the closest validated precedent.
 #
 # -----------------------------------------------------------------------------
-# STACK-SUPPORT NOTE (de-risk this BEFORE launch — see plan OPEN DECISIONS):
+# STACK-SUPPORT NOTE (de-risk this BEFORE launch — see plan Rung 0):
 #   * vLLM fork DOES register Qwen3_5MoeForConditionalGeneration (vllm model file
 #     vllm/model_executor/models/qwen3_5.py — GatedDeltaNetAttention +
 #     Qwen3NextSparseMoeBlock, shared with qwen3_next). SkyRL moe_weight_remap.py
 #     is literally ported from prime-rl converting_qwen3_5_moe.py.
 #   * GDN linear-attention training path uses SKYRL_GDN_MASK_FLA=1 (force the
 #     proven pure-torch Gated-DeltaNet path; the fla wheel is broken) — SET BELOW.
-#   * UNVERIFIED on this exact checkpoint at config-authoring time: (a) the
-#     vision/MTP heads load cleanly under FSDP (we want the TEXT backbone only);
-#     (b) transformers 4.57.1 in the gpu-rl RL venv resolves qwen3_5_moe
-#     AutoConfig/AutoModel; (c) the mamba/SSM cache + GDN kernels run in the
-#     baked vLLM. The Step-0/Step-1 rungs in the plan exist to prove exactly this.
+#   * UNVERIFIED at config-authoring time: (a) the vision/MTP heads load cleanly
+#     under FSDP (we want the TEXT backbone only); (b) transformers 4.57.1 in the
+#     gpu-rl RL venv resolves qwen3_5_moe AutoConfig/AutoModel; (c) the mamba/SSM
+#     cache + GDN kernels run in the baked vLLM. Rung 0/1 prove exactly this.
 #
 # -----------------------------------------------------------------------------
 # GEOMETRY (8 CoreWeave nodes = 64 H100, colocate_all: false, disaggregated):
-#   START SIMPLE: EP + FSDP policy mesh, plain TP=4 generation, NO CP / NO DCP /
-#   NO R3 (router-replay) / NO YaRN. seqnorm + TIS recipe (the proven baseline
-#   off-policy corrector) — same algorithm block as 56GPU_seqnorm_tis + the 80B.
+#   seqnorm + TIS (proven off-policy corrector). EP + FSDP policy mesh, plain TP=4
+#   generation. NO CP / NO DCP / NO R3 (router-replay) / NO YaRN.
 #
-#   Policy/Ref FSDP mesh:  EP=8 x FSDP=4 = 32 policy GPU = 4 nodes.
+#   Policy/Ref FSDP mesh:  EP=8 x FSDP=4 = 32 policy GPU = 4 nodes (CP=1).
 #   Generation:            8 engines x TP=4 = 32 gen GPU = 4 nodes.
 #   Total = policy 32 + ref 0 (inert, use_kl_loss=false) + inference 32
 #         = 64 = 8 nodes.  LAUNCH MUST PASS --num-nodes 8.
-#   The launcher's --gpus_per_node 8 FORCES policy/ref_num_gpus_per_node = 8
-#   (build_skyrl_hydra_args overrides them); policy_num_nodes / ref_num_nodes
-#   are honored from this YAML. num_inference_engines is set EXPLICITLY (8) —
-#   the (num_nodes*8)//tp = 8*8//4 = 16 derivation would be WRONG (4 of the 8
-#   nodes are policy-only).
+#   --gpus_per_node 8 FORCES policy/ref_num_gpus_per_node = 8; policy_num_nodes /
+#   ref_num_nodes honored from this YAML. num_inference_engines set EXPLICITLY (8)
+#   — the (num_nodes*8)//tp = 8*8//4 = 16 derivation would be WRONG (4 of 8 nodes
+#   are policy-only).
 #
 #   DIVISIBILITY / CEILING CHECKS (all hard constraints — VERIFIED):
 #     * EP divides num_experts: 256 % EP(8) == 0  -> 32 experts/EP-rank. VALID.
 #     * MoE dim-0 guard (num_experts//EP) % FSDP == 0:
 #         256/EP8 = 32 ; 32 % FSDP4 = 0  -> VALID (8 experts/FSDP-rank).
-#     * EP x FSDP = 8 x 4 = 32 = policy GPU count. VALID. (NO CP factor: CP=1.)
+#     * EP x FSDP x CP = 8 x 4 x 1 = 32 = policy GPU count. VALID. (CP=1.)
 #     * vLLM TP=4 divides num_attention_heads 16 (4 heads/GPU). VALID.
 #     * GQA: num_key_value_heads 2 < TP 4 => the 2 KV heads are REPLICATED across
 #       the 4 TP ranks (standard vLLM GQA when tp>num_kv_heads). LEGAL.
 #     * TP=4 divides num_experts 256 (64 experts/GPU). VALID.
-#     * DCP OFF (dcp=1) => the dcp <= tp/num_kv_heads ceiling does NOT apply here.
-#       (When DCP is layered LATER: num_kv_heads=2 means dcp<=tp/2, so dcp=2 needs
-#        tp>=4 — already satisfied by TP=4; see the plan's CP/DCP rung.)
+#     * DCP OFF (dcp=1) => the dcp <= tp/num_kv_heads ceiling does NOT apply.
 #     * Batch (fully-async): train_batch_size == policy_mini_batch_size == 64;
 #       64 % 64 == 0 -> OK. train_batch_size(64) >= policy DP size -> OK.
 #
-# -----------------------------------------------------------------------------
-# MEMORY (35B total / 3B active on H100-80GB):
-#   Sharded FSDP2 state (bf16 weights + fp32 grads + Adam m,v + fp32 master) for
-#   34.4B params ~= 34.4e9 * (2+4+8+4) B ~= 620 GB, sharded over 32 policy GPUs
-#   ~= 19 GB/GPU of persistent state. With cpu_offload TRUE the params+optimizer
-#   live in CoreWeave node RAM (~2 TB/node) and only the active shard +
-#   activations sit in HBM -> comfortable headroom on 80 GB. cpu_offload kept ON
-#   for the baseline (turn OFF later if step time is bound by the offload H2D/D2H
-#   and HBM allows). gradient_checkpointing ON (use_reentrant=false, recompute-
-#   safe) — cheap insurance for the first bring-up; the active-param FFN is only
-#   3B so the backward is light, but the GDN recurrent state + 10 full-attn
-#   layers' activations still benefit at the chosen context.
-#   vLLM (per TP=4 engine, 4 GPUs): 34.4 GB bf16 weights / 4 = ~8.6 GB/GPU for
-#   weights. The hybrid arch's 30 GDN layers carry only small fixed recurrent
-#   state; only 10/40 layers grow KV with length, so KV pressure is LOW. At
-#   gpu_memory_utilization 0.85 there is ample KV headroom at 32768 ->
-#   max_num_seqs 24 is safe. OOM fallbacks (in order): gpu_mem 0.85->0.80->0.75,
-#   then max_num_seqs 24->16; on the policy side micro_forward 4->2 then reduce
-#   train_batch_size. (See plan §OOM fallbacks.)
+# =============================================================================
+# MEMORY BUDGET @ 131072 (the core question: does 131k fit WITHOUT CP/DCP?)
+# =============================================================================
+# --- (A) GENERATION / vLLM KV cache at 131k, TP=4 ---
+#   Only the 10 FULL-ATTENTION layers grow KV with length (the 30 GDN layers
+#   carry constant recurrent/conv state — NEGLIGIBLE, length-independent).
+#   KV bytes/token/full-attn-layer = 2(K,V) * num_kv_heads(2) * head_dim(256) *
+#       bf16(2) = 2048 B.
+#   KV bytes/token (all 10 full-attn layers) = 20480 B = 20 KiB/token.
+#   KV for ONE 131072-token sequence = 20480 * 131072 = ~2.68 GB.
+#   *** TP=4 but num_kv_heads=2 < 4 -> KV is REPLICATED, NOT sharded: each of the
+#       4 TP GPUs holds the FULL ~2.68 GB/seq (NO /TP division on KV). ***
+#   Per-GPU H100-80GB vLLM budget: bf16 weights / TP4 = 34.4/4 = ~8.6 GB.
+#   At gpu_memory_utilization 0.85: ~68 GB usable - 8.6 weights - ~6 GB CUDA/NCCL/
+#       activation reserve = ~53 GB KV pool -> ~53/2.68 = ~19-20 concurrent 131k
+#       seqs. PREDICTED vLLM "GPU KV cache size / Maximum concurrency" line ~= 19x.
+#   => max_num_seqs 16 is SAFE at 0.85 (under the ~20 concurrency ceiling, with
+#      headroom for prefill activations + chunked-prefill batches). The hybrid
+#      arch's low KV is exactly why 131k generation is comfortable without DCP.
 #
-# CONTEXT LENGTH = 32768 for the baseline (OPEN DECISION — supervisor may want a
-#   different native/modest value; see plan). WELL within native 262144 => NO
-#   YaRN / rope_scaling / hf_overrides (do NOT add). max_generate_length 4096.
+# --- (B) TRAINING activation at 131k (THE BINDING CONSTRAINT, not KV) ---
+#   Mesh EP8xFSDP4, gradient_checkpointing TRUE (use_reentrant false), cpu_offload
+#   TRUE, micro_forward_batch_size_per_gpu 1 (one 131k seq/rank at a time).
+#   cpu_offload keeps params+optimizer in node RAM (~2 TB/node); only the active
+#   FSDP shard + the CURRENT microbatch activations sit in HBM.
+#   * Full-attn layers (flash/SDPA): NO materialized 131072x131072 score matrix.
+#     Under gradient checkpointing only the per-layer INPUT is stored
+#     (hidden_size 2048 * bf16 * 131072 tok = ~0.54 GB/layer), recomputed in the
+#     backward. Stored layer-inputs across all 40 layers ~= 21.5 GB/seq (1 micro).
+#     This is LIGHT — the 3B active-param FFN backward is cheap.
+#   * *** GatedDeltaNet CHUNKED-SCAN activation over a 131k sequence = THE REAL
+#     UNKNOWN (flagged explicitly). *** The 30 GDN layers run a chunked recurrent
+#     scan; the per-token hidden (~value_heads 32 * head_dim 128 * bf16 = 8192 B
+#     -> ~1.07 GB/layer over 131k) is bounded, but the chunked-scan kernel's PEAK
+#     transient (intermediate chunk states materialized during the scan, before
+#     checkpoint recompute frees them) depends on the chunk size and the pure-torch
+#     GDN path (SKYRL_GDN_MASK_FLA=1). This is NOT precisely predictable from the
+#     config — it is the EMPIRICAL risk to WATCH at the first training step.
+#   CONFIDENCE that 131k fits WITHOUT CP/DCP: MODERATE-HIGH for KV (A is solidly
+#     under budget) and the checkpointed full-attn activations (B-flash is small);
+#     the ONE caveat is the GDN chunked-scan peak (B-GDN). If the first step OOMs,
+#     it will be the GDN scan, not KV — fall back per the ladder below.
 #
-# -----------------------------------------------------------------------------
-# Launch (UNLAUNCHED — supervisor pushes + launches after resolving OPEN DECISIONS):
+# --- (C) FALLBACK LADDER on a first-training-step OOM (turn ONE knob per rung) ---
+#   GENERATION OOM at KV bind:   gpu_memory_utilization 0.85 -> 0.80 -> 0.75,
+#                                then max_num_seqs 16 -> 12.
+#   TRAINING activation OOM (the GDN-scan risk): then walk the CONTEXT down:
+#       131072  ->  98304  ->  65536    (max_model_len + max_generate_length pair
+#       below + max_input_tokens kept consistent). At each ctx rung re-confirm the
+#       first step before proceeding. Only if 65536 still OOMs do we reconsider CP.
+#   (micro_forward is already 1; train micro is 1 — no microbatch knob left to
+#    turn before walking context.)
+# =============================================================================
+#
+# Launch (UNLAUNCHED — supervisor pushes + launches after Rung-0 + remaining OPEN DECISIONS):
 #   source /Users/benjaminfeuer/Documents/secrets.env
 #   python -m rl.cloud.launch_rl_iris \
 #     --rl_config hpc/skyrl_yaml/iris/8node_qwen3_6_35b_a3b_baseline_seqnorm_tis.yaml \
 #     --model_path Qwen/Qwen3.6-35B-A3B \
-#     --train_data '["<DATASET — OPEN DECISION>"]' \
+#     --train_data '["DCAgent/exp_rpt_pymethods2test-large"]' \
 #     --num-nodes 8 \
 #     --gpus_per_node 8 \
 #     --cpu 48 \
 #     --max-retries 1 \
-#     --rendezvous-dir s3://marin-na/iris/rl-q36-35b-baseline/<run> \
-#     --job-name rl-q36-35b-baseline --priority interactive --no-wait
+#     --rendezvous-dir s3://marin-na/iris/rl-q36-35b-131k/<run> \
+#     --job-name rl-q36-35b-131k --priority interactive --no-wait
 # =============================================================================
 
 entrypoint: examples.terminal_bench.entrypoints.main_tbench
@@ -182,10 +214,12 @@ terminal_bench:
       - VerifierOutputParseError
       - VerifierRuntimeError
 
-    # 300 concurrent trials — R3 is OFF in the baseline, so there is NO per-token
-    # routing-array host-RAM inflation (the 150 cap on the R3 arms). 300 is the
-    # pre-R3 production value; drop toward 150 if a RolloutCoordinator OOMs.
-    n_concurrent_trials: 300
+    # 150 concurrent trials — at 131k each resident trajectory holds a large
+    # rollout working set; 150 is the long-ctx host-RAM-safe value the 30B/80B
+    # 131k arms run (R3 is OFF here so there is no per-token routing-array
+    # inflation, but the long-ctx trajectory+logprob footprint alone warrants
+    # the lower cap). Drop toward 100 if a RolloutCoordinator OOMs.
+    n_concurrent_trials: 150
 
     log_level: INFO
 
@@ -209,11 +243,11 @@ terminal_bench:
       - AgentTimeoutError
       - ContextLengthExceededError
 
-  # 32000 = 768-token buffer below max_model_len 32768 (litellm token-counter
-  # drift guard; matches the dense-baseline configs).
+  # 131k: input 130000 (+1072 headroom below max_model_len 131072) + 16384 output.
+  # Matches the 30B 131k config's caps (litellm token-counter drift guard).
   model_info:
-    max_input_tokens: 32000
-    max_output_tokens: 4096
+    max_input_tokens: 130000
+    max_output_tokens: 16384
 
   archiving:
     enabled: false
@@ -230,9 +264,10 @@ terminal_bench:
 # =============================================================================
 trainer:
   strategy: fsdp2
-  # NO CP in the baseline => keep the default flash-attn forward (faster than
-  # ring-SDPA). attn_backend / flash_attn left at SkyRL defaults (flash-attn ON).
-  # Gradient checkpointing ON (recompute-safe) — see header MEMORY note.
+  # NO CP => keep the default flash-attn forward (faster than ring-SDPA, and at
+  # 131k flash avoids materializing the score matrix — see MEMORY (B)).
+  # attn_backend / flash_attn left at SkyRL defaults (flash-attn ON).
+  # Gradient checkpointing ON (recompute-safe) — REQUIRED at 131k; see MEMORY (B).
   gradient_checkpointing: true
   gradient_checkpointing_use_reentrant: false
   algorithm:
@@ -244,9 +279,9 @@ trainer:
     # seqnorm: global length-unbiased sequence-level normalizer.
     loss_reduction: seq_mean_token_sum_norm_global
     # Truncated Importance Sampling: bounds the off-policy ratio created by the
-    # vLLM(generation) vs FSDP(recompute) logprob gap. The BASELINE off-policy
-    # corrector — R3 router-replay is OFF, so TIS carries the MoE-routing
-    # correction (clamp(exp(old-rollout), cap)). REQUIRES collect_rollout_details.
+    # vLLM(generation) vs FSDP(recompute) logprob gap. The off-policy corrector
+    # here — R3 router-replay is OFF, so TIS carries the MoE-routing correction
+    # (clamp(exp(old-rollout), cap)). REQUIRES collect_rollout_details.
     use_tis: true
     tis_imp_ratio_cap: 2.0
 
@@ -258,20 +293,20 @@ trainer:
   policy_mini_batch_size: 64
   eval_batch_size: 64
 
-  # micro_train 1 (the sharded all-gather + MoE expert FFN backward dominates);
-  # micro_forward 4 (forward-only rollout/logprob pass has no optimizer state
-  # resident). Fall back to micro_forward 2 on first-step activation OOM.
-  micro_forward_batch_size_per_gpu: 4
+  # micro_train 1 (sharded all-gather + MoE expert FFN backward dominates).
+  # micro_forward 1 at 131k (one 131k seq/rank at a time — the conservative
+  # long-ctx activation choice; raise to 2 ONLY if the first step has HBM
+  # headroom after the GDN-scan peak is observed). See MEMORY (B)/(C).
+  micro_forward_batch_size_per_gpu: 1
   micro_train_batch_size_per_gpu: 1
 
-  max_prompt_length: 999999
-
-  # NO CP => sample packing is allowed (the SkyRL _validate_cp_cfg packed-varlen
-  # restriction only applies under CP>1). Left at the SkyRL default.
+  # 131072: prompts may use the full context (no internal truncation below ctx).
+  max_prompt_length: 131072
 
   eval_interval: 999999
   eval_before_train: false
-  # ckpt_interval=1: bank step-1 so a walltime/transient kill never resumes from 0.
+  # ckpt_interval=1: 131k 35B steps are slow; bank step-1 so a walltime/transient
+  # kill never resumes from 0.
   ckpt_interval: 1
   resume_mode: latest
   hf_save_interval: 5
@@ -298,17 +333,18 @@ trainer:
       adam_betas: [0.9, 0.999]
       max_grad_norm: 0.9
     fsdp_config:
-      # REQUIRED for the 35B optimizer state to fit (offload to node RAM). See
-      # header MEMORY note. reshard_after_forward frees the gathered shard.
+      # REQUIRED for the 35B optimizer state to fit (offload to node RAM) AND to
+      # leave HBM for the 131k activations. See MEMORY (B).
       cpu_offload: true
       reshard_after_forward: true
-      # MESH: EP=8 x FSDP=4 = 32 policy GPU = 4 CoreWeave nodes. NO CP.
+      # MESH: EP=8 x FSDP=4 = 32 policy GPU = 4 CoreWeave nodes. CP=1 (NO CP).
       # MoE dim-0 guard (num_experts//EP)%FSDP==0: 256/EP8=32; 32/FSDP4=8 -> VALID.
       fsdp_size: 4
       expert_model_parallel_size: 8
-      # CP OFF (baseline). context_parallel_size omitted => default 1.
-      # R3 OFF (baseline): moe_router_replay FALSE. TIS carries the off-policy
-      # correction. grouped-GEMM ON (fused per-expert FFN, vLLM-loadable names).
+      # CP OFF (context_parallel_size omitted => default 1) — the hybrid arch's
+      # cheap long-ctx KV/activations make CP unnecessary at 131k (see MEMORY).
+      # R3 OFF: moe_router_replay FALSE. TIS carries the off-policy correction.
+      # grouped-GEMM ON (fused per-expert FFN, vLLM-loadable names).
       moe_router_replay: false
       moe_grouped_gemm: true
       ep_comm_backend: torch
@@ -357,9 +393,10 @@ generator:
   model_dtype: bfloat16
 
   # TP=4 — the Qwen3-Next/3.5 hybrid-MoE model-card recommendation. Divides 16
-  # attn heads (4/GPU) + 256 experts (64/GPU); 2 KV heads replicated across TP
-  # (GQA, legal). 8 engines x TP=4 = 32 gen GPU = 4 nodes. A TP=4 engine places
-  # intra-node on 4 of the 8 GPUs of one CoreWeave node (NVLink decode).
+  # attn heads (4/GPU) + 256 experts (64/GPU); 2 KV heads REPLICATED across TP
+  # (GQA, legal — and the reason the 131k KV is not sharded; see MEMORY (A)).
+  # 8 engines x TP=4 = 32 gen GPU = 4 nodes. A TP=4 engine places intra-node on
+  # 4 of the 8 GPUs of one CoreWeave node (NVLink decode).
   inference_engine_tensor_parallel_size: 4
   # 8 TP=4 engines = 32 inference GPU = 4 nodes. Set EXPLICITLY (not null): the
   # launcher derivation (num_nodes*8)//tp = 8*8//4 = 16 would be WRONG (4 of the
@@ -371,21 +408,29 @@ generator:
   # imbalance becomes the gen bottleneck (UNVALIDATED on qwen3_5_moe in vLLM).
   inference_engine_expert_parallel_size: 1
 
-  # mp EXECUTOR (multiprocessing) — R3 is OFF in the baseline, so the Ray
-  # Compiled-DAG R3 deadlock class does NOT apply; mp is the simpler/faster path
-  # and ran the 80B-A3B hybrid arm cleanly at TP=4 (no DAG). Requires
-  # colocate_all=false. (When R3 is layered LATER, switch to the RAY executor
-  # + async_scheduling=false per the R3 guard — see the plan's R3 rung.)
+  # DCP OFF (decode-context-parallel = 1): the hybrid arch's low 131k KV (~2.68
+  # GB/seq, ~20 concurrent at 0.85) does NOT need KV sharding. If DCP were ever
+  # wanted, dcp <= tp/num_kv_heads = 4/2 = 2, so dcp=2 is already TP-legal — but
+  # it is intentionally OFF here (see plan: layer DCP only if a later rung needs it).
+  inference_engine_decode_context_parallel_size: 1
+
+  # mp EXECUTOR (multiprocessing) — R3 is OFF, so the Ray Compiled-DAG R3 deadlock
+  # class does NOT apply; mp is the simpler/faster path and ran the 80B-A3B hybrid
+  # arm cleanly at TP=4. Requires colocate_all=false. (When R3 is layered LATER,
+  # switch to the RAY executor + async_scheduling=false per the R3 guard.)
   inference_engine_mp_backend: true
 
   n_samples_per_prompt: 8
   eval_n_samples_per_prompt: 8
 
-  # 0.85 — the hybrid arch keeps KV pressure low (only 10/40 layers grow KV).
-  # Drop 0.85->0.80->0.75 on first-launch KV-bind OOM. (See plan OOM fallbacks.)
+  # 0.85 — the hybrid arch keeps KV pressure low (only 10/40 layers grow KV). At
+  # 131k this leaves ~53 GB KV pool / ~20 concurrent seqs (MEMORY (A)). Drop
+  # 0.85 -> 0.80 -> 0.75 on a generation KV-bind OOM (see MEMORY (C)).
   gpu_memory_utilization: 0.85
 
-  max_num_seqs: 24
+  # 16 at 131k — under the ~20-concurrency ceiling from MEMORY (A), with prefill
+  # headroom. Drop to 12 if the vLLM "Maximum concurrency" line comes in low.
+  max_num_seqs: 16
   max_num_batched_tokens: 16384
 
   enable_prefix_caching: true
@@ -402,24 +447,24 @@ generator:
   max_turns: 999999
 
   sampling_params:
-    max_generate_length: 4096
+    # 131k: 16384 max generation (matches the 30B 131k arm).
+    max_generate_length: 16384
     temperature: 0.7
     top_p: 0.95
     top_k: 20
 
   engine_init_kwargs:
-    # 32768 — WELL within native 262144 => NO YaRN rope_scaling / hf_overrides
-    # (do NOT add). Raise toward native (up to 262144) directly for a long-ctx
-    # variant — still no rope_scaling needed below native length.
-    max_model_len: 32768
+    # 131072 — WELL within native 262144 => NO YaRN rope_scaling / hf_overrides
+    # (do NOT add). The shipped rope is rope_type "default" with no scaling.
+    max_model_len: 131072
     # Interleaved-thinking template; relative path resolved against /app (synced repo).
     custom_chat_template_chat_completion_path: chat_templates/qwen3_thinking_acc.jinja2
     # Disable vLLM custom CUDA all-reduce (safe vs the NCCL weight-sync deadlock
     # class; carried from the validated arms). Safe at TP=4.
     disable_custom_all_reduce: true
-    # R3 OFF in the baseline — do NOT set enable_return_routed_experts here
-    # (TIS carries the off-policy correction). async_scheduling left default
-    # (it is only force-disabled under the RAY executor for the R3 guard).
+    # R3 OFF — do NOT set enable_return_routed_experts (TIS carries the off-policy
+    # correction). async_scheduling left default (only force-disabled under the
+    # RAY executor for the R3 guard).
 
 # Data paths (set via CLI --train_data / --val_data)
 data:
@@ -443,7 +488,8 @@ rollout:
 # =============================================================================
 extra_env:
   # GatedDeltaNet linear-attention training path: force the proven pure-torch GDN
-  # (the fla wheel is broken). LOAD-BEARING for the 30 linear_attention layers.
+  # (the fla wheel is broken). LOAD-BEARING for the 30 linear_attention layers
+  # (and the long-ctx chunked scan whose peak we watch at step 1 — MEMORY (B)).
   SKYRL_GDN_MASK_FLA: "1"
   PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
   # --- vLLM serve flags ---
@@ -462,5 +508,5 @@ extra_env:
   TORCH_NCCL_TRACE_CPP_STACK: "1"
   TORCH_NCCL_DEBUG_INFO_TEMP_FILE: /tmp/nccl_fr_rank
   # NO R3/DCP guard env (VLLM_ALLOW_ROUTED_EXPERTS_DCP etc.) and NO EPDIAG probe
-  # env in the baseline — R3 and DCP are OFF. They get ADDED at the R3/DCP rung
+  # env — R3 and DCP are OFF. They get ADDED only if a later rung layers R3/DCP
   # (see plan), carried verbatim from the 30B 131k config.
