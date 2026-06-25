@@ -261,6 +261,37 @@ RUN . $RL_ENV_DIR/bin/activate && \
     python -c "import torch, vllm, skyrl_train, flash_attn, flash_attn_2_cuda; print('torch', torch.__version__, 'vllm', vllm.__version__, 'flash_attn', flash_attn.__version__, '+ flash_attn_2_cuda OK')" && \
     echo "baked MarinSkyRL HEAD: $(git -C $SKYRL_HOME rev-parse HEAD)"
 
+# (4a) torchtitan — REQUIRED for MoE expert-parallel (EP>1). MarinSkyRL's
+# `apply_ep` (skyrl-train/skyrl_train/distributed/fsdp_utils.py) imports
+# `torchtitan.distributed.expert_parallel.ExpertParallel` whenever
+# expert_model_parallel_size > 1 (our 30B-A3B 131k and 35B configs run EP=8).
+# Without it every EP>1 MoE RL run dies at init_model with
+# `ModuleNotFoundError: No module named 'torchtitan'` (weights load fine first;
+# the crash is purely this missing dep). This is the `ep` extra of skyrl-train's
+# pyproject.toml, which the deps-only build above does NOT pull (we install
+# skyrl-train without extras).
+#
+# REF: git rev a1fdd7e of github.com/pytorch/torchtitan — the EXACT pin
+# skyrl-train declares (pyproject.toml: torchtitan = { git=".../torchtitan",
+# rev = "a1fdd7e" }; comment: "Pin matches prime-rl (EP + grouped-GEMM + R3
+# validated there)"). Verified at this rev: torchtitan/distributed/
+# expert_parallel.py defines `class ExpertParallel(ParallelStyle)` — exactly the
+# import apply_ep needs.
+#
+# TORCH-2.11 COMPAT + WHY --no-deps: torchtitan is pure-python (the EP path only
+# uses torch.distributed.tensor APIs) and at a1fdd7e its pyproject pins NO torch
+# (no torch==/torch>= requirement), so it does NOT rebuild or renudge our
+# from-source torch 2.11.0 / vLLM-fork / flash-attn stack. We install with
+# --no-deps so its UNRELATED transitive deps (torchdata/datasets/tokenizers/
+# tensorboard/tyro/...) cannot re-resolve and clobber a protected package in this
+# carefully-pinned RL venv — apply_ep imports none of them. (MarinSkyRL's own
+# Stage-0 note confirms: "torchtitan ... does NOT rebuild torch ... moves no
+# protected package (torch/TE/transformers/numpy/flash-attn/mcore)".)
+RUN . $RL_ENV_DIR/bin/activate && \
+    uv pip install --no-deps \
+        "torchtitan @ git+https://github.com/pytorch/torchtitan.git@a1fdd7e" && \
+    python -c "from torchtitan.distributed.expert_parallel import ExpertParallel; print('torchtitan ExpertParallel import OK (apply_ep EP>1 unblocked)')"
+
 # (4b) Pin harbor to a COMMIT (deterministic image). The OT-Agent project dep
 # (pyproject.toml) installs harbor from a FLOATING branch
 # (marin-community/harbor@penfever/working), which is left floating for the rest
