@@ -243,11 +243,39 @@ These were paid for this week (`agent_logs/2026-06-25_coreweave_131k_cpdcp2r3_re
 
 ## 8. Monitoring + completion
 
-- **Status / logs** (synchronous calls only — no background `iris`/`kubectl`):
+> **⚠ LIVENESS / TERMINAL DETECTION = AUTHORITATIVE STATE-POLL, NEVER A LOG-STRING WATCH.**
+> The canonical way to know whether a run is still alive — and to catch the moment it leaves RUNNING — is to
+> **poll the authoritative iris job lifecycle state** (`iris job summary --json` → `state`), NOT to grep rank-0
+> logs for a content string (`EPDIAG_FWD1` / `DEADLOCK` / `TERMINAL`, etc.). A clean kill, eviction,
+> preemption, or an early crash that never prints one of those strings makes a content-watch see no matching
+> line, so the watching agent goes idle believing the run is "still running" while the job + its pods have
+> already left the cluster. This is exactly how the watch on `rl-131k-cpdcp2r3` missed a terminal transition:
+> the run ended `killed` / "Terminated by user" with **0 pods**, but no terminal string was ever emitted, so
+> the log-grep never fired. **Log-content greps are ONLY for the sel_rows / EPDIAG / throughput science (via
+> `analyze_job_history.py`) — never for liveness or terminal detection.**
+
+- **Watch a run (the primitive — use this, do not grep logs for liveness):**
   ```bash
-  # iris-side state (1=PENDING 2=starting 3=RUNNING 4=SUCCEEDED 5=FAILED 6=KILLED)
-  /Users/benjaminfeuer/Documents/marin/.venv/bin/iris --cluster=cw-us-east-02a query \
+  PY=/Users/benjaminfeuer/miniconda3/envs/otagent/bin/python   # otagent env: ships iris + a WORKING kubernetes
+  # one-shot authoritative state (state + error + per-task + pod cross-check):
+  $PY scripts/iris/watch_job_state.py /benjaminfeuer/<job> --once --json
+  # watch until the run leaves RUNNING, emit a line on every transition, exit terminal:
+  $PY scripts/iris/watch_job_state.py /benjaminfeuer/<job> --interval 60
+  #   exit 0 succeeded · 1 failed/killed/worker_failed/unschedulable · 2 absent (disappeared/0-pods) · 3 error
+  ```
+  It polls `iris job summary --json` (authoritative; falls back to the SQL `query`), and — crucially — treats
+  **"no controller record AND 0 pods" as a TERMINAL `absent` verdict**, the case the old content-watch missed.
+  Importable: `from scripts.iris.watch_job_state import get_job_state, watch`. (A supervising agent should use
+  `watch(...)` / `get_job_state(...)` as the watch primitive.)
+- **Manual state / logs** (synchronous calls only — no background `iris`/`kubectl`; use the **otagent** iris
+  binary — the bare marin `.venv/bin/iris` lacks a working `kubernetes` for the cw k8s controller backend):
+  ```bash
+  # iris-side state (0=UNSPECIFIED 1=PENDING 2=BUILDING 3=RUNNING 4=SUCCEEDED 5=FAILED 6=KILLED
+  #                  7=WORKER_FAILED 8=UNSCHEDULABLE) — the watcher already wraps this:
+  /Users/benjaminfeuer/miniconda3/envs/otagent/bin/iris --cluster=cw-us-east-02a query \
     "SELECT job_id,state FROM jobs WHERE job_id LIKE '/benjaminfeuer/<job>%'" -f csv
+  # richest single-job authoritative call (state + error + exit + per-task states + finished_at):
+  /Users/benjaminfeuer/miniconda3/envs/otagent/bin/iris --cluster=cw-us-east-02a job summary /benjaminfeuer/<job> --json
   # via the python SDK (matches the launcher's client):
   #   IrisClient.status(JobName.from_wire("/benjaminfeuer/<job>"))
   #   IrisClient.fetch_task_logs(JobName.from_wire("/benjaminfeuer/<job>/0"))   # rank 0 = the driver
@@ -261,8 +289,10 @@ These were paid for this week (`agent_logs/2026-06-25_coreweave_131k_cpdcp2r3_re
   for DCP the worker name is `Worker_TP0_DCP0`) → **policy mesh loaded** (the FSDP ranks load weights 5→100%)
   → first training step. A 30B/131k arm can take ~1h to the first rollout and ~2.5–3h to the gs1 forward.
 - **Mandatory progress columns** (per `monitor-job-tables`): entropy / log_ratio / grad_norm + reward — not
-  just step. Use `monitor-cron-sweep` for the cross-cluster cadence; for full-history stats use the windowed
-  pagination (`scripts/iris/analyze_job_history.py`), **NOT** `iris job logs --tail` (under-samples 10–100×).
+  just step. Use `monitor-cron-sweep` for the cross-cluster cadence. For full-history **science** (sel_rows /
+  EPDIAG / throughput stats) use the windowed pagination (`scripts/iris/analyze_job_history.py`), **NOT**
+  `iris job logs --tail` (under-samples 10–100×) — but that is for the science only; **liveness/terminal
+  detection is the state-poll watcher above**, never a log-string grep.
 - **On completion → `rl-job-cleanup`** (best-ckpt selection, HF upload, the **manual** Supabase DB
   registration, trace export). `enable_db_registration` stays false at launch.
 - **Teardown:** `iris job kill /benjaminfeuer/<job>` (with permission). Rescue banked traces from the

@@ -47,14 +47,21 @@ export KUBECONFIG=~/.kube/coreweave-iris-gpu         # the CoreWeave GPU cluster
   `~/Documents/marin/lib/iris/config/cw-us-east-02a.yaml`
   (`launch_rl_iris.py:_resolve_cluster_config_default`); override with `--cluster-config`
   only if it moved.
-- **`iris` CLI binary** = `/Users/benjaminfeuer/Documents/marin/.venv/bin/iris` (or
-  `conda activate marin && uv run iris`). All `iris`/`kubectl` calls must be
-  **SYNCHRONOUS** — never background them.
+- **`iris` CLI binary** = `/Users/benjaminfeuer/miniconda3/envs/otagent/bin/iris`. **Use the otagent-env
+  binary, NOT the bare `marin/.venv/bin/iris`** — the cw cluster is a k8s controller backend, and reaching it
+  (even just to open the tunnel) instantiates `CloudK8sService`, which imports `kubernetes`. The marin `.venv`
+  ships only a broken/partial `kubernetes` (dist-info present, module not importable) → every cw `iris`
+  command (`job summary`, `query`, `job list`, …) dies with `ImportError: Install iris[controller]`. The
+  **otagent** env has a working `kubernetes` 35.0.0 + the editable iris package, so its `iris` binary drives cw
+  cleanly. (`conda activate marin && uv run iris` also works IF that venv has the controller extra; the
+  otagent binary is the reliable default.) All `iris`/`kubectl` calls must be **SYNCHRONOUS** — never
+  background them.
 
 **Verify access** (cheap, before submitting):
 ```bash
-# iris-side: my live jobs (state 1=PENDING 2=starting 3=RUNNING 4=SUCCEEDED 5=FAILED 6=KILLED)
-/Users/benjaminfeuer/Documents/marin/.venv/bin/iris --cluster=cw-us-east-02a query \
+# iris-side: my live jobs (JobState: 0=UNSPECIFIED 1=PENDING 2=BUILDING 3=RUNNING 4=SUCCEEDED
+#                          5=FAILED 6=KILLED 7=WORKER_FAILED 8=UNSCHEDULABLE)
+/Users/benjaminfeuer/miniconda3/envs/otagent/bin/iris --cluster=cw-us-east-02a query \
   "SELECT job_id,state FROM jobs WHERE state IN (1,2,3) AND job_id LIKE '/benjaminfeuer/%'" -f csv
 
 # k8s-side: H100 node headroom (~36 H100 nodes total; an N-node gang needs N WHOLE free nodes)
@@ -63,6 +70,21 @@ kubectl get nodes        # with KUBECONFIG=~/.kube/coreweave-iris-gpu
 The in-container invocation the launcher ultimately drives is
 `uv run iris --cluster=cw-us-east-02a job run …` (the SDK `IrisClient.submit` path);
 you do not type that by hand — `python -m rl.cloud.launch_rl_iris` builds it.
+
+**Monitor liveness — state-poll, NOT a log-string watch.** To know whether a run is still alive (and to catch
+the moment it leaves RUNNING) poll the **authoritative iris job lifecycle state**, never grep rank-0 logs for a
+content string. A clean kill / eviction / preemption / early crash often emits **no** terminal log line, and
+the pods are reaped, so a content-watch sits idle while the job is gone (this is how the `rl-131k-cpdcp2r3`
+watch missed the run ending `killed`/"Terminated by user" with 0 pods). The watch primitive:
+```bash
+PY=/Users/benjaminfeuer/miniconda3/envs/otagent/bin/python
+$PY scripts/iris/watch_job_state.py /benjaminfeuer/<job> --once --json    # authoritative state now
+$PY scripts/iris/watch_job_state.py /benjaminfeuer/<job> --interval 60     # watch until terminal
+#   wraps `iris job summary --json` (auth) + SQL `query` fallback + kubectl pod cross-check;
+#   "no record AND 0 pods" => terminal `absent`. Importable: get_job_state() / watch().
+```
+Log-content greps (`scripts/iris/analyze_job_history.py`) are for the sel_rows / EPDIAG / throughput **science
+only** — never for liveness/terminal detection. (The launch HOW-TO's §8 carries the full monitoring rule.)
 
 ---
 
