@@ -51,10 +51,15 @@ VARIANTS=("gpu-1x" "gpu-4x" "gpu-8x" "gpu-rl" "tpu")
 
 # Per-variant platform override. Cloud TPU host VMs are all linux/amd64,
 # so the tpu image is built single-arch (avoids a wasted arm64 QEMU pass).
+# gpu-rl is ALSO amd64-only: CoreWeave H100 + the from-source x86 CUDA build (and
+# its cached wheels in docker/wheelhouse/) are linux/amd64; there is no arm64
+# wheelhouse, so an arm64 pass would fail. (The live production gpu-rl digest is a
+# single-platform linux/amd64 manifest — this matches that reality.)
 platforms_for_variant() {
     case "$1" in
-        tpu) echo "linux/amd64" ;;
-        *)   echo "$PLATFORMS" ;;
+        tpu)    echo "linux/amd64" ;;
+        gpu-rl) echo "linux/amd64" ;;
+        *)      echo "$PLATFORMS" ;;
     esac
 }
 

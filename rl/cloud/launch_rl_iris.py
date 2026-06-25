@@ -100,6 +100,21 @@ DEFAULT_CLUSTER = "cw-us-east-02a"
 # f571b88a) which had working flash_attn but LACKED these two fixes.
 # When the gpu-rl image is rebuilt, bump this digest (use the immutable
 # ``:gpu-rl-<gitsha>`` tag's digest, never the floating ``:gpu-rl``).
+#
+# ⚠️ PENDING REBUILD (gates the CoreWeave EP=8 RL jobs): the Dockerfile.gpu-rl now
+# bakes torchtitan a1fdd7e (the `ExpertParallel` import-assert at build time → the
+# EP>1 MoE unblock) AND is restructured to install vLLM-fork + flash-attn from
+# CACHED WHEELS (docker/wheelhouse/, built once by docker/build_wheels.sh — see
+# docker/README.gpu-rl-wheelcache.md). That image has NOT yet been built/pushed:
+# the build is a from-source x86_64 CUDA compile that cannot run on the arm64 dev
+# Mac (QEMU + Docker Desktop RAM). The digest below is the LAST-GOOD pre-torchtitan
+# image (still launches dense/non-EP arms). To finish:
+#   1) on an x86_64 host:  source ~/secrets.env && ./docker/build_wheels.sh
+#   2)                     ./docker/build_and_push.sh gpu-rl   (pushes :gpu-rl + :gpu-rl-<gitsha>)
+#   3) capture the new digest:
+#        docker buildx imagetools inspect ghcr.io/open-thoughts/openthoughts-agent:gpu-rl-<gitsha>
+#   4) replace the sha256 below with that digest + refresh this comment.
+# Until then EP=8 jobs will still hit `ModuleNotFoundError: torchtitan` on THIS digest.
 DEFAULT_RL_DOCKER_IMAGE = (
     "ghcr.io/open-thoughts/openthoughts-agent"
     "@sha256:df2cb77e49fc078c75e909f0f967af3205b2b7cf1c4656c5ab5cd907e37128d1"

@@ -13,6 +13,11 @@ datasets/
 # C extensions
 *.so
 
+# gpu-rl wheelhouse: large CUDA/x86 wheels (vllm-*.whl, flash_attn-*.whl) built
+# by docker/build_wheels.sh. Keep the dir (.keep) but never commit the binaries.
+docker/wheelhouse/*
+!docker/wheelhouse/.keep
+
 # Distribution / packaging
 .Python
 build/

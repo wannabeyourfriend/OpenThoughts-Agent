@@ -1,0 +1,3 @@
+# Placeholder so docker/wheelhouse/ exists for the prebuilt-wheelhouse COPY.
+# Real wheels (vllm-*.whl, flash_attn-*.whl) are produced by docker/build_wheels.sh
+# and are gitignored (large CUDA/x86 binaries). See docker/README.gpu-rl-wheelcache.md

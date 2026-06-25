@@ -20,6 +20,35 @@
 # and PYTHONPATH is set so the synced clone wins over anything baked here.
 #
 # =============================================================================
+# WHEEL-CACHE BUILD (fast rebuilds) — see docker/README.gpu-rl-wheelcache.md
+# =============================================================================
+# The two SLOW steps in this image are the from-source CUDA/x86 nvcc compiles of:
+#   - the vLLM FORK (cutlass GEMM kernels — heavy), and
+#   - flash-attn 2.8.3 (its flash_attn_2_cuda extension).
+# These are NOW isolated into a dedicated `wheel-builder` stage that emits
+# RELOCATABLE WHEELS (`vllm-*.whl`, `flash_attn-*.whl`). The main `rl` stage then
+# `uv pip install`s those wheels instead of recompiling, so a rebuild that does
+# NOT change a source pin or the ABI re-uses the prebuilt wheels and skips nvcc
+# entirely.
+#
+# Two ways the main stage gets the wheels (it tries the cache first):
+#   (A) PREBUILT WHEELHOUSE (the durable win): `docker/build_wheels.sh` runs the
+#       heavy compiles ONCE and exports the wheels to `docker/wheelhouse/` on the
+#       build host (gitignored — large binaries). The main build COPYs them in
+#       and installs them: NO nvcc runs. Re-run build_wheels.sh only when a pin
+#       or ABI below changes (its MANIFEST records the cache key).
+#   (B) FALLBACK in-build compile: if `docker/wheelhouse/` is empty, the
+#       `wheel-builder` stage compiles the wheels in-image (one-time cost; buildx
+#       layer-caches it for the next rebuild on the same builder).
+#
+# CACHE KEY (what invalidates a wheel) = the tuple
+#   { VLLM_FORK_COMMIT, FLASH_ATTN_VERSION, torch 2.11.0, CUDA 12.8, cp312,
+#     x86_64, TORCH_CUDA_ARCH_LIST "8.0;9.0" }.
+# Change any of these -> rebuild the wheels (build_wheels.sh rebuilds + rewrites
+# the MANIFEST). torchtitan is pure-python (trivial) and is NOT wheel-cached.
+# =============================================================================
+#
+# =============================================================================
 # Version pins TRACK THE LIVE JUPITER PRODUCTION STACK (the from-source SIF),
 # NOT the portable uv.lock. Ground truth for each pin:
 #   - torch 2.11.0+cu128  : MarinSkyRL skyrl-train/pyproject.toml `vllm` extra
@@ -72,9 +101,145 @@
 #       `nvcc` is present for the from-source vLLM + flash-attn compiles.
 #
 # Build is GPU-COUNT-AGNOSTIC and needs no live GPU (only nvcc): the from-source
-# vLLM + flash-attn compiles run on a CPU builder.
+# vLLM + flash-attn compiles run on a CPU builder. Target platform is linux/amd64
+# (x86_64): the production gpu-rl image + CoreWeave H100 nodes are amd64 ONLY.
 # =============================================================================
-FROM nvidia/cuda:12.8.0-cudnn-devel-ubuntu22.04
+
+# Single source of truth for the pins, shared by the wheel-builder + main stages
+# AND read by docker/build_wheels.sh to compute the cache key. Bump a pin here ->
+# the wheels must be rebuilt.
+ARG BASE_IMAGE=nvidia/cuda:12.8.0-cudnn-devel-ubuntu22.04
+ARG TORCH_VERSION=2.11.0
+ARG TORCHVISION_VERSION=0.26.0
+ARG RAY_VERSION=2.51.1
+ARG FLASH_ATTN_VERSION=2.8.3
+ARG VLLM_FORK_REPO=https://github.com/mlfoundations/vllm.git
+ARG VLLM_FORK_COMMIT=76259c63a45e57c0d1cbaca3480aae52ebbfccd1
+# A100 (8.0) + Hopper (9.0): the GPUs that run this image (Leonardo / CoreWeave+Jupiter).
+ARG TORCH_CUDA_ARCH_LIST="8.0;9.0"
+ARG MAX_JOBS=8
+ARG NVCC_THREADS=2
+# Selects where the rl stage's /wheels comes from: `prebuilt-wheelhouse` (default,
+# = docker/wheelhouse/ populated by build_wheels.sh) or `wheel-builder` (compile
+# inline). Global-scope so it is usable in the `FROM ${WHEEL_SOURCE}` alias below.
+ARG WHEEL_SOURCE=prebuilt-wheelhouse
+
+# =============================================================================
+# STAGE 1: wheel-builder — compile vLLM-fork + flash-attn into RELOCATABLE WHEELS
+# -----------------------------------------------------------------------------
+# This is the ONLY stage that runs nvcc. It builds a torch-2.11 venv, then emits
+#   /wheels/flash_attn-*.whl  and  /wheels/vllm-*.whl
+# The main stage installs from these. When docker/wheelhouse/ already holds
+# prebuilt wheels, the main stage uses THOSE and this stage's output is unused
+# (and buildx can skip rebuilding it). build_wheels.sh targets THIS stage to
+# export the wheels to docker/wheelhouse/ once.
+# =============================================================================
+FROM ${BASE_IMAGE} AS wheel-builder
+
+ARG TORCH_VERSION
+ARG TORCHVISION_VERSION
+ARG RAY_VERSION
+ARG FLASH_ATTN_VERSION
+ARG VLLM_FORK_REPO
+ARG VLLM_FORK_COMMIT
+ARG TORCH_CUDA_ARCH_LIST
+ARG MAX_JOBS
+ARG NVCC_THREADS
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git curl ca-certificates build-essential cmake ninja-build \
+    python3 python3-pip python3-venv \
+    && rm -rf /var/lib/apt/lists/*
+RUN pip3 install --upgrade pip uv
+
+ENV UV_HTTP_TIMEOUT=600
+ENV UV_RETRIES=5
+ENV TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST}"
+ENV MAX_JOBS="${MAX_JOBS}"
+ENV NVCC_THREADS="${NVCC_THREADS}"
+ENV VLLM_TARGET_DEVICE=cuda
+
+# Build venv with EXACTLY the torch the wheels must be ABI-compatible with. Both
+# from-source builds use --no-build-isolation to reuse THIS torch (their build
+# backends `import torch` at build time and cannot see a torch installed in the
+# same isolated `uv pip install` invocation -> ModuleNotFoundError: torch).
+ENV WHEEL_VENV=/opt/wheelbuild/.venv
+RUN uv venv --python 3.12 $WHEEL_VENV
+RUN . $WHEEL_VENV/bin/activate && \
+    uv pip install --extra-index-url https://download.pytorch.org/whl/cu128 \
+        "torch==${TORCH_VERSION}" \
+        "torchvision==${TORCHVISION_VERSION}" \
+        "setuptools_scm" "setuptools>=77.0.3,<81.0.0" "wheel" "packaging" \
+        "ninja" "cmake" "psutil"
+
+WORKDIR /wheels
+
+# (W1) flash-attn 2.8.3 -> wheel. FLASH_ATTENTION_FORCE_BUILD=TRUE so it never
+# silently falls back to a (nonexistent) prebuilt torch-2.11 wheel; build only
+# the A100+Hopper arches; bound MAX_JOBS/NVCC_THREADS for RAM headroom.
+RUN . $WHEEL_VENV/bin/activate && \
+    MAX_JOBS=$MAX_JOBS NVCC_THREADS=$NVCC_THREADS \
+        TORCH_CUDA_ARCH_LIST="$TORCH_CUDA_ARCH_LIST" \
+        FLASH_ATTENTION_FORCE_BUILD=TRUE \
+        uv pip wheel "flash-attn==${FLASH_ATTN_VERSION}" \
+            --no-build-isolation --no-cache --no-deps -w /wheels
+
+# (W2) vLLM FORK -> wheel. use_existing_torch.py strips the fork's torch pins so
+# it builds against the torch above; rewrite cutlass-dsl[cu13]->cu128; install
+# the fork's python deps; then `uv pip wheel` the fork extension (no-build-
+# isolation reuses torch; FetchContent git-clones cutlass/vllm-flash-attn/etc).
+ENV VLLM_FORK_DIR=/opt/vllm-fork
+RUN git clone $VLLM_FORK_REPO $VLLM_FORK_DIR && \
+    git -C $VLLM_FORK_DIR checkout $VLLM_FORK_COMMIT
+RUN . $WHEEL_VENV/bin/activate && \
+    cd $VLLM_FORK_DIR && \
+    python use_existing_torch.py && \
+    sed -i 's/^nvidia-cutlass-dsl\[cu13\]>=/nvidia-cutlass-dsl>=/' requirements/cuda.txt && \
+    MAX_JOBS=$MAX_JOBS NVCC_THREADS=$NVCC_THREADS TORCH_CUDA_ARCH_LIST="$TORCH_CUDA_ARCH_LIST" \
+        VLLM_TARGET_DEVICE=cuda \
+        uv pip wheel . --no-build-isolation --no-deps -w /wheels -v
+
+# Record the cache key alongside the wheels for provenance.
+RUN echo "VLLM_FORK_COMMIT=${VLLM_FORK_COMMIT}" >  /wheels/MANIFEST && \
+    echo "FLASH_ATTN_VERSION=${FLASH_ATTN_VERSION}" >> /wheels/MANIFEST && \
+    echo "TORCH_VERSION=${TORCH_VERSION}" >> /wheels/MANIFEST && \
+    echo "TORCH_CUDA_ARCH_LIST=${TORCH_CUDA_ARCH_LIST}" >> /wheels/MANIFEST && \
+    echo "CUDA=12.8 PY=cp312 PLATFORM=linux_x86_64" >> /wheels/MANIFEST && \
+    ls -la /wheels
+
+# =============================================================================
+# STAGE 2: wheel sources — pick where the rl stage's /wheels comes from
+# -----------------------------------------------------------------------------
+# build_wheels.sh exports the wheel-builder's wheels to docker/wheelhouse/ (on
+# the build host). When that dir holds wheels, the `prebuilt-wheelhouse` stage
+# carries them in so the main stage installs the PREBUILT wheels (no nvcc). When
+# you have no prebuilt wheelhouse, pass `--build-arg WHEEL_SOURCE=wheel-builder`
+# to compile inline (the `wheels` alias below resolves to that stage instead).
+#
+# `COPY --from` cannot take a variable, so we alias the chosen source via a
+# `FROM ${WHEEL_SOURCE} AS wheels` stage (ARG-from-global-scope pattern) and the
+# rl stage always COPYs from the fixed `wheels` alias.
+# =============================================================================
+FROM scratch AS prebuilt-wheelhouse
+# docker/wheelhouse/ always exists (committed .keep); when populated by
+# build_wheels.sh it also holds vllm-*.whl / flash_attn-*.whl.
+COPY docker/wheelhouse/ /wheels/
+
+# Alias: WHEEL_SOURCE (global-scope ARG above) selects prebuilt-wheelhouse
+# (default) or wheel-builder. ARG re-stated here so its value is in scope for FROM.
+ARG WHEEL_SOURCE
+FROM ${WHEEL_SOURCE} AS wheels
+
+# =============================================================================
+# STAGE 3: rl — the runtime image (installs from the wheels; NO nvcc here)
+# =============================================================================
+FROM ${BASE_IMAGE} AS rl
+
+ARG TORCH_VERSION
+ARG TORCHVISION_VERSION
+ARG RAY_VERSION
+ARG TORCH_CUDA_ARCH_LIST
 
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -143,17 +308,12 @@ ENV SKYRL_COMMIT=2d9feef617fba21d606d221a8ac43707404e3467
 RUN git clone --branch $SKYRL_BRANCH https://github.com/marin-community/MarinSkyRL.git $SKYRL_HOME && \
     git -C $SKYRL_HOME checkout $SKYRL_COMMIT
 
-# =============================================================================
-# vLLM FORK (built FROM SOURCE at a PINNED commit)
-# =============================================================================
-# The Jupiter production stack runs vLLM 0.20.2rc0 from OUR fork, not a public
-# wheel. We clone the fork at the pinned commit and build it from source against
-# the torch 2.11.0 we install below. Pinned to a commit (NOT the floating branch)
-# for reproducibility.
+# The vLLM fork clone is still needed for requirements/common.txt + cuda.txt (the
+# fork's python deps: flashinfer/xgrammar/etc.) — but it is NO LONGER COMPILED
+# here. The compiled extension comes in as a prebuilt wheel below.
 ENV VLLM_FORK_REPO=https://github.com/mlfoundations/vllm.git
 ENV VLLM_FORK_COMMIT=76259c63a45e57c0d1cbaca3480aae52ebbfccd1
 ENV VLLM_FORK_DIR=/opt/vllm-fork
-
 RUN git clone $VLLM_FORK_REPO $VLLM_FORK_DIR && \
     git -C $VLLM_FORK_DIR checkout $VLLM_FORK_COMMIT
 
@@ -165,91 +325,43 @@ ENV RL_ENV_DIR=/opt/openthoughts/envs/rl
 # Create RL environment with Python 3.12 (MarinSkyRL pins requires-python ==3.12.*)
 RUN uv venv --python 3.12 $RL_ENV_DIR
 
-# TORCH_CUDA_ARCH_LIST covers the GPUs that run this image:
-#   - 9.0  = Hopper (CoreWeave iris-gpu = 8xH100 nodes; Jupiter GH200)
-#   - 8.0  = A100 (Leonardo / cross-cluster twin)
-# Both included so the from-source vLLM + flash-attn kernels run everywhere.
-ENV TORCH_CUDA_ARCH_LIST="8.0;9.0"
-# Bound the CUDA compile parallelism (the from-source vLLM build is heavy; this
-# trades wall-time for RAM headroom on the builder).
-ENV MAX_JOBS=8
-ENV NVCC_THREADS=2
-# Build vLLM for CUDA (not CPU/ROCm).
-ENV VLLM_TARGET_DEVICE=cuda
+ENV TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST}"
 
-# Install the RL stack:
-#  1. Pin the EXACT live-Jupiter stack FIRST (torch 2.11.0+cu128 from the cu128
-#     wheel index, torchvision 0.26.0, ray 2.51.1, flash-attn 2.6.3,
-#     transformers in the fork's accepted band). This constrains the resolver so
-#     nothing below renudges torch.
-#  2. Build the vLLM FORK from source against that torch:
-#       - `use_existing_torch.py` strips the fork's own torch==2.11.0 / torchvision
-#         / torchaudio pins from its requirements so it builds against the torch
-#         we just installed (no re-resolve / re-download of torch).
-#       - rewrite `nvidia-cutlass-dsl[cu13]` -> `nvidia-cutlass-dsl` for the cu128
-#         (CUDA 12) build (mirrors the fork's own docker/Dockerfile, which does the
-#         same sed when CUDA major == 12).
-#       - install the fork's python deps (requirements/common.txt + cuda.txt) so
-#         flashinfer/xgrammar/etc. are present.
-#       - compile + editable-install the fork extension (`-e .`,
-#         --no-build-isolation so it reuses the installed torch; FetchContent
-#         git-clones cutlass/vllm-flash-attn/triton_kernels/deepgemm/flashmla/
-#         qutlass at configure time — this build HAS internet, unlike the Leonardo
-#         offline compute nodes, so no SRC_DIR pre-staging is needed).
-#  3. editable-install skyrl-gym then skyrl-train (NO [vllm] extra — vllm/torch/
-#     flash-attn are already provided above; --no-build-isolation reuses them).
-#  4. re-assert the vllm import works and pin transformers within band.
-#  5. editable-install the OT-Agent project for the HPC utilities.
-# Step (1) is split from (2)+ so torch is fully installed BEFORE any from-source
-# build runs: flash-attn / vLLM build backends `import torch` at build time, and
-# uv builds them in an ISOLATED env that can't see a torch installed in the SAME
-# `uv pip install` invocation (-> ModuleNotFoundError: No module named 'torch').
-# So torch goes in alone first; every from-source package below uses
-# --no-build-isolation to reuse it.
+# Bring in the WHEELS from the `wheels` alias (= prebuilt-wheelhouse by default,
+# or wheel-builder when built with --build-arg WHEEL_SOURCE=wheel-builder). The
+# default path requires docker/build_wheels.sh to have populated the wheelhouse.
+COPY --from=wheels /wheels /wheels
+
+# (1) Pin the EXACT live-Jupiter stack FIRST (torch 2.11.0+cu128 from the cu128
+#     wheel index, torchvision 0.26.0, ray 2.51.1, transformers in the fork's
+#     accepted band). This constrains the resolver so nothing below renudges torch.
 RUN . $RL_ENV_DIR/bin/activate && \
     uv pip install --extra-index-url https://download.pytorch.org/whl/cu128 \
-        "torch==2.11.0" \
-        "torchvision==0.26.0" \
-        "ray[default]==2.51.1" \
+        "torch==${TORCH_VERSION}" \
+        "torchvision==${TORCHVISION_VERSION}" \
+        "ray[default]==${RAY_VERSION}" \
         "transformers>=4.56.0,!=5.0.*,!=5.1.*,!=5.2.*,!=5.3.*,!=5.4.*,!=5.5.0" \
         "setuptools_scm" "setuptools>=77.0.3,<81.0.0" "wheel" "packaging" "ninja" "cmake" "psutil"
 
-# (2) flash-attn 2.8.3: COMPILE THE CUDA EXTENSION FROM SOURCE against the torch
-# 2.11.0 installed above, so `import flash_attn_2_cuda` actually succeeds. We do
-# NOT pass FLASH_ATTENTION_SKIP_CUDA_BUILD (that flag is what left the prior image
-# without the extension). Build notes:
-#   - --no-build-isolation: reuse the torch installed in step (1); flash-attn's
-#     build backend imports torch at build time and cannot see it in an isolated env.
-#   - FLASH_ATTENTION_FORCE_BUILD=TRUE: never silently fall back to a (nonexistent)
-#     prebuilt torch-2.11 wheel — always compile here.
-#   - TORCH_CUDA_ARCH_LIST="8.0;9.0": build the A100 + Hopper kernels only (skip
-#     the dozens of other arches flash-attn compiles by default -> far less wall
-#     time / RAM on the builder).
-#   - MAX_JOBS/NVCC_THREADS bound parallelism: flash-attn's setup.py auto-sizes
-#     MAX_JOBS from free RAM (~5GB/nvcc-job) and OVER-allocates on a big builder ->
-#     OOM-kills the compile. We pin it explicitly (MAX_JOBS=8, NVCC_THREADS=2) to
-#     trade wall-time for RAM headroom. The cxx11-ABI is taken from the installed
-#     torch automatically (torch 2.11 cu128 wheels are cxx11abiTRUE), so no
-#     FLASH_ATTENTION_FORCE_CXX11_ABI override is needed.
-# (flash-attn is the non-CP fallback; CP uses SDPA and vLLM serving uses its OWN
-#  bundled vllm_flash_attn built from source in step 3 below — but transformers
-#  FA2 + vLLM's rotary find_spec guard both require this extension to EXIST.)
+# (2) flash-attn: install the PREBUILT wheel (no compile). Assert the CUDA
+#     extension `flash_attn_2_cuda` is present (this is exactly what the prior
+#     SKIP_CUDA_BUILD image lacked, and what vLLM's rotary find_spec guard +
+#     MarinSkyRL's transformers FA2 path both require to EXIST).
 RUN . $RL_ENV_DIR/bin/activate && \
-    MAX_JOBS=$MAX_JOBS NVCC_THREADS=$NVCC_THREADS \
-        TORCH_CUDA_ARCH_LIST="$TORCH_CUDA_ARCH_LIST" \
-        FLASH_ATTENTION_FORCE_BUILD=TRUE \
-        uv pip install "flash-attn==2.8.3" --no-build-isolation --no-cache && \
-    python -c "import flash_attn, flash_attn_2_cuda; print('flash_attn', flash_attn.__version__, '+ flash_attn_2_cuda OK')"
+    uv pip install --no-deps /wheels/flash_attn-*.whl && \
+    python -c "import flash_attn, flash_attn_2_cuda; print('flash_attn', flash_attn.__version__, '+ flash_attn_2_cuda OK (from cached wheel)')"
 
-# (3) build the vLLM FORK from source against the installed torch 2.11.0.
+# (3) vLLM FORK: install the fork's python deps from its requirements, then the
+#     PREBUILT vllm wheel (no compile). The deps install (common.txt + cuda.txt)
+#     pulls flashinfer/xgrammar/etc.; the cutlass-dsl[cu13]->cu128 rewrite mirrors
+#     the fork's own docker. --no-deps on the wheel itself so it does not re-resolve
+#     torch/flash-attn.
 RUN . $RL_ENV_DIR/bin/activate && \
     cd $VLLM_FORK_DIR && \
     python use_existing_torch.py && \
     sed -i 's/^nvidia-cutlass-dsl\[cu13\]>=/nvidia-cutlass-dsl>=/' requirements/cuda.txt && \
     uv pip install -r requirements/common.txt -r requirements/cuda.txt && \
-    MAX_JOBS=$MAX_JOBS NVCC_THREADS=$NVCC_THREADS TORCH_CUDA_ARCH_LIST="$TORCH_CUDA_ARCH_LIST" \
-        VLLM_TARGET_DEVICE=cuda \
-        uv pip install -e . --no-build-isolation --no-deps -v
+    uv pip install --no-deps /wheels/vllm-*.whl
 
 # (4) skyrl-gym + skyrl-train (editable, NO [vllm] extra — torch/vllm/flash-attn
 #     already provided above), the OT-Agent project, and assert imports resolve.
@@ -287,6 +399,8 @@ RUN . $RL_ENV_DIR/bin/activate && \
 # carefully-pinned RL venv — apply_ep imports none of them. (MarinSkyRL's own
 # Stage-0 note confirms: "torchtitan ... does NOT rebuild torch ... moves no
 # protected package (torch/TE/transformers/numpy/flash-attn/mcore)".)
+# torchtitan is pure-python (trivial) -> it is NOT wheel-cached (only vLLM/flash-
+# attn, the nvcc compiles, are). This step stays cheap on every rebuild.
 RUN . $RL_ENV_DIR/bin/activate && \
     uv pip install --no-deps \
         "torchtitan @ git+https://github.com/pytorch/torchtitan.git@a1fdd7e" && \
