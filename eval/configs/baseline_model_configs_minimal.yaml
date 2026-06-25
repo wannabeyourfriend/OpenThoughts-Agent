@@ -246,6 +246,53 @@ models:
     swap_space: 32
     limit_mm_per_prompt: '{"image":0,"video":0}'
 
+  # Qwen3.6-35B-A3B / Qwen3.5-35B-A3B — model_type: qwen3_5_moe
+  # (Qwen3_5MoeForConditionalGeneration). Verified from HF config.json (2026-06-25,
+  # both repos public + ungated): hybrid linear/full-attn MoE, text_config has
+  # 40 layers, hidden 2048, 16 attn / 2 KV heads (GQA group 8), head_dim 256,
+  # 256 experts top-8, native ctx 262144, vocab 248320, bf16. ~34.4B total /
+  # ~3.2B active. Both sizes are arch-identical for serving → same preset.
+  #
+  # conda_env: eval-qwen35 — MANDATORY. This is the ONLY env that can vLLM-serve
+  # model_type: qwen3_5 / qwen3_5_moe (fork-vLLM 0.20.x @ 76259c63a registers
+  # Qwen3_5MoeForConditionalGeneration + transformers 5.12.1 parses the hybrid
+  # GatedDeltaNet config; ENVIRONMENT_MAP §2f). The generic `(?i)qwen3\.5` pattern
+  # below routes to otagent2-fix (vLLM 0.17.1, NO qwen3_5 impl) — WRONG for these,
+  # so these EXACT-match entries override the pattern (cf. the 131k-fixthink note).
+  # The §2f load-bearing serve env (VLLM_USE_FLASHINFER_SAMPLER=0,
+  # VLLM_ATTENTION_BACKEND=FLASH_ATTN, conda libstdc++ on LD path, libcuda stub)
+  # is exported by the Leonardo sbatch when conda_env=eval-qwen35.
+  #
+  # TP=4: weights ~34.4B bf16 ≈ ~69 GB > 64 GB → needs TP≥2; TP=4 (one full
+  # Leonardo node) divides num_attention_heads 16 cleanly (4 heads/GPU) and gives
+  # ~17 GB/card weights with ample KV headroom (the 2 KV heads are < TP so they
+  # REPLICATE — legal vLLM GQA, mirrors the RL-config geometry; the hybrid arch
+  # makes only 10/40 layers grow KV so 32k is cheap). Matches tmax-9b's TP=4.
+  # max_model_len 32768: eval parity with every neighbor (native ctx is 262144
+  # but eval contexts cap at 32k; no YaRN/rope_scaling needed — 32768 << 262144).
+  # NO tool_call_parser / reasoning_parser: Pattern D for terminus-2 (it parses
+  # JSON client-side; parsers hijack that, like the Qwen3-30B-A3B-2507 neighbor).
+  # VL arch (carries vision_config) → serve TEXT-only via limit_mm_per_prompt
+  # image=0,video=0 (these DO ship preprocessor_config.json, but text-only avoids
+  # the multimodal path entirely; mirrors the tmax qwen3_5 entries).
+  "Qwen/Qwen3.6-35B-A3B":
+    conda_env: eval-qwen35
+    tensor_parallel_size: 4
+    max_model_len: 32768
+    swap_space: 32
+    trust_remote_code: true
+    limit_mm_per_prompt: '{"image":0,"video":0}'
+    extra_args: "--enable-prefix-caching"
+
+  "Qwen/Qwen3.5-35B-A3B":
+    conda_env: eval-qwen35
+    tensor_parallel_size: 4
+    max_model_len: 32768
+    swap_space: 32
+    trust_remote_code: true
+    limit_mm_per_prompt: '{"image":0,"video":0}'
+    extra_args: "--enable-prefix-caching"
+
   # ethanlshen Qwen3-32B SERA reproductions — Pattern A paper-parity flags
   # (mirror allenai/SERA-32B: hermes + enforce-eager + disable-cascade-attn + seed 42).
   # Size ladder: 316, 1000, 3160 (converted from broken FSDP upload), 10000 rows.
