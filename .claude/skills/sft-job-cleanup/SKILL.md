@@ -8,7 +8,7 @@ description: >-
   safetensors first), the Qwen3.5 preprocessor_config copy, the don't-upload-partials policy, and the
   hf-upload gotchas (tmux not nohup, `hf upload` not `-large-folder`, Leonardo sbatch-tunnel not login node).
   Use when an SFT fine-tune finishes and needs uploading + registering, or "run the SFT cleanup checklist".
-  Distinct from RL cleanup (rl-job-cleanup) and datagen cleanup (datagen-job-cleanup).
+  Distinct from RL cleanup (rl-agentic-job-cleanup) and datagen cleanup (datagen-job-cleanup).
 ---
 
 # sft-job-cleanup

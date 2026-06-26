@@ -91,5 +91,5 @@ stays safe. No `find` / `du` / `rglob` on GPFS; use canonical paths.
 ---
 Launcher: **`eval-standard-launch`**. Contrast: **`eval-agentic-cleanup`** (Harbor-trace + Supabase DB —
 the OTHER eval-cleanup path; this one is scores-in-a-tracker, HF-only, NO DB). Model-publishing cleanups:
-**`rl-job-cleanup`** / **`sft-job-cleanup`**. Per-cluster particulars (ssh, the step-ca cert refresh for
+**`rl-agentic-job-cleanup`** / **`sft-job-cleanup`**. Per-cluster particulars (ssh, the step-ca cert refresh for
 rsync, the `/leonardo_work/AIFAC_5C0_290/bfeuer00/…` paths) → `.claude/ops/<cluster>/`.

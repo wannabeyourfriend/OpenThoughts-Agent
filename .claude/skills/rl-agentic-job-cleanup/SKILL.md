@@ -1,5 +1,5 @@
 ---
-name: rl-job-cleanup
+name: rl-agentic-job-cleanup
 description: >-
   Preserve + publish a finished RL (SkyRL/GRPO) training checkpoint after the job terminates
   (completed at max_steps OR early-stopped/scancelled) on an HPC cluster (Jupiter/Leonardo/Perlmutter).
@@ -10,7 +10,7 @@ description: >-
   or when asked to "run the RL cleanup checklist". Distinct from SFT cleanup (that's a different flow).
 ---
 
-# rl-job-cleanup
+# rl-agentic-job-cleanup
 
 After an RL job terminates (early or completed), follow these steps to preserve and publish the
 checkpoint. The final HF artifact is `laion/<job_name>-<step>-<size>` (weights at repo root) +

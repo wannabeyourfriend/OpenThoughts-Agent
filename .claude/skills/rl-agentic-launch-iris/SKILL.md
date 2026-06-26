@@ -307,7 +307,7 @@ These were paid for this week (`agent_logs/2026-06-25_coreweave_131k_cpdcp2r3_re
   EPDIAG / throughput stats) use the windowed pagination (`scripts/iris/analyze_job_history.py`), **NOT**
   `iris job logs --tail` (under-samples 10–100×) — but that is for the science only; **liveness/terminal
   detection is the state-poll watcher above**, never a log-string grep.
-- **On completion → `rl-job-cleanup`** (best-ckpt selection, HF upload, the **manual** Supabase DB
+- **On completion → `rl-agentic-job-cleanup`** (best-ckpt selection, HF upload, the **manual** Supabase DB
   registration, trace export). `enable_db_registration` stays false at launch.
 - **Teardown:** `iris job kill /benjaminfeuer/<job>` (with permission). Rescue banked traces from the
   gs:///s3:// jobs/rendezvous path if the trace upload didn't auto-run (`iris_job_lifecycle.md` §4).

@@ -66,10 +66,34 @@ The build job uses **kaniko** (`gcr.io/kaniko-project/executor`), NOT buildkit/`
   script; the export overlays kaniko's `/kaniko/…` onto the ubuntu rootfs.)
 - **Context = the iris-synced `/app` bundle** (the OT-Agent repo). The build's Dockerfile is
   `docker/Dockerfile.gpu-rl`; context is the repo root.
-- **`WHEEL_SOURCE=wheel-builder` is MANDATORY here.** The default `prebuilt-wheelhouse` COPYs
-  `docker/wheelhouse/*.whl` — but `docker/wheelhouse/` is **gitignored**, so it is ABSENT from the synced
-  bundle. `WHEEL_SOURCE=wheel-builder` makes the `wheel-builder` stage compile the vLLM-fork + flash-attn
-  wheels **inline** (the ~3 h nvcc cost; §4). (`--cache` makes future rebuilds reuse those wheel layers — §4.)
+- **`WHEEL_SOURCE`: prefer the FAST `prebuilt-wheelhouse` path; `wheel-builder` is the SLOW fallback.**
+  The `rl` stage's default `prebuilt-wheelhouse` COPYs `docker/wheelhouse/*.whl` and `uv pip install`s them
+  → **ZERO nvcc** (build = minutes, dominated by the rl-stage dep installs). `wheel-builder` instead compiles
+  the vLLM-fork + flash-attn wheels inline (the ~3 h nvcc cost; §4).
+  - **The wheels do NOT ride the iris bundle.** `docker/wheelhouse/` is gitignored, AND even force-staged
+    (`git add -f`) the ~900 MB of wheels blow the **hard 25 MB bundle cap** (`iris/.../bundle.py`
+    `MAX_BUNDLE_SIZE_BYTES`; no per-file skip, no override). So force-staging does NOT get them to `/app`.
+  - **FAST PATH (no nvcc) — fetch the prebuilt wheels in-build.** If you have the compiled wheels (e.g.
+    extracted from a prior image, or from `build_wheels.sh` on a real x86 host), upload them to a remote the
+    build pod can reach and have the kaniko build script fetch them into `/app/docker/wheelhouse/` BEFORE
+    `kaniko/executor` runs (kaniko reads the context dir live, so `COPY docker/wheelhouse/` then finds them).
+    `build_gpu_rl_kaniko.sh` does exactly this (step 3.5) for `WHEEL_SOURCE=prebuilt-wheelhouse`: curl the 2
+    wheels + MANIFEST from the public HF dataset `laion/gpu-rl-build-wheels` (vLLM-fork + flash-attn are
+    open-source) and fail-fast if a wheel is missing (never silently fall back to a compile). Launch with
+    `-e WHEEL_SOURCE=prebuilt-wheelhouse`.
+    - **`--skip-unused-stages` is LOAD-BEARING on this path.** kaniko builds EVERY Dockerfile stage by default
+      (unlike BuildKit, which prunes), so WITHOUT this flag the `wheel-builder` (nvcc) stage compiles even when
+      the `rl` stage takes `--from=wheels` = `prebuilt-wheelhouse`. WITH it, the unreferenced `wheel-builder`
+      stage is pruned → ZERO nvcc. `build_gpu_rl_kaniko.sh` passes it. (Symptom if missing: "Building wheel for
+      flash-attn … still running" despite `WHEEL_SOURCE=prebuilt-wheelhouse`.) **The MANIFEST pins MUST match the Dockerfile's
+    `{VLLM_FORK_COMMIT, FLASH_ATTN_VERSION, TORCH_VERSION, TORCH_CUDA_ARCH_LIST, cu128, cp312}`** — a
+    SKYRL_COMMIT-only bump does not touch the wheels, so the same wheels stay ABI-correct.
+  - **SLOW FALLBACK — `wheel-builder`** (`-e WHEEL_SOURCE=wheel-builder`, or the script default): use ONLY when
+    no prebuilt wheels are available to fetch. Pays the ~3 h nvcc compile.
+  - **`--cache` is irrelevant on the prebuilt-wheelhouse path** (there is no compile RUN to cache). NOTE the
+    cache repo holds only ONE `--single-snapshot` final-snapshot layer, so on the `wheel-builder` path `--cache`
+    does NOT reuse the nvcc layers either — `--single-snapshot` and per-layer cache reuse are mutually
+    defeating. Don't expect a cache HIT to save the 3 h; use the prebuilt-wheelhouse fast path instead.
 - **`--destination ghcr.io/open-thoughts/openthoughts-agent:gpu-rl` (+ an immutable `:gpu-rl-<gitsha>` tag).**
   kaniko's `--destination` push is the TERMINAL step → a successful job = a pushed image (§5).
 

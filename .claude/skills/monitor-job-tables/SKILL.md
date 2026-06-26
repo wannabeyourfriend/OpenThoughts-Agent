@@ -50,10 +50,10 @@ similarly unify eval across Leonardo + TACC. A separate table for jobs still fil
 Cross-cutting (every bucket):
 - **Chain-restart TIMEOUTs are normal, NOT failures** — when a 12h/24h job TIMEOUTs and its `afterany`
   successor is RUNNING/PENDING, report it as a normal restart (note the successor), not a death.
-- **Completion → the matching cleanup skill**: RL → by flavor — agentic (Harbor/Daytona)→`rl-job-cleanup`,
+- **Completion → the matching cleanup skill**: RL → by flavor — agentic (Harbor/Daytona)→`rl-agentic-job-cleanup`,
   standard non-agentic GRPO (Delphi/rlvr/dapo math cells)→`rl-standard-job-cleanup`; SFT→`sft-job-cleanup`,
   datagen→`datagen-job-cleanup`, eval→`eval-agentic-cleanup` (Leonardo OR TACC). A COMPLETED **CoreWeave RL**
-  run routes the same way (agentic→`rl-job-cleanup`, standard→`rl-standard-job-cleanup`) — but its artifacts go
+  run routes the same way (agentic→`rl-agentic-job-cleanup`, standard→`rl-standard-job-cleanup`) — but its artifacts go
   to HF / R2, NOT a POSIX scratch tree, so there is **no on-disk `trace_jobs/`/`tasks/` to reap** (the inode rule
   below is GPFS/JSC-specific). **On the GPFS clusters, cleanup is not done until the artifact's on-disk
   `trace_jobs/`/`tasks/` tree is `rm`'d + inode reclaim verified** — leaving it after HF upload is the #1 inode

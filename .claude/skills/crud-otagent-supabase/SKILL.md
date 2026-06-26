@@ -235,7 +235,7 @@ often fails or truncates). For each eval, the run dir is `$EVAL_JOBS_DIR/eval-<s
   repo the auto-harvest *attempted*. **It is frequently NOT the live repo** — the auto-push targets
   `DCAgent2/<run_tag>` (no `-traces` suffix) and on the shared `DCAgent2` org it commonly **403s on
   storage quota** (`exceeded your public storage space`). The real, manually re-uploaded dataset lands
-  in **`laion/<run_tag>-traces`** (the canonical `<org>/<run_tag>-traces` convention; `rl-job-cleanup`
+  in **`laion/<run_tag>-traces`** (the canonical `<org>/<run_tag>-traces` convention; `rl-agentic-job-cleanup`
   §8 / `eval-agentic-cleanup` §1). **Always confirm on HF which repo actually exists + is non-empty
   before linking** — do not link the failed `DCAgent2` attempt.
 

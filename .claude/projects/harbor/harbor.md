@@ -69,7 +69,7 @@ Two layers, easy to conflate:
 
 ## Fork facts / load-bearing commits (on `penfever/working`)
 
-- **`94379963`** — `iter_trial_dirs` prunes the `os.walk` at the trial-dir level → trace export no longer GPFS-stat-storms on 30k-trial runs (the Step-8 cleanup fix; see `.claude/skills/rl-job-cleanup`).
+- **`94379963`** — `iter_trial_dirs` prunes the `os.walk` at the trial-dir level → trace export no longer GPFS-stat-storms on 30k-trial runs (the Step-8 cleanup fix; see `.claude/skills/rl-agentic-job-cleanup`).
 - **`8737426c`** — the TIS per-turn logprob/token-id length-parity guard (above).
 - **`ec508562`** (+ throttle follow-up `e05d569d`) — reap orphaned LiteLLM logging tasks on between-turns timeout/cancel → fixes the Ray ObjectRef-leak SIGABRT on AgentTimeout-heavy datasets (a separate bug class from the uvloop fix).
 - Install: `pip install -e .` with extras `[daytona]`/`[modal]`/`[cloud]`/`[all]`.

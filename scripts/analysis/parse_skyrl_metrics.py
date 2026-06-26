@@ -197,7 +197,7 @@ def select_best_standard_checkpoint(
         <run_dir>/exports/global_step_<N>/policy/<weights>
         <run_dir>/latest_ckpt_global_step.txt
 
-    EMA math is lifted VERBATIM from the rl-job-cleanup skill (format-agnostic):
+    EMA math is lifted VERBATIM from the rl-agentic-job-cleanup skill (format-agnostic):
       - reward = reward/avg_raw_reward, keyed by trainer/global_step, first-seen wins
       - trailing-5 EMA: alpha = 1/3; EMA_n = alpha*r_n + (1-alpha)*EMA_{n-1}, EMA_1 = r_1
       - eligible saved-aligned steps = multiples of save_every, excluding the FIRST save

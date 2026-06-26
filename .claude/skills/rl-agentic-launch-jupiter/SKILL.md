@@ -160,7 +160,7 @@ NORMAL terminal state of a healthy chain, not a failure.** Typical `K` is **5–
 ## 7. After launch
 - **Monitor:** `monitor-cron-sweep` (the 3-cluster RL/eval/datagen health-sweep cadence;
   entropy / log_ratio / grad_norm are mandatory progress columns).
-- **On completion → `rl-job-cleanup`** (best-ckpt selection, HF upload from the login node, the
+- **On completion → `rl-agentic-job-cleanup`** (best-ckpt selection, HF upload from the login node, the
   **manual** Supabase DB registration, trace export + `parse_skyrl_metrics`). DB registration is a
   cleanup step here — `enable_db_registration` stays false at launch (§4).
 - **Behavior analysis:** `analyze-rl-behavior` for a post-hoc arm comparison.

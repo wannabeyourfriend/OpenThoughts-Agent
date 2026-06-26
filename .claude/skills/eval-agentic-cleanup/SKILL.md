@@ -8,7 +8,7 @@ description: >-
   the vLLM-numeric-ID → real-HF-model-name fix (with cross-user FK safety), verify, free disk. Use to verify
   an eval is truly complete, when a sweep finds an eval that didn't upload/register or has a broken/zero
   score or short trial count, or to re-register/correct an eval's model/traces. Distinct from the model-
-  publishing cleanups (rl-job-cleanup / sft-job-cleanup) and datagen-job-cleanup — this is the EVAL path.
+  publishing cleanups (rl-agentic-job-cleanup / sft-job-cleanup) and datagen-job-cleanup — this is the EVAL path.
 ---
 
 # eval-agentic-cleanup
@@ -159,7 +159,7 @@ python scripts/database/manual_db_eval_push.py --job-dir trace_jobs/<RUN_TAG> --
 
 ### HF trace dataset — use the MEMORY-EFFICIENT uploader (don't hand-extract episodes)
 For the HF trace **dataset** itself, use the same streamed, **last-episode-per-trial** uploader the RL
-cleanup uses (see `rl-job-cleanup` §8 for the canonical invocation) — naive per-conversation extraction
+cleanup uses (see `rl-agentic-job-cleanup` §8 for the canonical invocation) — naive per-conversation extraction
 loads every episode of every trial into RAM and is brutally I/O-heavy on GPFS at eval scale (300 trials ×
 hundreds of episode files each):
 ```bash
@@ -210,7 +210,7 @@ the bulk). Detach a large GPFS `rm` (nohup/tmux); never `du`/`find` to size it f
 canonical task dirs.
 
 ---
-Sibling cleanups: **`rl-job-cleanup`** (RL model), **`sft-job-cleanup`** (SFT model), **`datagen-job-cleanup`** (trace dataset). Launching evals → **`eval-agentic-launch`**. Per-cluster particulars → `.claude/ops/<cluster>/`.
+Sibling cleanups: **`rl-agentic-job-cleanup`** (RL model), **`sft-job-cleanup`** (SFT model), **`datagen-job-cleanup`** (trace dataset). Launching evals → **`eval-agentic-launch`**. Per-cluster particulars → `.claude/ops/<cluster>/`.
 
 ---
 

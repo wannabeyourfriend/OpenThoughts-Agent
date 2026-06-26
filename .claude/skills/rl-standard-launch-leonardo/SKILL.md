@@ -243,7 +243,7 @@ the head with `RAY_ADDRESS` set. Multi-node gotchas it handles (keep them):
     (fresh cell: `…,RESUME_MODE=null …`).
 - **24h wall:** `boost_usr_prod` caps at `23:59:00`; OPD full runs (~24 min/step) only
   fit ~18–20 steps per slot → ckpt every few steps and chain `--dependency=afterany:`.
-- **Completion → run `rl-job-cleanup`** (cancel pending retries, consolidate/upload to
+- **Completion → run `rl-agentic-job-cleanup`** (cancel pending retries, consolidate/upload to
   HF via the Leonardo sbatch-tunnel — login-node 100s killer, see ops.md — DB register,
   trace/metrics steps, then `rm -rf` the dirs). Throughput/accuracy *measurement* runs
   with throwaway ckpts skip the upload (no production winner) — only clean up disk.

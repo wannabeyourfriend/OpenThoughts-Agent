@@ -132,7 +132,7 @@ ONE table.** Extraction pointers:
 
 ## 4. Flag + hand off (the value of the sweep)
 - **Completion → the matching cleanup skill** (don't inline the whole checklist unless the sweep directive
-  says to act): RL → route by flavor: **agentic** (Harbor/Daytona/terminal_bench) → **`rl-job-cleanup`**;
+  says to act): RL → route by flavor: **agentic** (Harbor/Daytona/terminal_bench) → **`rl-agentic-job-cleanup`**;
   **standard / non-agentic GRPO** (the Delphi/rlvr/dapo math cells from `rl-standard-launch-leonardo`; no
   `trace_jobs/`) → **`rl-standard-job-cleanup`** (model + metric CSVs only, no trace dataset). SFT →
   **`sft-job-cleanup`** (upload + DB register), datagen (all
@@ -178,7 +178,7 @@ ONE table.** Extraction pointers:
   note the successor.
 - **Genuine FAILED** (exit≠0, not a wall TIMEOUT) → diagnose (read the first real traceback, often masked by
   the elastic summary) + a dated **`agent_logs/`** entry; recurring identical failures ≠ transient.
-- **RL collapse rule** (≥2 signals fire same step) → flag for cancel+salvage per `rl-job-cleanup`.
+- **RL collapse rule** (≥2 signals fire same step) → flag for cancel+salvage per `rl-agentic-job-cleanup`.
 - **Eval** stall/zombie/instant-fail red-flags → act per `job_monitor_table.md` Eval section; **`DCAgent2/*`
   measurement runs are EXEMPT** (report as calibration, not production).
 

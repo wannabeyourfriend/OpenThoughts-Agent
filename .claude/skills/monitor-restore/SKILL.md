@@ -32,7 +32,7 @@ lost on a session restart, so this skill is the durable source of truth: the can
 
 ## Supporting skills/docs the sweep leans on (read these; the prompt references them)
 - **`monitor-cron-sweep`** — the sweep *procedure* (gather → bucket → render → flag), now with per-cluster Leonardo / CoreWeave / TACC gather+triage sections; **`monitor-job-tables`** + `/Users/benjaminfeuer/Documents/notes/ot-agent/job_monitor_table.md` — the exact per-type table formats + metric/red-flag definitions (the unified RL table now spans Leonardo + CoreWeave).
-- **Cleanup:** `rl-job-cleanup` (agentic), `rl-standard-job-cleanup` (standard GRPO), `sft-job-cleanup`, `datagen-job-cleanup`, `eval-agentic-cleanup` (+ `eval-standard-cleanup`).
+- **Cleanup:** `rl-agentic-job-cleanup` (agentic), `rl-standard-job-cleanup` (standard GRPO), `sft-job-cleanup`, `datagen-job-cleanup`, `eval-agentic-cleanup` (+ `eval-standard-cleanup`).
 - **Launch:** `rl-agentic-launch-iris` (CoreWeave RL), `rl-standard-launch-leonardo`, `sft-launch-leonardo`, `datagen-launch`, `eval-agentic-launch`, `eval-standard-launch`. (`*-jupiter` skills apply when Jupiter returns.)
 - **Cluster particulars** (access, paths, caps, preamble, binding gotchas): `.claude/ops/leonardo/ops.md`, `.claude/ops/iris/coreweave_gpu_ops.md` (+ `coreweave_h100_cloud_hardware.md`), `.claude/ops/tacc/ops.md`, `.claude/ops/local/ops.md`. **Dependency facts:** `.claude/projects/{marinskyrl,harbor,vllm,llama-factory,daytona}/`.
 - The repo `CLAUDE.md` is the user's cited reference for table format + launch + cleanup; **the canonical prompt below overrides any memory/skill if they conflict** (per the user).
@@ -143,7 +143,7 @@ COREWEAVE RL (agentic SkyRL/MoE via `rl-agentic-launch-iris`):
   ImagePullBackOff self-heal are BENIGN bring-up noise.
 - EP=8 science greps (the 131k arm) — `sel_rows` / `EPDIAG` via `scripts/iris/analyze_job_history.py`
   (log-content greps are for SCIENCE/throughput ONLY, never liveness — liveness = the state-poll above).
-- On a COMPLETED run → route by flavor: AGENTIC (Harbor/Daytona/terminal_bench) → `rl-job-cleanup` (FULL checklist
+- On a COMPLETED run → route by flavor: AGENTIC (Harbor/Daytona/terminal_bench) → `rl-agentic-job-cleanup` (FULL checklist
   incl. trace upload + metrics); STANDARD/non-agentic GRPO → `rl-standard-job-cleanup`. Do this WITHOUT asking.
 - The per-run Monitors (bring-up/wedge watch) are a COMPLEMENTARY finer-grained layer for active-debugging runs;
   this 3h cron is the baseline — don't let one substitute for the other.
@@ -157,7 +157,7 @@ TACC EVAL HARVEST (when present — newly-integrated, currently validated by a c
 
 ON SUCCESSFUL COMPLETION (SFT / RL / datagen / eval) on ANY cluster → note it + summary stats, then:
 - RL or SFT → manual HF upload + DB registration per CLAUDE.md. Route RL by flavor: AGENTIC RL
-  (Harbor/Daytona/terminal_bench) → `rl-job-cleanup`; STANDARD / non-agentic GRPO (Delphi/rlvr/dapo math cells) →
+  (Harbor/Daytona/terminal_bench) → `rl-agentic-job-cleanup`; STANDARD / non-agentic GRPO (Delphi/rlvr/dapo math cells) →
   `rl-standard-job-cleanup` (model + metric CSVs only; size suffix from the exported weights; DB-register only if
   the series is DB-registerable). SFT → `sft-job-cleanup`. Do this WITHOUT asking. (Leonardo HF upload = the
   sbatch-tunnel path, NOT the login node — it SIGKILLs long processes at ~100s; needs the fresh step-ca cert.)

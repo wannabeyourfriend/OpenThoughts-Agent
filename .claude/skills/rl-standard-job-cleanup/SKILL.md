@@ -11,7 +11,7 @@ description: >-
   and fire the Delphi downstream eval suite on the post-RL ckpt (defers to eval-standard-launch §5b). The ONLY
   artifacts are the model + the metric CSVs/report + the tracker scores — there is NO trace dataset. Use when
   a standard/non-agentic GRPO RL run finishes and needs uploading + (maybe) registering. DISTINCT from
-  rl-job-cleanup, which is the AGENTIC (Harbor/Daytona) path with a companion trace dataset.
+  rl-agentic-job-cleanup, which is the AGENTIC (Harbor/Daytona) path with a companion trace dataset.
 ---
 
 # rl-standard-job-cleanup
@@ -22,7 +22,7 @@ of `hpc/skyrl_yaml/leonardo/*`, `logger=console`, **no Harbor / no Daytona / no 
 HF artifact is **`laion/<run_name>-<step>-<size>B`** (weights at repo root) + the metric CSVs/report; a
 Supabase `models` row (`training_type=RL`) **only if the cell's series is DB-registerable** (§7).
 
-> **This is NOT the agentic cleanup.** `rl-job-cleanup` publishes an agentic Harbor/Daytona model PLUS a
+> **This is NOT the agentic cleanup.** `rl-agentic-job-cleanup` publishes an agentic Harbor/Daytona model PLUS a
 > companion trace dataset `penfever/<job>` and reads `trace_jobs/`. Standard GRPO has **none of that** — no
 > `trace_jobs/`, no `trainer_log.jsonl` (logger=console → never written), no trial/batch-error outputs. If
 > the run came from `rl-standard-launch-leonardo`, use THIS skill.
