@@ -75,11 +75,12 @@ srun -p gh -N 1 -n 1 -t 12:00:00 --pty bash -l
 
 ### otagent env (primary — datagen / eval / RL / SFT)
 
-**Current state** (as of 2026-06-25):
+**Current state** (verified live, as of 2026-06-26):
 - Python 3.12.13
 - torch 2.11.0+cu128, torchvision 0.26.0+cu128, torchaudio 2.11.0+cu128
-- vllm **`0.1.dev16611+g76259c63a`** — the fork-vLLM built from source (§"Building the vLLM
-  wheel from source"); it **resolves `qwen3_5`** (the bare `0.16.0` pip wheel the env was
+- vllm **`0.1.dev16611+g76259c63a`** (pip metadata: `0.1.dev16611+g76259c63a.cu128`;
+  `vllm.__version__` reports the bare form) — the fork-vLLM built from source (§"Building the
+  vLLM wheel from source"); it **resolves `qwen3_5`** (the bare `0.16.0` pip wheel the env was
   created with was replaced — verified live in the 2026-06-25 tmax-9b serve log). A stale
   "vllm 0.16.0" here previously caused a mis-diagnosis that tmax couldn't serve on TACC.
 - transformers 4.57.3
