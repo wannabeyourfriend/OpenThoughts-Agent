@@ -212,16 +212,18 @@ in the cluster.
 > pre-stage the model into the image's HF cache / a shared snapshot before the FSDP workers
 > start, or raise `HF_HUB_DOWNLOAD_TIMEOUT`.)
 
-> **⚠ `--memory 1400GB`, NOT the `1800GB` full-node default, for gang admission.** `1800GB`
-> (≈1676 GiB) sits so close to node-allocatable (~2014 GiB) that after the daemonset +
-> persistent-reservation overhead a leafgroup (all-or-nothing, one IB leaf) gang can't fit
-> all its pods → Kueue `topology 'infiniband' allows to fit only K of N … excluded: resource
-> "memory"` → **SchedulingGated stall** (cost multiple 60–120 min stalls overnight
-> 2026-06-26 — a 1-GPU probe AND 8-node gangs). Right-size `--memory` to the real footprint:
-> **`1400GB` is validated** for the 8-node 131k EP8 run (admits + does the full weight-load
-> with no cgroup-OOM), `1000–1200GB` for 2-node smokes. The lever on an admission stall is
-> LOWERING `--memory` toward the real need, **never raising a cap**. (The old `512GB` default
-> was the opposite footgun — a weight-load cgroup-OOM; `1400GB` is the validated middle.)
+> **⚠ `--memory` default is now `1400GB`** (changed in `launch_rl_iris.py:DEFAULT_MEMORY_PER_NODE`
+> 2026-06-26, because the old `1800GB` default was an admission footgun you had to remember to
+> override). `1800GB` (≈1676 GiB) sits so close to node-allocatable (~2014 GiB) that after the
+> daemonset + persistent-reservation overhead a leafgroup (all-or-nothing, one IB leaf) gang
+> can't fit all its pods → Kueue `topology 'infiniband' allows to fit only K of N … excluded:
+> resource "memory"` → **SchedulingGated stall** (cost multiple 60–120 min stalls overnight
+> 2026-06-26 — a 1-GPU probe AND 8-node gangs). **`1400GB` (the new default) is validated** for
+> the 8-node 131k EP8 run (admits cleanly + does the full weight-load with no cgroup-OOM); drop
+> to `1000–1200GB` for 2-node smokes. The lever on an admission stall is LOWERING `--memory`
+> toward the real need, **never raising a cap**. (The old `512GB` was the opposite footgun — a
+> weight-load cgroup-OOM; `1400GB` is the validated middle, and now the default so no flag is
+> needed.)
 
 - **Ray agent ports collide with `worker_ports` nondeterministically — pin them all.** `ray
   start` (head AND worker) lets Ray RANDOMIZE several system ports (`metrics_export`,

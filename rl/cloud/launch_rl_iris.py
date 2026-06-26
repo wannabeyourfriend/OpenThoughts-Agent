@@ -134,11 +134,19 @@ DEFAULT_GPUS_PER_NODE = 8           # gd-8xh100ib-i128 = 8x H100-80GB + IB
 # CPU / ~2014 GiB mem / 8 GPU.
 #   - CPU 48 (NOT 64): ~64-68 of the 128 cores are persistent daemonset reservation, so a
 #     request >~60 FAILS the single-IB-leaf gang admission (observed: 64 unplaceable, 48 admits).
-#   - MEMORY 1800GB ≈ the full node (1800 decimal ≈ 1676 GiB, leaving ~340 GiB daemonset/system
-#     headroom under the 2014 GiB allocatable). 512GB was the cgroup-OOM under-request.
+#   - MEMORY 1400GB is the validated middle. It must clear TWO opposing footguns:
+#     (a) too LOW (e.g. the old 512GB) → container-cgroup OOM at FSDP weight-load on an EP=8
+#         + cpu_offload policy rank (peaks >512GB while the node sits <200GB used); and
+#     (b) too HIGH (1800GB ≈ 1676 GiB) → sits so close to node-allocatable (~2014 GiB) that
+#         after daemonset/persistent-reservation overhead a leafgroup gang (all-or-nothing,
+#         one IB leaf) can't fit all pods → Kueue SchedulingGated stall (cost multiple
+#         60-120min stalls overnight 2026-06-26, on a 1-GPU probe AND 8-node gangs).
+#     1400GB admits the 8-node 131k EP8 gang cleanly AND does the full weight-load with no
+#     cgroup-OOM. Lower toward the real need on an admission stall; NEVER raise toward 1800.
+#     (1000-1200GB suffices for 2-node smokes.) See .claude/ops/iris/coreweave_gpu_ops.md.
 #   - DISK 512GB is adequate (rendezvous/checkpoints/traces go to R2/s3, not node-local disk).
 DEFAULT_CPU_PER_NODE = 48.0
-DEFAULT_MEMORY_PER_NODE = "1800GB"
+DEFAULT_MEMORY_PER_NODE = "1400GB"
 DEFAULT_DISK_PER_NODE = "512GB"
 DEFAULT_PRIORITY = "interactive"
 # The gpu-rl image's RL venv (deps-only: torch 2.11 + vLLM fork + skyrl editable).
