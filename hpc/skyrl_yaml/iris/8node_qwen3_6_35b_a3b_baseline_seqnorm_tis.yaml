@@ -576,7 +576,7 @@ extra_env:
   # does NOT shell-expand $VAR in injected env.
   LD_LIBRARY_PATH: /opt/openthoughts/envs/rl/lib
   # --- NCCL: H100+IB DEFAULTS (do NOT disable P2P). Observability + raised timeouts. ---
-  NCCL_DEBUG: INFO
+  NCCL_DEBUG: WARN
   SKYRL_WORKER_NCCL_TIMEOUT_IN_S: "1800"
   TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC: "1800"
   TORCH_NCCL_ENABLE_MONITORING: "1"

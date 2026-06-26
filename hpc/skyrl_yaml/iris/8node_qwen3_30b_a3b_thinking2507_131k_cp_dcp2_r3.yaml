@@ -115,7 +115,7 @@
 #     / NCCL_COLLNET_ENABLE=0 (GH200/SIF-specific). On CoreWeave we MUST NOT disable P2P
 #     -- it would cripple the intra-node TP=8 NVLink all-reduce that DCP=2 depends on.
 #     DROPPED those three disables; use NCCL defaults (NVLink intra-node + IB inter-node).
-#     Kept NCCL_DEBUG=INFO. disable_custom_all_reduce=true STAYS (safe vs the NCCL
+#     Set NCCL_DEBUG=WARN (was INFO; the per-collective INFO flood made logs unreadable/unsiftable — the NCCL flight recorder (TORCH_NCCL_DUMP_ON_TIMEOUT + TORCH_FR_BUFFER_SIZE) captures the collective trace on a hang instead). disable_custom_all_reduce=true STAYS (safe vs the NCCL
 #     weight-sync deadlock class). The FR-dump temp-file path points at /tmp (writable in
 #     the pod), not the Jupiter GPFS path.
 #   - HF: NOT offline (CoreWeave nodes have egress; the model is pulled from HF online).
@@ -477,7 +477,7 @@ extra_env:
   # --- NCCL: H100+IB DEFAULTS (do NOT disable P2P — needed for intra-node TP=8 NVLink
   #     all-reduce). The Jupiter NCCL_P2P_DISABLE / NVLS / COLLNET disables were
   #     GH200/SIF-specific and are DROPPED here. ---
-  NCCL_DEBUG: INFO
+  NCCL_DEBUG: WARN
   # --- AXIS 2/3 (R3 + DCP) transport / guard env ---
   # R3 + DCP>1 guard-lift — LOAD-BEARING (DCP=2). Clears vLLM's R3+DCP rejection.
   VLLM_ALLOW_ROUTED_EXPERTS_DCP: "1"
