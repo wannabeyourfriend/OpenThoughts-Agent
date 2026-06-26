@@ -1,0 +1,388 @@
+# =============================================================================
+# Qwen3.6-35B-A3B (qwen3_5_moe) — RUNG-1 RE-SMOKE FAST (REAL DATA, Stage-3 TIS gate)
+# Variant of smoke_qwen3_6_35b_a3b_realdata.yaml with SHORTER episodes (timeout 600s,
+# max_turns 15) so a step lands fast. Gate: on a COMPLETED step, the Stage-3 TIS fix
+# (--skyrl-ref 4b76d41) gives tis/exact_match_fraction ~1.0, tis/skipped_fraction <<1,
+# non-zero reward, avg_num_tokens>1, bounded grad_norm, non-collapsing entropy.
+# =============================================================================
+# PURPOSE (plan Rung 1, re-smoke): the toy smoke (smoke_qwen3_6_35b_a3b.yaml)
+# proved the COMPUTE path end-to-end (EP fix 4ba60a1 + Stage-2 weight-sync aa11512
+# + GDN + R3, 3 steps), BUT its rollouts were DATA-STARVED — the agentic task
+# dataset was unstaged on the CoreWeave rollout workers, so trials hit
+# FileNotFoundError(.../task.toml) (1532x) -> ZERO reward, 1-token responses,
+# tis/skipped_fraction 1.0. The 35B has therefore NEVER done a REAL-DATA RL step.
+# The data-staging fix landed (OT-Agent HEAD 7c135780, per-node staging) and rides
+# the /app upload automatically; the 30B run2 now has real rollouts (170 trials,
+# zero task.toml errors). THIS re-smoke confirms the FULL REAL-DATA loop on the 35B
+# BEFORE the 8-node Rung 2: rollout finds tasks -> agents run real episodes ->
+# verifier scores -> NON-ZERO reward / avg_num_tokens>1 -> a real optimizer step
+# with healthy RL-health (entropy/grad_norm/log_ratio bounded). A few steps suffice.
+# USE --skyrl-ref aa11512 (EP fix + Stage-2 weight-sync; data staging rides /app).
+#
+# WHAT CHANGED vs the toy smoke (the rollout-realism knobs — geometry UNCHANGED):
+#   * harbor.override_timeout_sec 300 -> 1800 (REAL agent timeout; matches baseline;
+#     the 300s toy cap was what produced the 1-token AgentTimeout rollouts).
+#   * generator.max_turns 6 -> 50 (let agents actually iterate an episode).
+#   * sampling_params.max_generate_length 512 -> 4096 (multi-token responses).
+#   * harbor.n_concurrent_trials 16 -> 32 (a fuller real wave; host-RAM-safe at this
+#     scale — node mem stayed <30% in the toy run).
+#   * model_info max_input_tokens 32000 -> 30000 / max_output_tokens 4096 (room for
+#     real episodes under max_model_len 32768).
+#   max_model_len stays 32768 (REAL episodes fit; keeps memory modest — this re-smoke
+#   is the REAL-DATA-LOOP gate, NOT the 131k memory gate; that is Rung 2).
+#
+# GEOMETRY — 2 nodes = 16 H100, DISAGGREGATED (colocate_all false):
+#   Policy/Ref FSDP mesh:  EP=8 x FSDP=1 = 8 policy GPU = 1 node.
+#     - Exercises the REAL config's EP=8 (the Rung-2 EP). MoE dim-0 guard
+#       (num_experts//EP)%FSDP == 0: 256/8=32 ; 32%1=0 -> VALID (32 experts/EP-rank).
+#       EPxFSDPxCP = 8x1x1 = 8 = policy GPU count. VALID. (CP=1.)
+#   Generation:            2 engines x TP=4 = 8 gen GPU = 1 node.
+#     - TP=4 divides 16 attn heads (4/GPU) + 256 experts (64/GPU); 2 KV heads
+#       REPLICATED across TP (GQA, legal). num_inference_engines pinned EXPLICITLY
+#       to 2 (disaggregated => the (num_nodes*8)//tp = 16//4 = 4 derivation is WRONG;
+#       1 of the 2 nodes is policy-only). A TP=4 engine places intra-node on 4 of the
+#       8 GPUs of the gen node (NVLink decode).
+#   Total = policy 8 + ref 0 (inert, use_kl_loss=false) + inference 8 = 16 = 2 nodes.
+#   LAUNCH MUST PASS --num-nodes 2 + a --rendezvous-dir (multi-node).
+#
+# WHY 2-node disaggregated, NOT 1-node colocated (the plan's primary):
+#   A 35B (34GB bf16 weights) colocated on ONE 8x80GB node (policy EP mesh + vLLM
+#   engine weights sharing GPUs via sleep-mode) is the plan-flagged OOM risk, AND
+#   colocate makes EP placement awkward. The disaggregated mini is one launch, low
+#   OOM risk, and exercises the REAL EP8 disaggregated placement + first forward —
+#   exactly what Gate 1 needs. (If even this is over-budget on a node, fall back per
+#   the plan: lower n_concurrent / context — do NOT conclude an arch failure; Gate 0a
+#   already cleared the load.)
+#
+# Kept IDENTICAL to the 8node baseline (so it exercises the same code path):
+#   seqnorm + TIS knobs (rloo_n, seq_mean_token_sum_norm_global, use_tis,
+#   tis_imp_ratio_cap 2.0, eps_clip 0.2/0.05, collect_rollout_details true);
+#   R3 ON (moe_router_replay true, enable_return_routed_experts true, RAY executor
+#   mp_backend false, async_scheduling false, moe_grouped_gemm true); the GDN env
+#   SKYRL_GDN_MASK_FLA=1; the FSDP wrap-policy pin ["Qwen3_5MoeDecoderLayer"];
+#   strategy fsdp2, optimizer family, chat template.
+#
+# Made FAST / SMALL (content irrelevant to the path under test):
+#   max_steps 3 (>=2 complete steps observable); n_samples_per_prompt 2 (8 prompts
+#   x 2 = 16 episodes/step); max_generate_length 512; max_turns 6; max_model_len
+#   32768 (NOT 131k — the smoke is NOT the memory gate; Rung 2 is); ckpt/hf_save 999
+#   (no saves); n_concurrent_trials 16; trace_upload off; logger console per-step.
+#
+# Launch — 2 nodes (16 H100), REQUIRES an s3://(R2) rendezvous dir:
+#   source /Users/benjaminfeuer/Documents/secrets.env
+#   python -m rl.cloud.launch_rl_iris \
+#     --rl_config hpc/skyrl_yaml/iris/smoke_qwen3_6_35b_a3b_realdata.yaml \
+#     --model_path Qwen/Qwen3.6-35B-A3B \
+#     --train_data '["DCAgent/exp_rpt_pymethods2test-large"]' \
+#     --num-nodes 2 --gpus_per_node 8 --cpu 48 --memory 1200GB --disk 512GB \
+#     --max-retries 1 --skyrl-ref aa11512 \
+#     --rendezvous-dir s3://marin-na/iris/rl-35b-a3b-131k/resmoke-<stamp> \
+#     --job-name rl-35b-a3b-resmoke --priority interactive --no-wait
+#   NOTE --memory 1200GB (NOT 1800GB): 1800GB stalls the 2-node IB-leaf gang
+#   (admission "fit only 1 of 2 pod(s) ... excluded: memory"); 1000-1400GB admits.
+# =============================================================================
+
+entrypoint: examples.terminal_bench.entrypoints.main_tbench
+
+config_groups:
+  terminal_bench_config: terminal_bench
+
+terminal_bench:
+  trials_dir: null
+
+  harbor:
+    name: terminus-2
+    max_episodes: 999999
+    enable_summarize: false
+    store_all_messages: true
+    trajectory_config:
+      raw_content: true
+    enable_episode_logging: false
+    record_terminal_session: false
+    enable_pane_logging: false
+
+    strict_json_parser: true
+
+    interleaved_thinking: true
+    extra_body:
+      chat_template_kwargs:
+        enable_thinking: true
+    # FAST real-data re-smoke (Stage-3 TIS-fix gate): 600s — real multi-token
+    # episodes, but short enough that a step LANDS quickly (the prior 1800s re-smoke
+    # took ~3h to a step). This run's job is ONLY the tis_skip/exact_match gate, not
+    # throughput, so a modest timeout suffices and finalizes episodes far sooner.
+    override_timeout_sec: 600
+
+    override_cpus: 1
+    override_memory_mb: 2048
+    override_storage_mb: 2048
+
+    auto_snapshot: true
+
+    verifier_override_timeout_sec: 120
+
+    max_retries: 3
+    min_wait_sec: 60.0
+    max_wait_sec: 600.0
+    wait_multiplier: 2.0
+
+    exclude_exceptions:
+      - VerifierTimeoutError
+      - RewardFileNotFoundError
+      - RewardFileEmptyError
+      - VerifierOutputParseError
+      - VerifierRuntimeError
+
+    # REAL-DATA re-smoke: fuller real wave (host-RAM-safe — toy run held node mem <30%).
+    n_concurrent_trials: 32
+
+    log_level: INFO
+
+    enable_reward_shaping: false
+
+    # TIS: REQUIRED for trainer.algorithm.use_tis (kept identical to the base).
+    collect_rollout_details: true
+
+    enable_error_classification: true
+    mask_exceptions:
+      - DaytonaError
+      - EnvironmentStartTimeoutError
+      - NetworkError
+      - ConnectionError
+      - RewardFileNotFoundError
+      - RewardFileEmptyError
+      - AgentEnvironmentTimeoutError
+    default_error_treatment: zero
+    passthrough_exceptions:
+      - AgentTimeoutError
+      - ContextLengthExceededError
+
+  # REAL-DATA re-smoke: token caps sized for real episodes under max_model_len 32768
+  # (input 30000 + output buffer). NOT the 131k memory gate — that's Rung 2.
+  model_info:
+    max_input_tokens: 30000
+    max_output_tokens: 4096
+
+  archiving:
+    enabled: false
+
+  # SMOKE: trace upload OFF.
+  trace_upload:
+    enabled: false
+    repo_org: DCAgent
+    episodes: last
+    dataset_type: SFT
+    cleanup: true
+
+# =============================================================================
+# Trainer configuration
+# =============================================================================
+trainer:
+  strategy: fsdp2
+  # GatedDeltaNet packing leak — disable sample packing (carried from baseline:
+  # the GDN conv1d + chunked-delta-rule leak recurrent/conv state across packed
+  # sequence boundaries -> wrong logprobs). Minimal-correct for this hybrid arch.
+  use_sample_packing: false
+  gradient_checkpointing: true
+  gradient_checkpointing_use_reentrant: false
+  algorithm:
+    advantage_estimator: rloo_n
+    use_kl_loss: false
+    kl_loss_coef: 0.0
+    eps_clip_low: 0.2
+    eps_clip_high: 0.05
+    loss_reduction: seq_mean_token_sum_norm_global
+    use_tis: true
+    tis_imp_ratio_cap: 2.0
+
+  # SMOKE: 3 steps.
+  epochs: 1
+  max_steps: 3
+  update_epochs_per_batch: 1
+
+  # SMOKE: 16 clears the policy DP-size floor (8 policy GPU at EP8xFSDP1).
+  train_batch_size: 16
+  policy_mini_batch_size: 16
+  eval_batch_size: 16
+
+  micro_forward_batch_size_per_gpu: 1
+  micro_train_batch_size_per_gpu: 1
+
+  # SMOKE: small prompt cap (not the 131k gate).
+  max_prompt_length: 32768
+
+  eval_interval: 999999
+  eval_before_train: false
+  ckpt_interval: 999
+  resume_mode: latest
+  hf_save_interval: 999
+  hf_hub_repo_id: null
+  hf_hub_private: false
+  hf_hub_revision: main
+
+  enable_db_registration: false
+
+  project_name: OpenThoughts-Agent
+  log_level: INFO
+  tracker_commit_each_step: true
+  logger: console
+
+  run_name: null
+  ckpt_path: null
+  export_path: null
+
+  policy:
+    optimizer_config:
+      lr: 8e-6
+      weight_decay: 0.0
+      adam_betas: [0.9, 0.999]
+      max_grad_norm: 0.9
+    fsdp_config:
+      # cpu_offload ON — a 35B EP policy rank's params/optimizer fit in node RAM,
+      # leaving HBM for activations (carried from baseline; safe at toy scale too).
+      cpu_offload: true
+      reshard_after_forward: true
+      # FSDP wrap pin — the SINGLE hybrid decoder-layer class (Gate 0a verified it
+      # resolves on the text backbone + matches all 40 layers; vision class in
+      # _no_split_modules is harmless on this pinned path).
+      wrap_policy:
+        transformer_layer_cls_to_wrap: ["Qwen3_5MoeDecoderLayer"]
+      # MESH: EP=8 x FSDP=1 = 8 policy GPU = 1 node. CP=1.
+      # MoE dim-0 guard (num_experts//EP)%FSDP: 256/8=32 ; 32%1=0 -> VALID.
+      fsdp_size: 1
+      expert_model_parallel_size: 8
+      # R3 ON: router-replay (pi_old==pi_train for the MoE) + grouped-GEMM.
+      moe_router_replay: true
+      moe_grouped_gemm: true
+      ep_comm_backend: torch
+  ref:
+    # INERT (use_kl_loss=false). Mirror for config-consistency.
+    model:
+      path: Qwen/Qwen3.6-35B-A3B
+    fsdp_config:
+      cpu_offload: true
+      reshard_after_forward: true
+      wrap_policy:
+        transformer_layer_cls_to_wrap: ["Qwen3_5MoeDecoderLayer"]
+      fsdp_size: 1
+      expert_model_parallel_size: 8
+      moe_router_replay: true
+      moe_grouped_gemm: true
+      ep_comm_backend: torch
+
+  # Disaggregated placement: policy+ref on 1 node / 8 GPUs (EP8xFSDP1); the gen
+  # node (2 TP=4 engines) is allocated separately. --gpus_per_node 8 forces
+  # policy/ref_num_gpus_per_node=8; policy_num_nodes/ref_num_nodes honored here.
+  placement:
+    colocate_all: false
+    policy_num_nodes: 1
+    ref_num_nodes: 1
+    policy_num_gpus_per_node: 8
+    ref_num_gpus_per_node: 8
+    # Reserve the 1 policy node (STRICT_SPREAD) BEFORE the vLLM PG so the 2 TP=4
+    # engines land on the disjoint gen node (prevents policy-FSDP-on-an-engine-GPU OOM).
+    policy_strict_spread_pg: true
+    # One {GPU:1,CPU:1} bundle per policy GPU -> each EP/FSDP actor pins a distinct
+    # physical GPU (prevents GPU-0-stacking init OOM in the EP layout).
+    policy_per_gpu_bundles: true
+    policy_force_cvd_mask: true
+
+  # SMOKE: SYNC RL (no fully_async) — keep train==mini coupling trivial. (The
+  # baseline runs fully_async; the smoke does not need it to prove the forward.)
+
+# =============================================================================
+# Generator configuration (vLLM)
+# =============================================================================
+generator:
+  backend: vllm
+  timeout_multiplier: 1.0
+  model_dtype: bfloat16
+
+  # TP=4 — the hybrid-MoE recommendation. 2 engines x TP=4 = 8 gen GPU = 1 node.
+  inference_engine_tensor_parallel_size: 4
+  # 2 engines, set EXPLICITLY (disaggregated => the 16//4=4 derivation is WRONG;
+  # 1 of the 2 nodes is policy-only). 2 is authoritative.
+  num_inference_engines: 2
+
+  inference_engine_expert_parallel_size: 1
+  inference_engine_decode_context_parallel_size: 1
+
+  # RAY EXECUTOR (mp_backend FALSE) — R3-MANDATORY (matches baseline).
+  inference_engine_mp_backend: false
+
+  # SMOKE: 2 samples/prompt x 8 prompts = 16 episodes/step.
+  n_samples_per_prompt: 2
+  eval_n_samples_per_prompt: 2
+
+  gpu_memory_utilization: 0.85
+
+  max_num_seqs: 24
+  max_num_batched_tokens: 16384
+
+  enable_prefix_caching: true
+  enable_chunked_prefill: true
+
+  run_engines_locally: true
+  weight_sync_backend: nccl
+  async_engine: true
+  batched: false
+  enable_http_endpoint: true
+  enable_ray_prometheus_stats: false
+  vllm_stats_interval: 1
+  append_eos_token_after_stop_str_in_multi_turn: true
+  # FAST re-smoke: 15 turns — enough for real multi-token assistant messages (so the
+  # Stage-3 TIS splice path is exercised) while keeping episodes short so a step lands
+  # fast. (The gate is tis_skip/exact_match, not a full solve.)
+  max_turns: 15
+
+  sampling_params:
+    # REAL-DATA re-smoke: multi-token responses (4096; the toy 512 + 6 turns produced
+    # the 1-token rollouts). Fits comfortably under max_model_len 32768.
+    max_generate_length: 4096
+    temperature: 0.7
+    top_p: 0.95
+    top_k: 20
+
+  engine_init_kwargs:
+    # SMOKE: 32768 (NOT 131k — the smoke is NOT the memory gate). Within native
+    # 262144 => NO YaRN / hf_overrides.
+    max_model_len: 32768
+    custom_chat_template_chat_completion_path: chat_templates/qwen3_thinking_acc.jinja2
+    disable_custom_all_reduce: true
+    # R3 ON: emit per-token expert routing (consumed by the FSDP2 router-replay hook).
+    enable_return_routed_experts: true
+    # MUST be false under the RAY executor (trips vLLM's R3 guard otherwise).
+    async_scheduling: false
+
+# Data paths (set via CLI --train_data / --val_data)
+data:
+  train_data: []
+  val_data: []
+
+# =============================================================================
+# Runtime env (forwarded into every task pod via the launcher's EnvironmentSpec
+# from this TOP-LEVEL extra_env: block — LOAD-BEARING; the Iris path has no
+# container: block, so without this the YAML env is SILENTLY DROPPED).
+# =============================================================================
+extra_env:
+  # GatedDeltaNet: force the proven pure-torch GDN path (the fla wheel is broken).
+  SKYRL_GDN_MASK_FLA: "1"
+  PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+  VLLM_USE_FLASHINFER_SAMPLER: "0"
+  VLLM_ATTENTION_BACKEND: FLASH_ATTN
+  LD_LIBRARY_PATH: /opt/openthoughts/envs/rl/lib
+  # NCCL: H100+IB DEFAULTS (do NOT disable P2P). Observability + raised timeouts.
+  NCCL_DEBUG: INFO
+  SKYRL_WORKER_NCCL_TIMEOUT_IN_S: "1800"
+  TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC: "1800"
+  TORCH_NCCL_ENABLE_MONITORING: "1"
+  TORCH_NCCL_DUMP_ON_TIMEOUT: "1"
+  TORCH_FR_BUFFER_SIZE: "2000"
+  TORCH_NCCL_TRACE_CPP_STACK: "1"
+  TORCH_NCCL_DEBUG_INFO_TEMP_FILE: /tmp/nccl_fr_rank
+  # R3 routed_experts side-message transport (carried from baseline; sized for the
+  # smoke's small payloads but harmless at the baseline ceilings).
+  VLLM_MQ_MAX_CHUNK_BYTES_MB: "160"
+  VLLM_ROUTED_EXPERTS_SIDE_TIMEOUT_SECONDS: "1200"
+  VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS: "900"
+  # NOTE: VLLM_ALLOW_ROUTED_EXPERTS_DCP intentionally ABSENT (DCP=1). NO EPDIAG.
