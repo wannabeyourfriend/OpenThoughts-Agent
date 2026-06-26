@@ -1,0 +1,496 @@
+# =============================================================================
+# Qwen3-30B-A3B-Thinking-2507 — CoreWeave/Iris port: CP + DCP=2 + R3 @ 131k
+# =============================================================================
+# Target: Qwen/Qwen3-30B-A3B-Thinking-2507 (task #232 de-risk ladder, FINAL rung,
+# DCP=2 variant). This is the CoreWeave (cw-us-east-02a, 8x H100-80GB + IB per node)
+# port of the Jupiter prod config
+#   hpc/skyrl_yaml/jupiter/extra/16node_qwen3_30b_a3b_131k_cp_dcp_r3.yaml
+# launched via rl/cloud/launch_rl_iris.py + the gpu-rl Docker image (NO Apptainer SIF).
+#
+# MODEL CHANGE (repurpose run3 from the Coder to a dedicated thinking MoE):
+#   This config repurposes the CoreWeave RL "run3" from Qwen/Qwen3-Coder-30B-A3B-
+#   Instruct (a NON-thinking Coder MoE) to Qwen/Qwen3-30B-A3B-Thinking-2507 (a
+#   DEDICATED thinking MoE). The geometry is BYTE-IDENTICAL between the two models
+#   (qwen3_moe: 128 experts / 8 per-tok, 32 attn heads, 4 KV heads, head_dim 128,
+#   hidden 2048, 48 layers, moe_intermediate 768) so every divisibility / DCP-ceiling
+#   constraint below is UNCHANGED and the EP-deadlock experiment is PRESERVED exactly.
+#   Thinking-2507 is native-262144 (same as the Coder) so 131k STILL needs NO YaRN.
+#   Thinking is now LIVE in the RL rollout via the harbor extra_body.chat_template_kwargs
+#   .enable_thinking=true path (harbor 385c75d4) -> the model emits real <think> rollouts
+#   (it self-emits the closing </think>; the custom template injects NO opening <think>
+#   under enable_thinking=true, so there is no double-<think>).
+#
+# WHY THIS CONFIG EXISTS (the unblocked DCP=2 intent):
+#   The full stack: 131k context + CP=2 ring-SDPA TRAINING + R3 routed-experts
+#   capture + vLLM decode-context-parallel (DCP=2). On Jupiter DCP was PINNED TO 1
+#   because dcp>=2 needs a TP=8 vLLM engine (dcp <= tp/num_kv_heads, 4 KV heads =>
+#   tp>=8), and a TP=8 engine must place 8 GPUs on ONE node — Jupiter's nodes have
+#   only 4 GPUs, so the per-engine STRICT_PACK PG (ray executor, R3+DCP-mandatory)
+#   was UNPLACEABLE (killed smoke 934104). CoreWeave's 8-H100 nodes finally host a
+#   TP=8 engine on ONE node (intra-node NVLink decode, NO cross-node TP) => DCP=2 is
+#   placeable here for the first time. This is exactly Jupiter "Option A" (4 engines
+#   x TP=8, DCP=2) that Jupiter's 4-GPU nodes could not run.
+#
+# SCIENTIFIC GOAL (resume the parked EP-deadlock debug line): R3 is ON and the
+# SeqNum=145 ALLTOALL_BASE deadlock is UNRESOLVED (root cause: R3 router-replay
+# reconstructs DEGENERATE routing on the (dp0,cp1) CP slice -> expert-load imbalance
+# -> compute straggler -> EP all-to-all deadlock). The open A-vs-B question
+# (stale-decode-capture-bug vs genuine-statistical-collapse) is settled ONLY by the
+# `sel_rows` field the EPDIAG2 probe (MarinSkyRL moe.py L161-178, baked in the image
+# at 2d9feef >= 4c668f4) dumps at the gs1 forward, BEFORE the deadlock. The EPDIAG
+# env below (EPDIAG=1 etc.) ARMS that probe — DO NOT DROP IT.
+#
+# -----------------------------------------------------------------------------
+# WHAT IS CARRIED OVER VERBATIM from the Jupiter prod config (the experiment):
+#   - Model / chat-template (qwen3_thinking_acc.jinja2) / the whole terminal_bench /
+#     Harbor / Daytona agentic block (timeouts, R3 host-RAM ceiling n_concurrent
+#     150, error classification, trace upload, model_info token caps 130000/16384).
+#   - RL algorithm: rloo_n, seq_mean_token_sum_norm_global (seqnorm), use_tis true /
+#     tis_imp_ratio_cap 2.0, eps_clip 0.2/0.05, collect_rollout_details true.
+#   - Hparams: epochs 2, max_steps 80, train/mini/eval batch 64, micro 4/1, lr 8e-6,
+#     max_grad_norm 0.9, ckpt_interval 1, hf_save_interval 5, fully_async staleness 16.
+#   - CP=2 ring-SDPA TRAINING: attn_backend sdpa, flash_attn false, gradient_check-
+#     pointing true (use_reentrant false), context_parallel_size 2, cp_style ring_sdpa,
+#     cp_rotate_method allgather. MoE: EP=8, FSDP=2, moe_router_replay TRUE (R3),
+#     moe_grouped_gemm true, ep_comm_backend torch.
+#   - 131k length: max_model_len 131072 (within Thinking-2507 native 262144 => NO
+#     YaRN / hf_overrides), max_generate_length 16384, sampling temp 0.7/p0.95/k20.
+#   - R3 ON: enable_return_routed_experts true, moe_router_replay true,
+#     async_scheduling false, inference_engine_mp_backend false (RAY executor),
+#     disable_custom_all_reduce true.
+#
+# -----------------------------------------------------------------------------
+# THE CHANGES vs the Jupiter prod config (geometry + container/env translation):
+#
+# GEOMETRY (8 CoreWeave nodes = 64 H100, colocate_all: false, disaggregated):
+#   Policy/Ref FSDP mesh UNCHANGED in PRODUCT: EP=8 x FSDP=2 x CP=2 = 32 GPU.
+#     Jupiter: 8 nodes x 4 GPU. CoreWeave: 4 nodes x 8 GPU.
+#     => placement.policy_num_nodes 8 -> 4, ref_num_nodes 8 -> 4. The launcher's
+#        --gpus_per_node 8 forces policy/ref_num_gpus_per_node = 8
+#        (build_skyrl_hydra_args L472-475 overrides them when --gpus_per_node is set).
+#   Generation: DCP=2 / TP=8 (the unblocked Option A).
+#     - inference_engine_tensor_parallel_size: 4 -> 8.
+#     - inference_engine_decode_context_parallel_size: 1 -> 2.
+#     - num_inference_engines: 8 -> 4 (4 engines x TP=8 = 32 GPU = 4 nodes; each
+#       TP=8 engine = ONE 8-GPU node => intra-node NVLink decode all-reduce, NO
+#       cross-node TP — the thing Jupiter's 4-GPU nodes could not do). Set EXPLICITLY
+#       (NOT null): build_skyrl_hydra_args only derives num_inference_engines when the
+#       YAML leaves it null; the (num_nodes*gpus)//tp = 8*8//8 = 8 derivation would be
+#       WRONG (4 of the 8 nodes are policy-only). 4 is authoritative.
+#     - inference_engine_mp_backend: false (RAY executor, R3+DCP mandatory).
+#     - async_scheduling: false (R3 guard).
+#   Total = policy 32 + ref 0 (inert, use_kl_loss=false) + inference 32 = 64 = 8 nodes.
+#   LAUNCH MUST PASS --num-nodes 8.
+#   The launcher honors this disaggregated split WITHOUT modification: it gives the
+#   8-node Ray cluster; SkyRL's placement block (policy_num_nodes=4 from YAML, honored
+#   by build_skyrl_hydra_args L467) + explicit num_inference_engines=4 map policy->4
+#   nodes, inference->4 nodes (colocate_all=false). No launcher change needed.
+#
+#   DIVISIBILITY / CEILING CHECKS (all hard constraints):
+#     * DCP ceiling: dcp(2) <= tp(8)/num_kv_heads(4) = 2 -> LEGAL (the Jupiter blocker
+#       is GONE: TP=8 now fits one node).
+#     * MoE dim-0 guard (num_experts//ep)%fsdp==0: 128/EP8 = 16; 16/FSDP2 = 8 (even)
+#       -> VALID. (CP shards the SEQUENCE dim, not the expert dim.)
+#     * EP x FSDP x CP = 8 x 2 x 2 = 32 = policy GPU -> VALID.
+#     * CP G4: padded seq_len % (2*cp)=4 == 0; 131072 % 4 == 0 -> OK.
+#     * vLLM TP=8 divides 32 attn heads (4/GPU), 4 KV heads (>1 GPU/head via DCP=2
+#       KV-sharding, valid GQA under DCP), 128 experts (16/GPU).
+#     * Batch: train_batch_size == policy_mini_batch_size == 64 (fully-async assert);
+#       64 % 64 == 0 -> OK.
+#
+# CONTAINER / ENV TRANSLATION (Jupiter Apptainer SIF -> CoreWeave Docker gpu-rl image):
+#   - DROPPED: the entire container.sif / binds / pydeps block (the gpu-rl image, pinned
+#     by digest in launch_rl_iris.py, IS the container; MarinSkyRL @ /opt/skyrl editable,
+#     workspace synced to /app). DROPPED the Apptainer-only env (all APPTAINERENV_*
+#     duplicates, TRITON_LIBCUDA_PATH, LIBRARY_PATH=/.singularity.d/libs).
+#   - KEPT as plain env (forwarded by the launcher via EnvironmentSpec): the R3+DCP
+#     guard env (VLLM_ALLOW_ROUTED_EXPERTS_DCP=1 -- LOAD-BEARING AGAIN under DCP=2 --
+#     VLLM_MQ_MAX_CHUNK_BYTES_MB, VLLM_ROUTED_EXPERTS_SIDE_TIMEOUT_SECONDS,
+#     VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS), the EPDIAG2 probe env (EPDIAG=1 / EPDIAG_CP=2
+#     / EPDIAG_EP=8 / EPDIAG_SP=1 -- arms `sel_rows`), the vLLM serve flags
+#     (VLLM_USE_FLASHINFER_SAMPLER=0, VLLM_ATTENTION_BACKEND=FLASH_ATTN,
+#     LD_LIBRARY_PATH=$CONDA_PREFIX/lib), the NCCL observability block (TORCH_NCCL_*,
+#     SKYRL_WORKER_NCCL_TIMEOUT_IN_S=1800 etc.), PYTORCH_CUDA_ALLOC_CONF.
+#   - NCCL TRANSPORT FIX for H100+IB: Jupiter set NCCL_P2P_DISABLE=1 / NCCL_NVLS_ENABLE=0
+#     / NCCL_COLLNET_ENABLE=0 (GH200/SIF-specific). On CoreWeave we MUST NOT disable P2P
+#     -- it would cripple the intra-node TP=8 NVLink all-reduce that DCP=2 depends on.
+#     DROPPED those three disables; use NCCL defaults (NVLink intra-node + IB inter-node).
+#     Kept NCCL_DEBUG=INFO. disable_custom_all_reduce=true STAYS (safe vs the NCCL
+#     weight-sync deadlock class). The FR-dump temp-file path points at /tmp (writable in
+#     the pod), not the Jupiter GPFS path.
+#   - HF: NOT offline (CoreWeave nodes have egress; the model is pulled from HF online).
+#     Dropped HF_HUB_OFFLINE / TRANSFORMERS_OFFLINE.
+#
+# MEMORY (H100-80GB < GH200-96GB): cpu_offload true + gradient_checkpointing true kept.
+#   DCP=2 halves per-rank KV (~1.6GB/131k-seq/GPU vs ~3.2 under Jupiter's DCP=1), but
+#   H100 has 16GB less HBM than GH200 -> gpu_memory_utilization 0.80 (drop to 0.75 on
+#   first-launch OOM), max_num_seqs 16 (drop to 12 on OOM). Watch the vLLM KV-cache bind.
+#
+# Launch:
+#   source /Users/benjaminfeuer/Documents/secrets.env
+#   python -m rl.cloud.launch_rl_iris \
+#     --rl_config hpc/skyrl_yaml/iris/8node_qwen3_30b_a3b_thinking2507_131k_cp_dcp2_r3.yaml \
+#     --model_path Qwen/Qwen3-30B-A3B-Thinking-2507 \
+#     --train_data '["DCAgent/exp_rpt_pymethods2test-large"]' \
+#     --num-nodes 8 \
+#     --rendezvous-dir s3://marin-na/iris/rl-131k-cpdcp2r3-thinking2507/<run> \
+#     --job-name rl-131k-cpdcp2r3-thinking2507 --priority interactive --no-wait
+# =============================================================================
+
+entrypoint: examples.terminal_bench.entrypoints.main_tbench
+
+# Hydra config groups (+ prefix in CLI)
+config_groups:
+  terminal_bench_config: terminal_bench
+
+# Terminal bench / agentic environment settings
+terminal_bench:
+  trials_dir: null
+
+  harbor:
+    name: terminus-2
+    max_episodes: 999999
+    enable_summarize: false
+    store_all_messages: true
+    trajectory_config:
+      raw_content: true
+    enable_episode_logging: false
+    record_terminal_session: false
+    enable_pane_logging: false
+
+    strict_json_parser: true
+
+    interleaved_thinking: true
+    extra_body:
+      chat_template_kwargs:
+        enable_thinking: true
+    override_timeout_sec: 1800
+
+    override_cpus: 1
+    override_memory_mb: 2048
+    override_storage_mb: 2048
+
+    auto_snapshot: true
+
+    verifier_override_timeout_sec: 120
+
+    max_retries: 3
+    min_wait_sec: 60.0
+    max_wait_sec: 600.0
+    wait_multiplier: 2.0
+
+    exclude_exceptions:
+      - VerifierTimeoutError
+      - RewardFileNotFoundError
+      - RewardFileEmptyError
+      - VerifierOutputParseError
+      - VerifierRuntimeError
+
+    # AXIS 2 (R3): 150 = the R3-capture host-RAM ceiling (per-token routing arrays
+    # held in host RAM on each RolloutCoordinator). Carried verbatim from Jupiter.
+    # RETUNED 2026-06-26 (run2 -> run3): 150 FLOODED the max_num_seqs=24 engine at
+    # 131k -> diverging waiting queue (155->769 over ~4h) and zero completed steps;
+    # trials starved each other. 32 matches the engine's real 131k decode throughput
+    # so the queue stays bounded and trials actually complete. Well under the host-RAM
+    # ceiling, so R3 capture is unaffected.
+    n_concurrent_trials: 32
+
+    log_level: INFO
+
+    enable_reward_shaping: false
+
+    # collect_rollout_details=true -> per-token rollout logprobs (use_tis) + R3 ride.
+    collect_rollout_details: true
+
+    enable_error_classification: true
+    mask_exceptions:
+      - DaytonaError
+      - EnvironmentStartTimeoutError
+      - NetworkError
+      - ConnectionError
+      - RewardFileNotFoundError
+      - RewardFileEmptyError
+      - AgentEnvironmentTimeoutError
+    default_error_treatment: zero
+    passthrough_exceptions:
+      - AgentTimeoutError
+      - ContextLengthExceededError
+
+  # AXIS 1 (131k): input 130000 (+1072 headroom below max_model_len) + 16384 output.
+  model_info:
+    max_input_tokens: 130000
+    max_output_tokens: 16384
+
+  archiving:
+    enabled: false
+
+  trace_upload:
+    enabled: true
+    repo_org: DCAgent
+    episodes: last
+    dataset_type: SFT
+    cleanup: true
+
+# =============================================================================
+# Trainer configuration
+# =============================================================================
+trainer:
+  strategy: fsdp2
+  # CP>1 REQUIRES torch-native ring-SDPA (rejects flash-attn varlen). Pins the
+  # TRAINER forward; the vLLM GENERATION engine keeps FLASH_ATTN via env below.
+  attn_backend: sdpa
+  flash_attn: false
+  # Gradient checkpointing REQUIRED at 131k. use_reentrant=false = recompute-safe.
+  gradient_checkpointing: true
+  gradient_checkpointing_use_reentrant: false
+  algorithm:
+    advantage_estimator: rloo_n
+    use_kl_loss: false
+    kl_loss_coef: 0.0
+    eps_clip_low: 0.2
+    eps_clip_high: 0.05
+    loss_reduction: seq_mean_token_sum_norm_global
+    use_tis: true
+    tis_imp_ratio_cap: 2.0
+
+  epochs: 2
+  max_steps: 80
+  update_epochs_per_batch: 1
+
+  train_batch_size: 64
+  policy_mini_batch_size: 64
+  eval_batch_size: 64
+
+  # micro_forward 4 (Jupiter rationale: halves the micro-batch all-to-all count, ->
+  # ~192 collectives, shrinking the SeqNum=145 straggler window). Fall back to 2 +
+  # batch-reduction if first-step activation memory OOMs.
+  micro_forward_batch_size_per_gpu: 4
+  micro_train_batch_size_per_gpu: 1
+
+  max_prompt_length: 999999
+
+  # Sample packing OFF under CP>1 (SkyRL _validate_cp_cfg rejects packed-varlen + CP).
+  use_sample_packing: false
+
+  eval_interval: 999999
+  eval_before_train: false
+  # ckpt_interval=1: 131k 30B steps are slow; bank step-1 to avoid resume-from-0.
+  ckpt_interval: 1
+  resume_mode: latest
+  hf_save_interval: 5
+  hf_hub_repo_id: null
+  hf_hub_private: false
+  hf_hub_revision: main
+
+  enable_db_registration: false
+
+  project_name: OpenThoughts-Agent
+  log_level: INFO
+  tracker_commit_each_step: true
+  logger: console
+
+  run_name: null
+  ckpt_path: null
+  export_path: null
+
+  # Policy optimizer — a3 production hparams (lr 8e-6, max_grad_norm 0.9).
+  policy:
+    optimizer_config:
+      lr: 8e-6
+      weight_decay: 0.0
+      adam_betas: [0.9, 0.999]
+      max_grad_norm: 0.9
+    fsdp_config:
+      cpu_offload: true
+      reshard_after_forward: true
+      # MESH: EP=8 x FSDP=2 x CP=2 = 32 policy GPU. On CoreWeave that is 4 nodes x 8.
+      # MoE dim-0 guard (num_experts//ep)%fsdp==0: 128/EP8=16; 16/FSDP2=8 -> VALID.
+      fsdp_size: 2
+      expert_model_parallel_size: 8
+      # CP: torch-native ring-SDPA context parallel over the 131k sequence.
+      context_parallel_size: 2
+      cp_style: ring_sdpa
+      cp_rotate_method: allgather
+      # R3 ON: router-replay recomputes the EXACT rollout routing in the train
+      # forward (pi_old == pi_train). grouped-GEMM ON (vLLM-loadable per-expert names).
+      moe_router_replay: true
+      moe_grouped_gemm: true
+      ep_comm_backend: torch
+  ref:
+    # INERT (use_kl_loss=false -> no RefWorker built). Mirror for config-consistency.
+    model:
+      path: Qwen/Qwen3-30B-A3B-Thinking-2507
+    fsdp_config:
+      cpu_offload: true
+      reshard_after_forward: true
+      fsdp_size: 2
+      expert_model_parallel_size: 8
+      context_parallel_size: 2
+      cp_style: ring_sdpa
+      cp_rotate_method: allgather
+      moe_router_replay: true
+      moe_grouped_gemm: true
+      ep_comm_backend: torch
+
+  # Disaggregated placement: policy+ref share 4 nodes / 32 GPUs (FSDP), the 4
+  # generation nodes (4 TP=8 engines) are allocated separately. policy_num_gpus_per_node
+  # / ref_num_gpus_per_node are forced to 8 by the launcher's --gpus_per_node 8
+  # (build_skyrl_hydra_args L472-475); listed as 8 for documentation.
+  placement:
+    colocate_all: false
+    policy_num_nodes: 4
+    ref_num_nodes: 4
+    policy_num_gpus_per_node: 8
+    ref_num_gpus_per_node: 8
+    # Reserve the 4 policy nodes (STRICT_SPREAD) BEFORE the vLLM PG is created so policy
+    # claims its nodes first and the 4 TP=8 engines land on the disjoint 4 gen nodes.
+    policy_strict_spread_pg: true
+    # One {GPU:1,CPU:1} bundle PER policy GPU -> each actor pins to a distinct GPU.
+    policy_per_gpu_bundles: true
+    policy_force_cvd_mask: true
+
+  fully_async:
+    max_staleness_steps: 16
+    num_parallel_generation_workers: 256
+
+# =============================================================================
+# Generator configuration (vLLM)
+# =============================================================================
+generator:
+  backend: vllm
+  timeout_multiplier: 1.0
+  model_dtype: bfloat16
+
+  # DCP=2 / TP=8 (the unblocked Option A). TP=8 = exactly ONE 8-GPU CoreWeave node
+  # per engine -> the per-engine STRICT_PACK PG (ray backend) places on a single node
+  # and the decode TP all-reduce is on-node NVLink (NO cross-node IB). TP=8 divides 32
+  # attn heads (4/GPU), 4 KV heads (KV-sharded under DCP=2), 128 experts (16/GPU).
+  inference_engine_tensor_parallel_size: 8
+  # 4 TP=8 engines = 32 inference GPU = 4 nodes. Set EXPLICITLY (not null): the launcher
+  # derivation (num_nodes*gpus)//tp = 8*8//8 = 8 would be WRONG (4 nodes are policy-only).
+  num_inference_engines: 4
+
+  inference_engine_expert_parallel_size: 1
+
+  # AXIS 3 (DCP=2): decode-context-parallel ENABLED. dcp(2) <= tp(8)/num_kv_heads(4) = 2
+  # -> LEGAL. DCP=2 shards the 131k KV across the 8-GPU node (~1.6 GB/131k-seq/GPU vs
+  # ~3.2 GB under DCP=1) -> friendlier KV pressure than Jupiter's DCP=1. The R3+DCP>1
+  # guard-lift env (VLLM_ALLOW_ROUTED_EXPERTS_DCP=1) is LOAD-BEARING here.
+  inference_engine_decode_context_parallel_size: 2
+
+  # RAY executor backend (R3 + DCP path). The ray backend splits TP=8 into 8x{GPU:1}
+  # bundles (STRICT_PACK on one node); the mp backend's single atomic {GPU:8} bundle is
+  # also placeable on an 8-GPU node, but R3+DCP requires the ray executor. async_scheduling
+  # is disabled below to satisfy vLLM's R3 guard. Requires colocate_all=false.
+  inference_engine_mp_backend: false
+
+  n_samples_per_prompt: 8
+  eval_n_samples_per_prompt: 8
+
+  # 0.80 — non-hybrid dense-attention 30B: all 48 layers grow KV with length. DCP=2
+  # halves per-rank KV, but H100 has 16GB less HBM than GH200 -> keep 0.80, DROP to
+  # 0.75 if the first launch OOMs at KV bind.
+  gpu_memory_utilization: 0.80
+
+  # 16 at 131k. DCP=2 shards the KV, easing this. Verify against the vLLM "GPU KV cache
+  # size / Maximum concurrency" line; drop gpu_mem 0.80->0.75 then max_num_seqs 24->16->12
+  # if it OOMs at bind.
+  # RETUNED 2026-06-26 (run2 -> run3): 16 -> 24. run2 ran at KV ~36% with 16 seqs, so
+  # there is headroom (~54% projected at 24); more decode slots speed the rollout drain
+  # toward the first optimizer step. Drop back to 16 if KV bind OOMs.
+  max_num_seqs: 24
+  max_num_batched_tokens: 16384
+
+  enable_prefix_caching: true
+  enable_chunked_prefill: true
+
+  run_engines_locally: true
+  weight_sync_backend: nccl
+  async_engine: true
+  batched: false
+  enable_http_endpoint: true
+  enable_ray_prometheus_stats: false
+  vllm_stats_interval: 1
+  append_eos_token_after_stop_str_in_multi_turn: true
+  max_turns: 999999
+
+  sampling_params:
+    # AXIS 1 (131k): 16384 max generation.
+    max_generate_length: 16384
+    temperature: 0.7
+    top_p: 0.95
+    top_k: 20
+
+  engine_init_kwargs:
+    # AXIS 1 (131k): 131072 — WITHIN Thinking-2507 native context (262144) => NO YaRN
+    # rope_scaling / hf_overrides (do NOT add).
+    max_model_len: 131072
+    # Interleaved-thinking template, relative path resolved against /app (synced repo).
+    custom_chat_template_chat_completion_path: chat_templates/qwen3_thinking_acc.jinja2
+    # Disable vLLM custom CUDA all-reduce: the watchdog-less device-side custom-AR
+    # spin-barrier can deadlock against SkyRL NCCL weight-sync (the #232 silent-freeze
+    # class). Safe at TP=8 too. Carried from Jupiter.
+    disable_custom_all_reduce: true
+    # AXIS 2 (R3 ON): emit per-token expert routing over /chat/completions, consumed by
+    # the FSDP2 router-replay hook.
+    enable_return_routed_experts: true
+    # MUST be false under the RAY executor (trips vLLM's R3 guard otherwise).
+    async_scheduling: false
+
+# Data paths
+data:
+  train_data: []
+  val_data: []
+
+# K-actor rollout fan-out — ON (breaks the single-event-loop GIL ceiling).
+rollout:
+  fanout:
+    enabled: true
+    num_coordinators: 4
+    cpus_per_coordinator: 8
+
+# =============================================================================
+# Runtime env (forwarded by the launcher into every task pod — NO SIF/Apptainer).
+# This block is consumed by parse_rl_config / the launcher's EnvironmentSpec; it is
+# the CoreWeave-Docker translation of the Jupiter container.extra_env block (all
+# APPTAINERENV_* duplicates + SIF-only vars dropped; GH200/SIF NCCL P2P-disables
+# dropped for H100+IB).
+# =============================================================================
+extra_env:
+  # --- [EPDIAG2] diagnostic probe ARM (dumps sel_rows for the A-vs-B verdict) ---
+  EPDIAG: "1"
+  EPDIAG_CP: "2"
+  EPDIAG_EP: "8"
+  EPDIAG_SP: "1"
+  # --- end [EPDIAG2] ---
+  SKYRL_GDN_MASK_FLA: "1"
+  PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+  # --- vLLM serve flags (gpu-rl image §2f) ---
+  VLLM_USE_FLASHINFER_SAMPLER: "0"
+  VLLM_ATTENTION_BACKEND: FLASH_ATTN
+  # gpu-rl RL conda env prefix is /opt/openthoughts/envs/rl. Hardcoded (NOT
+  # $CONDA_PREFIX/lib): the launcher injects env as literal k8s env values and k8s
+  # does NOT shell-expand $VAR, so a literal "$CONDA_PREFIX/lib" would be a broken path.
+  LD_LIBRARY_PATH: /opt/openthoughts/envs/rl/lib
+  # --- NCCL: H100+IB DEFAULTS (do NOT disable P2P — needed for intra-node TP=8 NVLink
+  #     all-reduce). The Jupiter NCCL_P2P_DISABLE / NVLS / COLLNET disables were
+  #     GH200/SIF-specific and are DROPPED here. ---
+  NCCL_DEBUG: INFO
+  # --- AXIS 2/3 (R3 + DCP) transport / guard env ---
+  # R3 + DCP>1 guard-lift — LOAD-BEARING (DCP=2). Clears vLLM's R3+DCP rejection.
+  VLLM_ALLOW_ROUTED_EXPERTS_DCP: "1"
+  # Widen the shm message-queue chunk above the R3 routed_experts worst case (~96MB @131k).
+  VLLM_MQ_MAX_CHUNK_BYTES_MB: "160"
+  # Timeout to dequeue the deferred ~96MB R3 routed_experts side-message.
+  VLLM_ROUTED_EXPERTS_SIDE_TIMEOUT_SECONDS: "1200"
+  # Per-step model-execute RPC timeout (headroom for long first-prefill + DCP decode).
+  VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS: "900"
+  # --- NCCL observability + raised timeouts (absorb residual per-rank skew on 16k ragged
+  #     sequences; primary EP-deadlock fix is micro_forward=4). ---
+  SKYRL_WORKER_NCCL_TIMEOUT_IN_S: "1800"
+  TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC: "1800"
+  TORCH_NCCL_ENABLE_MONITORING: "1"
+  TORCH_NCCL_DUMP_ON_TIMEOUT: "1"
+  TORCH_FR_BUFFER_SIZE: "2000"
+  TORCH_NCCL_TRACE_CPP_STACK: "1"
+  TORCH_NCCL_DEBUG_INFO_TEMP_FILE: /tmp/nccl_fr_rank
