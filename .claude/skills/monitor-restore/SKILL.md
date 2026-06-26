@@ -98,13 +98,26 @@ LEONARDO CAMPAIGN DRIVER (the priority — drive it every sweep):
   table them with entropy+grad+log_ratio. On a clean COMPLETED at max_steps → `rl-standard-job-cleanup` (model +
   metric CSVs only; size suffix DERIVED FROM THE EXPORTED WEIGHTS; DB-register only if the series is DB-registerable),
   then fire the Delphi downstream eval suite (`eval-standard-launch` §5b).
-- The flawed-summ agentic-eval campaign — HARVEST finished legs + REFILL the queue back to 8 in-flight. Launch via
-  the canonical `eval-agentic-launch` listener invocation (after the `ops/leonardo` preamble, in tmux, ONE
-  long-running listener):
+- The **SummarizationTimeoutError-deflated re-eval campaign (a1-`<benchmark>` models)** — re-evaluating
+  `DCAgent/a1-<benchmark>` evals that the SummarizationTimeoutError bug deflated (zhuang1 + richard.zhuang owners),
+  scored on tb2 / swebench / dev_set_v2. **Tracker (source of truth):
+  `~/Documents/experiments/active/flawed_summ_evals/reeval_tracker.md`** (NOT the old `notes/ot-agent/…` path);
+  the affected universe is `affected_evals.md` in the same dir. **Driver** (per the tracker's "🚦 CAMPAIGN DRIVER"
+  section): each sweep, (1) HARVEST every leg gone terminal since the last pass — read new_score, compute
+  `delta = new_score − old_deflated`, flip the row `🚀 → ✅/⚠️`, flag genuinely-negative deltas beyond ~1 stderr;
+  (2) REFILL the next still-`⏳ pending` **Section A** rows (Section A before B) until **8 RUNNING/PENDING legs on
+  Leonardo**. Classify every live leg against the tracker + affected list FIRST — KEEP valid in-flight affected
+  re-evals, CANCEL only confirmed duplicates of already-✅ rows or off-campaign (not-in-affected) legs; do NOT
+  `--force-reeval` an already-✅ row (the duplicate trap). Launch via the canonical `eval-agentic-launch` listener
+  (after the `ops/leonardo` preamble, in tmux, ONE listener per preset, ~40s stagger):
     export PYTHONPATH="$PWD:${PYTHONPATH:-}"   # repo root — the listener imports first-party top-level packages
     python eval/unified_eval_listener.py --cluster-config eval/clusters/leonardo.yaml --preset <tb2|swebench|v2|...> \
       --baseline-model-configs eval/configs/baseline_model_configs_minimal.yaml \
-      --require-priority-list --priority-file eval/lists/<list>.txt --pre-download --once --verbose
+      --require-priority-list --priority-file <list>.txt \
+      --config-yaml dcagent_eval_config_no_override.yaml --enable-thinking --force-reeval --once --verbose
+  (`--config-yaml dcagent_eval_config_no_override.yaml` resolves from `hpc/harbor_yaml/eval/configs/`; the cluster
+  sbatch is `eval/leonardo/eval_harbor.sbatch`. `--force-reeval` is REQUIRED — every campaign row has a prior
+  Finished/deflated DB row; the "Failed to create Pending DB entry: Job already finished" warning is benign.)
   `--baseline-model-configs` is LOAD-BEARING — omitting it SILENTLY drops every per-model serve override (the
   qwen3_5_moe legs then fall back to the otagent env and FAIL `model type … not recognized`); the listener resolves
   it CLI > cluster-config > None. `--require-priority-list` is LOAD-BEARING too — without it the listener floods the

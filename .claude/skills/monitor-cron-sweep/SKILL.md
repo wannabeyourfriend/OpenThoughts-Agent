@@ -56,9 +56,13 @@ NOT flag). GPFS — never `find`/`du`; locate logs via `scontrol show job <id> -
 workdir before judging liveness (a path mismatch, not a death). `AgentTimeoutError` / `ContextLengthExceeded` are
 EXPECTED passthrough exceptions in agentic eval (still scored) — never the cause of a hang. A Leonardo standard-eval
 results JSON **without `Mean:` lines** is the expected shape, not a broken run. Campaign-driver: the 4 rl_dlp Delphi
-standard-GRPO cells + the flawed-summ agentic-eval harvest+refill-to-8 (the canonical `eval-agentic-launch` listener:
-`PYTHONPATH=$PWD … --baseline-model-configs … --require-priority-list --priority-file …`; both flags load-bearing;
-single multi-model listener, never `&`-per-leg). HF upload = the sbatch-tunnel path (login node SIGKILLs at ~100s);
+standard-GRPO cells + the **SummarizationTimeoutError-deflated re-eval campaign (a1-`<benchmark>` models)** —
+tracker `~/Documents/experiments/active/flawed_summ_evals/reeval_tracker.md` (NOT any old `notes/ot-agent/…` path);
+driver = HARVEST every terminal leg since the last pass (read new_score, compute delta vs old_deflated, flip the row,
+flag negatives beyond ~1σ) + REFILL the next Section-A ⏳-pending rows back to 8 in-flight on Leonardo, per the
+tracker's "🚦 CAMPAIGN DRIVER" section. Canonical `eval-agentic-launch` listener:
+`PYTHONPATH=$PWD eval/unified_eval_listener.py --cluster-config eval/clusters/leonardo.yaml … --baseline-model-configs … --require-priority-list --priority-file … --config-yaml dcagent_eval_config_no_override.yaml --enable-thinking --force-reeval --once`; both `--baseline-model-configs` + `--require-priority-list` load-bearing;
+ONE listener per preset, ~40s stagger, never `&`-per-leg; do NOT `--force-reeval` an already-✅ row (duplicate trap). HF upload = the sbatch-tunnel path (login node SIGKILLs at ~100s);
 needs the fresh `~/.ssh/leonardo_daytona` step-ca cert (expires ~12h). ckpts/exports → `$WORK`, never `$SCRATCH_FAST`.
 
 **CoreWeave(iris) gather/triage particulars — STATE-POLL, not squeue, not a log-string watch:**
