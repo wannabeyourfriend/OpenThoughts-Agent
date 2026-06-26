@@ -59,7 +59,7 @@ results JSON **without `Mean:` lines** is the expected shape, not a broken run. 
 standard-GRPO cells + the **SummarizationTimeoutError-deflated re-eval campaign (a1-`<benchmark>` models)** —
 tracker `~/Documents/experiments/active/flawed_summ_evals/reeval_tracker.md` (NOT any old `notes/ot-agent/…` path);
 driver = HARVEST every terminal leg since the last pass (read new_score, compute delta vs old_deflated, flip the row,
-flag negatives beyond ~1σ) + REFILL the next Section-A ⏳-pending rows back to 8 in-flight on Leonardo, per the
+flag negatives beyond ~1σ) + REFILL the next Section-A ⏳-pending rows back to **16** in-flight on Leonardo (raised 8→16 on 2026-06-26; **subject to the HARD Daytona ORG2 snapshot cap of 40 — clean stale sandboxes via `utils-cleanup-stale-sandboxes` for headroom, NEVER raise the cap**), per the
 tracker's "🚦 CAMPAIGN DRIVER" section. Canonical `eval-agentic-launch` listener:
 `PYTHONPATH=$PWD eval/unified_eval_listener.py --cluster-config eval/clusters/leonardo.yaml … --baseline-model-configs … --require-priority-list --priority-file … --config-yaml dcagent_eval_config_no_override.yaml --enable-thinking --force-reeval --once`; both `--baseline-model-configs` + `--require-priority-list` load-bearing;
 ONE listener per preset, ~40s stagger, never `&`-per-leg; do NOT `--force-reeval` an already-✅ row (duplicate trap). HF upload = the sbatch-tunnel path (login node SIGKILLs at ~100s);

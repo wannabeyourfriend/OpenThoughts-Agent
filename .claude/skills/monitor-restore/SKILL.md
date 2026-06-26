@@ -105,8 +105,12 @@ LEONARDO CAMPAIGN DRIVER (the priority — drive it every sweep):
   the affected universe is `affected_evals.md` in the same dir. **Driver** (per the tracker's "🚦 CAMPAIGN DRIVER"
   section): each sweep, (1) HARVEST every leg gone terminal since the last pass — read new_score, compute
   `delta = new_score − old_deflated`, flip the row `🚀 → ✅/⚠️`, flag genuinely-negative deltas beyond ~1 stderr;
-  (2) REFILL the next still-`⏳ pending` **Section A** rows (Section A before B) until **8 RUNNING/PENDING legs on
-  Leonardo**. Classify every live leg against the tracker + affected list FIRST — KEEP valid in-flight affected
+  (2) REFILL the next still-`⏳ pending` **Section A** rows (Section A before B) until **16 RUNNING/PENDING legs on
+  Leonardo** (raised 8→16 on 2026-06-26 per user directive). **⚠️ SNAPSHOT-CAP GUARD (HARD):** 16 concurrent ≈
+  double the Daytona sandbox/snapshot churn; the ORG2 (`DAYTONA_API_KEY`) snapshot cap is **40 — never raise it**.
+  Clean stale sandboxes (`utils-cleanup-stale-sandboxes` / `scripts/daytona/cleanup_stale_sandboxes.py --delete`)
+  for headroom before/while refilling; if 16 won't fit under the cap even after cleaning, launch as many as fit and
+  report the cap as the binding limit. Classify every live leg against the tracker + affected list FIRST — KEEP valid in-flight affected
   re-evals, CANCEL only confirmed duplicates of already-✅ rows or off-campaign (not-in-affected) legs; do NOT
   `--force-reeval` an already-✅ row (the duplicate trap). Launch via the canonical `eval-agentic-launch` listener
   (after the `ops/leonardo` preamble, in tmux, ONE listener per preset, ~40s stagger):
