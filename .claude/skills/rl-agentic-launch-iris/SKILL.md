@@ -106,8 +106,22 @@ terminates the job). Flag glossary:
 - **`--max-retries K`** — iris re-brings-up the gang on a FAILURE up to K times (preemptions retry
   separately). **Use ≥1** (§6).
 - **`--skyrl-ref <git-ref>`** — `git fetch && checkout` the baked `/opt/skyrl` MarinSkyRL clone to a
-  newer/pinned commit BEFORE running (deps are baked, but skyrl-train is editable → the checkout is live).
+  newer/pinned commit BEFORE running (deps are baked, but skyrl-train is editable → the checkout is live;
+  the launcher also purges stale `.pyc` so the checkout isn't shadowed by baked bytecode).
   Use to pick up a MarinSkyRL fix that landed AFTER the image build without rebuilding the image.
+  > **⚠ FOOTGUN — omitting `--skyrl-ref` silently runs STALE baked MarinSkyRL.** Without it, the gang runs
+  > whatever commit was baked into the pinned `@sha256:` image (the launcher header notes it — currently
+  > **`2d9feef`**). If a needed fix landed in MarinSkyRL AFTER that image was built, the gang runs the OLD code
+  > and can **DETERMINISTICALLY crash at `build_models`** — this is NOT a transient flake and NOT preemption/OOM,
+  > though it can look like one (dies ~70s into build, `exit_code 0`, no exception surfaced — the `RayTaskError`
+  > traceback truncates at `ray.get(refs)`; pull the FULL finelog with `--no-tail` to see the real cause).
+  > **Seen 2026-06-26** (image `2055412f`, baked `2d9feef`): the **35B** died `AttributeError: could not resolve
+  > MoE attribute 'norm_topk_prob'` (Qwen3.5/3.6 grouped-MoE — fixed by MarinSkyRL **`518179d`**); the **30B**
+  > died with the un-retried HF-resolution `OSError: …does not appear to have a file named model.safetensors`
+  > (fixed by **`0b2b05b`**). **RULE:** before any launch, diff local MarinSkyRL HEAD
+  > (`git -C ~/Documents/MarinSkyRL log --oneline`) against the image's baked commit; if HEAD is ahead on a code
+  > path you exercise (MoE swap, weight load, CP/EP), pass `--skyrl-ref <local-HEAD>` (or rebuild the image +
+  > bump the digest). The R3/MoE/Qwen3.5 arms are the usual suspects.
 - **`--skyrl_override '++a.b.c=val'`** — repeatable Hydra override (last-wins over the yaml).
 - **`--dry-run`** — print the resolved config + in-container command without submitting (always dry-run a new
   config first: confirm the hydra args show the placement / `num_inference_engines` / TP / extra_env you
