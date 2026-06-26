@@ -226,12 +226,26 @@ def clear_rendezvous(rendezvous_dir: str) -> None:
 # ---------------------------------------------------------------------------
 
 
+# Ray's metrics (Prometheus) export port. PIN IT — leaving it unset (Ray default
+# None) makes Ray pick a RANDOM free port for metrics_export, which on
+# cw-us-east-02a nondeterministically landed INSIDE the worker_ports range
+# (10002–19999): the 30B EP8 diag died after ~73 min in `building` with
+#   `ValueError: Ray component worker_ports is trying to use a port number 19865
+#    that is used by other components` (metrics_export: 19865 ∈ 10002–19999).
+# 8090 is well OUTSIDE the worker_ports range and distinct from gcs(6379) /
+# dashboard(8265) / client_server(10001), so the head's port map is collision-free
+# and DETERMINISTIC across launches. (Matches the repo precedent
+# `RAY_metrics_export_port=8090` in scripts/torch/kimi-k2-tracegen-run-v2.sh.)
+RAY_METRICS_EXPORT_PORT = 8090
+
+
 def ray_start_head(head_ip: str, ray_port: int) -> None:
     cmd = [
         _ray_bin(), "start", "--head",
         f"--node-ip-address={head_ip}",
         f"--port={ray_port}",
         "--dashboard-host=0.0.0.0",
+        f"--metrics-export-port={RAY_METRICS_EXPORT_PORT}",
     ]
     _log(f"Starting Ray HEAD: {' '.join(cmd)}")
     subprocess.run(cmd, check=True)
