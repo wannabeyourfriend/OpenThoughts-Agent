@@ -226,17 +226,43 @@ def clear_rendezvous(rendezvous_dir: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-# Ray's metrics (Prometheus) export port. PIN IT — leaving it unset (Ray default
-# None) makes Ray pick a RANDOM free port for metrics_export, which on
-# cw-us-east-02a nondeterministically landed INSIDE the worker_ports range
-# (10002–19999): the 30B EP8 diag died after ~73 min in `building` with
-#   `ValueError: Ray component worker_ports is trying to use a port number 19865
-#    that is used by other components` (metrics_export: 19865 ∈ 10002–19999).
-# 8090 is well OUTSIDE the worker_ports range and distinct from gcs(6379) /
-# dashboard(8265) / client_server(10001), so the head's port map is collision-free
-# and DETERMINISTIC across launches. (Matches the repo precedent
-# `RAY_metrics_export_port=8090` in scripts/torch/kimi-k2-tracegen-run-v2.sh.)
+# Ray port allocation on cw-us-east-02a — SHIFT the worker_ports range out of the
+# zone Ray draws its other (auto-assigned, RANDOM) system ports from.
+#
+# THE BUG: with worker_ports left at Ray's DEFAULT 10002–19999, Ray also picks
+# RANDOM free ports for several system components (metrics_export,
+# runtime_env_agent, dashboard_agent_grpc, …) from the SAME ~10000–20000 ephemeral
+# zone. Those random picks nondeterministically land INSIDE 10002–19999 and Ray's
+# own pre-start validation then aborts the node:
+#   ValueError: Ray component worker_ports is trying to use a port number <N>
+#   that is used by other components.
+# Observed TWICE, on DIFFERENT components: the head died on metrics_export=19865
+# (grpmm-fix), and a WORKER died on runtime_env_agent=15731 (grpmm-fix3) — proving
+# pinning metrics_export ALONE (head-only) is insufficient: the collision can be ANY
+# of Ray's random system ports, on EITHER head or worker.
+#
+# THE FIX (deterministic, symmetric): move worker_ports to a HIGH dedicated range
+# (20000–29999, same 10000-wide span as Ray's default) on BOTH head and worker, so
+# the worker range can never overlap Ray's other system ports (which sit below 20000
+# or up in the ~49000+ ephemeral zone). Also keep metrics_export pinned to 8090
+# (outside both ranges; matches the repo precedent RAY_metrics_export_port=8090 in
+# scripts/torch/kimi-k2-tracegen-run-v2.sh) so that one component is fixed too.
+# 8090 is distinct from gcs(6379)/dashboard(8265)/client_server(10001) and from the
+# 20000–29999 worker range. MUST be applied on workers too (run_worker calls
+# ray_start_worker) — that is where grpmm-fix3 died.
 RAY_METRICS_EXPORT_PORT = 8090
+RAY_MIN_WORKER_PORT = 20000
+RAY_MAX_WORKER_PORT = 29999
+
+
+def _ray_port_flags() -> list[str]:
+    """Ray port flags shared by head + worker so the worker_ports range is shifted
+    out of the system-port zone on EVERY node (see the collision note above)."""
+    return [
+        f"--metrics-export-port={RAY_METRICS_EXPORT_PORT}",
+        f"--min-worker-port={RAY_MIN_WORKER_PORT}",
+        f"--max-worker-port={RAY_MAX_WORKER_PORT}",
+    ]
 
 
 def ray_start_head(head_ip: str, ray_port: int) -> None:
@@ -245,7 +271,7 @@ def ray_start_head(head_ip: str, ray_port: int) -> None:
         f"--node-ip-address={head_ip}",
         f"--port={ray_port}",
         "--dashboard-host=0.0.0.0",
-        f"--metrics-export-port={RAY_METRICS_EXPORT_PORT}",
+        *_ray_port_flags(),
     ]
     _log(f"Starting Ray HEAD: {' '.join(cmd)}")
     subprocess.run(cmd, check=True)
@@ -256,6 +282,7 @@ def ray_start_worker(head_ip: str, ray_port: int, node_ip: str) -> None:
         _ray_bin(), "start",
         f"--address={head_ip}:{ray_port}",
         f"--node-ip-address={node_ip}",
+        *_ray_port_flags(),
     ]
     _log(f"Starting Ray WORKER: {' '.join(cmd)}")
     subprocess.run(cmd, check=True)
