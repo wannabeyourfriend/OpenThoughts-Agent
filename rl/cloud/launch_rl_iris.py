@@ -90,14 +90,13 @@ DEFAULT_CLUSTER = "cw-us-east-02a"
 # it always runs the intended image regardless of node cache state — sidestepping
 # the stale-tag problem entirely without needing imagePullPolicy: Always.
 #
-# This digest == the immutable gitsha tag ``:gpu-rl-8bc5bdb4`` (OT-Agent commit
-# 8bc5bdb4, "pin gpu-rl to MarinSkyRL 2d9feef + harbor 342729d5"): flash_attn
-# 2.8.3 + flash_attn_2_cuda present, /opt/skyrl baked at MarinSkyRL 2d9feef
-# (trials_dir raw-str fix), harbor BAKED at 342729d5 (reward-zeroing
-# trial.paths.trial_dir fix) — both fixes now in the image, NO runtime sed
-# patches needed. Validated by a no-runtime-patch RL smoke (reward>0 over >=2
-# steps, num_failed_trajectories=0). Supersedes :gpu-rl-1b5a82d6 (sha256
-# f571b88a) which had working flash_attn but LACKED these two fixes.
+# This digest == the immutable gitsha tag ``:gpu-rl-44c06ea8`` (OT-Agent commit
+# 44c06ea8, "bump gpu-rl SKYRL_COMMIT 2d9feef -> 78d83a5"): flash_attn 2.8.3 +
+# flash_attn_2_cuda present, /opt/skyrl baked at MarinSkyRL 78d83a5 — which ADDS
+# the two fixes that deterministically crashed CoreWeave RL at build_models:
+# 518179d (default norm_topk_prob=True for Qwen3.5/3.6 MoE) + 0b2b05b (retry around
+# rank-0 HF weight-index resolution). Also still includes 2d9feef's trials_dir
+# raw-str fix; harbor BAKED at 342729d5 (reward-zeroing trial.paths.trial_dir fix).
 # When the gpu-rl image is rebuilt, bump this digest (use the immutable
 # ``:gpu-rl-<gitsha>`` tag's digest, never the floating ``:gpu-rl``).
 #
@@ -105,26 +104,30 @@ DEFAULT_CLUSTER = "cw-us-east-02a"
 # (step-4a of Dockerfile.gpu-rl) PASSED in-build → the EP>1 MoE unblock is proven.
 # The CoreWeave EP=8 RL jobs (30B-A3B 131k, 35B) no longer hit
 # `ModuleNotFoundError: torchtitan`. Also baked: vLLM-fork 76259c63 + flash-attn
-# 2.8.3 (flash_attn_2_cuda present) + MarinSkyRL 2d9feef + harbor 342729d5.
+# 2.8.3 (flash_attn_2_cuda present) + MarinSkyRL 78d83a5 + harbor 342729d5.
+# In-build asserts ran green: flash_attn_2_cuda OK (from cached wheel), torch
+# 2.11.0+cu128 / vllm 0.1.dev16611+g76259c63a / skyrl_train import OK, torchtitan
+# ExpertParallel import OK, baked MarinSkyRL HEAD == 78d83a5.
 #
 # BUILT IN-CLUSTER ON COREWEAVE (not the arm64 Mac): the image is amd64 + a
-# from-source x86 CUDA compile that QEMU/Docker-Desktop can't do locally, and iris
-# has NO in-cluster build primitive (`iris build` = LOCAL buildx). The build ran as
-# an iris job with KANIKO (BuildKit needs CAP_SYS_ADMIN/bind-mounts the cluster
-# denies — privileged is silently downgraded; nodes run gVisor). Context = the
-# iris-synced /app bundle; WHEEL_SOURCE=wheel-builder compiled the wheels inline
-# (~3h, cpu48/mem512GB/disk400GB — mem≥512GB needed to avoid the wheel-packaging
-# OOM). ghcr push via the GitHub PAT (`gh auth token`, write:packages), NOT the
-# Docker-Hub DOCKER_TOKEN in secrets.env. Procedure: agent_logs/2026-06-25_*.md.
+# from-source x86 CUDA build QEMU/Docker-Desktop can't do locally, and iris has NO
+# in-cluster build primitive (`iris build` = LOCAL buildx). The build ran as an iris
+# job with KANIKO (BuildKit needs CAP_SYS_ADMIN/bind-mounts the cluster denies —
+# privileged is silently downgraded; nodes run gVisor). Context = the iris-synced
+# /app bundle (cpu48/mem512GB/disk400GB). FAST no-nvcc PREBUILT-WHEELHOUSE path: the
+# kaniko script (docker/build_gpu_rl_kaniko.sh) fetched the prebuilt vLLM-fork +
+# flash-attn wheels (from laion/gpu-rl-build-wheels) into the context and ran with
+# WHEEL_SOURCE=prebuilt-wheelhouse + --skip-unused-stages → ZERO nvcc (~minutes, not
+# ~3h); the SKYRL_COMMIT-only bump did not change the wheel cache-key, so the wheels
+# stayed ABI-correct. ghcr push via the GitHub PAT (`gh auth token`, write:packages),
+# NOT the Docker-Hub DOCKER_TOKEN in secrets.env.
 #
-# Digest == the immutable gitsha tag :gpu-rl-6bd571b4 (OT-Agent commit 6bd571b4,
-# "fix(gpu-rl): in-cluster build fixes — uv index-strategy, pip wheel, tyro").
 # Single-platform linux/amd64 manifest, 13 layers ~21.5 GB. The floating :gpu-rl
 # tag resolves to the same digest. When the image is rebuilt, bump this digest
 # (use the immutable :gpu-rl-<gitsha> tag's digest, never the floating :gpu-rl).
 DEFAULT_RL_DOCKER_IMAGE = (
     "ghcr.io/open-thoughts/openthoughts-agent"
-    "@sha256:2055412f56ac7ee4f69e24762e5a7b25ba6958ae020b7a266e02fa0cde8553fc"
+    "@sha256:f9b8beb8d29496edead3669c8db5024792f9cf76df5adb412bcb48e0c7e9c7c0"
 )
 DEFAULT_GPU_VARIANT = "H100"
 DEFAULT_GPUS_PER_NODE = 8           # gd-8xh100ib-i128 = 8x H100-80GB + IB
