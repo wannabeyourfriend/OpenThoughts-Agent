@@ -73,9 +73,50 @@ export KUBECONFIG=~/.kube/coreweave-iris-gpu         # REQUIRED — the CoreWeav
 /Users/benjaminfeuer/miniconda3/envs/otagent/bin/iris --cluster=cw-us-east-02a query \
   "SELECT job_id,state FROM jobs WHERE state IN (1,2,3) AND job_id LIKE '/benjaminfeuer/%'" -f csv
 
-# k8s-side: H100 node headroom (~36 H100 nodes total; an N-node gang needs N WHOLE free nodes)
-kubectl get nodes        # with KUBECONFIG=~/.kube/coreweave-iris-gpu
+# k8s-side: H100 node headroom (an N-node gang needs N WHOLE free 8-GPU nodes)
+kubectl get nodes        # with KUBECONFIG=~/.kube/coreweave-iris-gpu  (Ready count ONLY — see trap below)
 ```
+
+**Are nodes actually free? Use Kueue + a per-node free-GPU count — NOT `kubectl get nodes` or a pod request-sum.**
+`kubectl get nodes` shows *Ready*, not *free*; and a naive "sum `requests.nvidia.com/gpu` over running pods vs
+36×8" is wrong twice over (verified 2026-06-26): (a) allocatable GPUs is **~256, not 288** — only **~32 of the
+~36 Ready nodes carry 8 GPUs** (the rest are util/control nodes with 0 GPU), and (b) the request-sum **undercounts**
+because some pods declare GPUs via `limits`, not `requests`. Both errors make a busy cluster look free → you
+relaunch into contention and get **preempted by higher-priority `/power` jobs** (interactive < production). Use the
+two authoritative signals instead:
+
+```bash
+# (1) Kueue ClusterQueue = the SCHEDULER'S OWN accounting — this is literally what decides gang admission.
+kubectl get clusterqueue                 # PENDING WORKLOADS column: 0 = no admission backlog (good sign)
+kubectl get clusterqueue iris-cq -o json | python3 -c 'import json,sys; d=json.load(sys.stdin)["status"]; \
+print("admitted:",d.get("admittedWorkloads"),"pending:",d.get("pendingWorkloads")); \
+print([{r["name"]:r.get("total") for r in f["resources"]} for f in d.get("flavorsUsage",[])])'
+#   (nominalQuota lives under .spec.resourceGroups[].flavors[].resources[].nominalQuota; note quotas mix units
+#    like "1G" for memory, so parse GPU separately — don't int() the whole map.)
+
+# (2) CORRECT free whole-nodes = per-node (allocatable_gpu - sum of bound-pod GPU req/limit), count nodes with >=8 free.
+kubectl get nodes -o json | python3 -c '
+import json,sys,subprocess
+nodes=json.load(sys.stdin)["items"]
+alloc={n["metadata"]["name"]:int(n["status"]["allocatable"].get("nvidia.com/gpu",0)) for n in nodes}
+pods=json.loads(subprocess.run(["kubectl","get","pods","-A","-o","json"],capture_output=True,text=True).stdout)["items"]
+used={}
+for p in pods:
+    if p.get("status",{}).get("phase") in ("Succeeded","Failed"): continue
+    nn=p.get("spec",{}).get("nodeName")
+    if not nn: continue
+    g=0
+    for c in p["spec"].get("containers",[]):
+        r=c.get("resources",{}); req=r.get("requests",{}) or {}; lim=r.get("limits",{}) or {}
+        g+=int(req.get("nvidia.com/gpu", lim.get("nvidia.com/gpu",0)))
+    used[nn]=used.get(nn,0)+g
+gpu_nodes=sum(1 for a in alloc.values() if a>0)
+free=sum(1 for n,a in alloc.items() if a>0 and a-used.get(n,0)>=8)
+print(f"GPU nodes:{gpu_nodes}  fully-free 8-GPU nodes:{free}  total free GPUs:{sum(max(0,a-used.get(n,0)) for n,a in alloc.items())}")'
+```
+Decision rule for relaunching an idle gang: only submit when **`pendingWorkloads == 0`** AND **fully-free 8-GPU
+nodes ≥ N** (the gang size; e.g. ≥16 for a 30B+35B pair). If `/power` is bursting (free nodes oscillating), either
+wait for it to drain or escalate to `--priority production` — do NOT churn-relaunch at interactive into contention.
 The in-container invocation the launcher ultimately drives is
 `uv run iris --cluster=cw-us-east-02a job run …` (the SDK `IrisClient.submit` path);
 you do not type that by hand — `python -m rl.cloud.launch_rl_iris` builds it.
