@@ -153,7 +153,13 @@ export AIOHTTP_TOTAL_TIMEOUT=1800
 export VLLM_CACHE_ROOT="${SCRATCH}/vllm"
 export VLLM_CONFIG_ROOT="${SCRATCH}/vllm"
 export TRITON_CACHE_DIR="/tmp/triton_cache_${USER}_${SLURM_JOB_ID}"
-export FLASHINFER_WORKSPACE_BASE="/tmp/flashinfer_cache_${USER}_${SLURM_JOB_ID}"
+# FlashInfer: PERSISTENT cache on scratch (NOT /tmp — MoE kernel JIT compilation
+# takes 20-40 min for 182 kernels and MUST persist across jobs).  The first job
+# with a new model compiles; subsequent jobs hit the cache instantly.
+export FLASHINFER_WORKSPACE_BASE="${SCRATCH}/flashinfer_cache"
+# Limit ninja parallelism during flashinfer JIT — unlimited (72 cores) OOM-kills
+# nvcc on MoE kernel compilation. 8 parallel × ~6GB/nvcc = ~48GB, safe on 480GB.
+export MAX_JOBS=8
 export TORCH_EXTENSIONS_DIR="${SCRATCH}/torch_extensions"
 export TORCH_HOME="${SCRATCH}/torch_home"
 export XDG_CACHE_HOME="${SCRATCH}/.cache"
