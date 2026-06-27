@@ -413,6 +413,15 @@ generator:
 
   enable_prefix_caching: true
   enable_chunked_prefill: true
+  # OVERRIDE ppo_base_config's generator.enforce_eager=true (a conservative "stability" default,
+  # NOT an R3 requirement). Eager (no CUDA graphs) decoded this 30B-A3B MoE at ~15 tok/s @131k
+  # under load → a long thinking-2507 response (~8k tok) took ~9-10 min/LLM-call, exceeding the
+  # harbor 600s per-call timeout → turns NEVER completed (24 trials stuck episode-0, 0 completions
+  # in 1h on r4/r5). CUDA graphs restore decode speed so turns finish under the timeout. The base
+  # comment warns CUDA graphs "may affect convergence for long-context" → WATCH entropy/log_ratio;
+  # R3 router-replay + TIS are present precisely to hold pi_old==pi_train. Revert if engine init
+  # fails (CUDA-graph × DCP=2 × routed-experts capture incompat) or RL collapses.
+  enforce_eager: false
 
   run_engines_locally: true
   weight_sync_backend: nccl
