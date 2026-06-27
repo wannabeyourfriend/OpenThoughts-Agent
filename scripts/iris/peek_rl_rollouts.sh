@@ -29,7 +29,9 @@
 # ENV: PEEK_KUBECONFIG (default ~/.kube/coreweave-iris-gpu), NS (default iris), CONTAINER (default task),
 #      PEEK_CLUSTER (default cw-us-east-02a), IRIS_BIN (default the otagent cw-capable iris),
 #      PEEK_OUT (default ~/Documents/experiments/traces),
-#      PEEK_TRIALS_S3 (override the remote trials_dir; default s3://marin-na/iris/<jobname>/trace_jobs)
+#      PEEK_TRIALS_S3 (override the remote trials_dir; default s3://marin-na/iris/<jobname>/trace_jobs),
+#      PEEK_MAX_OBJECT_BYTES (pull: skip any single object larger than this; default 20MB=20971520,
+#                             set 0 to fetch everything incl. the 100s-of-MB result.json blobs)
 set -euo pipefail
 
 JOB="${1:-}"
@@ -261,23 +263,37 @@ PYEOF
       else
         AWS_ENDPOINT_URL="$R2_ENDPOINT" AWS_ACCESS_KEY_ID="$R2_KEY" AWS_SECRET_ACCESS_KEY="$R2_SECRET" \
           AWS_REGION=auto AWS_DEFAULT_REGION=auto \
-          "$PEEK_PY" - "$S3_TJ" "$DEST/trace_jobs" "$DEST/.r2_failed.tsv" <<'PYEOF'
+          "$PEEK_PY" - "$S3_TJ" "$DEST/trace_jobs" "$DEST/.r2_failed.tsv" "$DEST/.r2_skipped.tsv" <<'PYEOF'
 import os, sys, boto3, botocore, concurrent.futures as cf
 from boto3.s3.transfer import TransferConfig
-s3url, dest, faillog = sys.argv[1], sys.argv[2], sys.argv[3]
+s3url, dest, faillog, skiplog = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 bucket, _, prefix = s3url[5:].partition("/"); prefix = prefix.rstrip("/") + "/"
+# Skip any SINGLE object larger than this (default 20 MB). The huge result.json blobs
+# (full rollout_details/logprobs, 100s of MB) dominate size but are rarely needed for
+# analysis; the trajectory/reward/exception artifacts are all small. Override via
+# PEEK_MAX_OBJECT_BYTES (set 0 to disable skipping and fetch everything).
+MAXB = int(os.environ.get("PEEK_MAX_OBJECT_BYTES", str(20 * 1024**2)))
 cfg = botocore.config.Config(region_name="auto", connect_timeout=15, read_timeout=120,
                              retries={"max_attempts": 5, "mode": "standard"}, max_pool_connections=64)
 c = boto3.client("s3", endpoint_url=os.environ["AWS_ENDPOINT_URL"], config=cfg)
 tcfg = TransferConfig(multipart_threshold=16 * 1024**2, multipart_chunksize=16 * 1024**2,
                       max_concurrency=4, use_threads=True)
-objs, total = [], 0
+objs, skipped, total, skipbytes = [], [], 0, 0
 for page in c.get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=prefix):
     for o in page.get("Contents", []):
         rel = o["Key"][len(prefix):]
-        if rel:
-            objs.append((o["Key"], rel, o["Size"])); total += o["Size"]
-print(f"[pull]   R2 objects to fetch: {len(objs)}  ({total/1e9:.1f} GB)", flush=True)
+        if not rel:
+            continue
+        if MAXB and o["Size"] > MAXB:
+            skipped.append((rel, o["Size"])); skipbytes += o["Size"]; continue
+        objs.append((o["Key"], rel, o["Size"])); total += o["Size"]
+with open(skiplog, "w") as f:
+    for rel, sz in skipped:
+        f.write(f"{rel}\t{sz}\n")
+msg = f"[pull]   fetching {len(objs)} objects ({total/1e9:.2f} GB)"
+if MAXB:
+    msg += f"; SKIPPING {len(skipped)} files >{MAXB//1024**2}MB ({skipbytes/1e9:.1f} GB, see .r2_skipped.tsv)"
+print(msg, flush=True)
 fails = []
 def fetch(item):
     key, rel, size = item
@@ -307,8 +323,13 @@ PYEOF
       fi
     fi
     N_TRIALS=$(ls -d "$DEST"/trace_jobs/*/ 2>/dev/null | wc -l | tr -d ' ')
-    N_DONE=$(find "$DEST/trace_jobs" -name result.json 2>/dev/null | wc -l | tr -d ' ')
-    echo "[pull]   trial dirs=$N_TRIALS  COMPLETED(result.json)=$N_DONE"
+    # COMPLETED = trials with a result.json, counting BOTH downloaded ones and any
+    # skipped (large) ones recorded in .r2_skipped.tsv (result.json is usually >20MB → skipped).
+    N_DONE_DISK=$(find "$DEST/trace_jobs" -name result.json 2>/dev/null | wc -l | tr -d ' ')
+    N_DONE_SKIP=$(grep -c 'result\.json	' "$DEST/.r2_skipped.tsv" 2>/dev/null || echo 0)
+    N_DONE=$(( N_DONE_DISK + N_DONE_SKIP ))
+    N_SKIP=$([ -f "$DEST/.r2_skipped.tsv" ] && wc -l < "$DEST/.r2_skipped.tsv" | tr -d ' ' || echo 0)
+    echo "[pull]   trial dirs=$N_TRIALS  COMPLETED(result.json)=$N_DONE  (large files skipped: $N_SKIP)"
 
     # 4) Provenance manifest.
     cat > "$DEST/MANIFEST.md" <<EOF
@@ -321,8 +342,11 @@ PYEOF
 
 ## Contents
 - trace_jobs/  : ${N_TRIALS} Harbor trial dirs, ${N_DONE} COMPLETED (have result.json + reward).
-                 REMOTE jobs: synced from R2 (${S3_TJ}). LOCAL jobs: tar-streamed from the rank-0 pod's
-                 ephemeral path — that copy is the only durable one.
+                 REMOTE jobs: downloaded DIRECT from R2 (${S3_TJ}) via boto3. LOCAL jobs: tar-streamed
+                 from the rank-0 pod's ephemeral path — that copy is the only durable one.
+- ${N_SKIP} large files (>$(( ${PEEK_MAX_OBJECT_BYTES:-20971520} / 1048576 ))MB) were SKIPPED — listed in .r2_skipped.tsv (path + size).
+                 These are mostly the giant result.json (full rollout_details). Re-fetch all with
+                 PEEK_MAX_OBJECT_BYTES=0, or a single one with boto3 against its key.
 - logs/iris_finelog.log   : complete iris/finelog job log (--no-tail)
 - logs/pod_rank*.log      : per-pod container stdout at capture time (rank-0 = harbor coordinator)
 
