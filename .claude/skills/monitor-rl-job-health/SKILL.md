@@ -74,6 +74,32 @@ IRIS=/Users/benjaminfeuer/miniconda3/envs/otagent/bin/iris  # NOT the marin .ven
 ```
 All `iris`/`kubectl` calls are **SYNCHRONOUS — never background them** (`ops/iris/coreweave_gpu_ops.md`).
 
+**Restart-burn check (do this EARLY — it sets the syncdown scope in §1 and feeds the verdict).** Before anything
+else, find out whether this job has already **burned a restart/retry** — because (a) a run that has *already
+failed once* is a sharply different risk than a clean first attempt, (b) the prior-attempt failure is
+high-signal for the verdict, and (c) the **remaining** retry budget bounds urgency (a run on its last retry
+that's misbehaving is closer to a KILL than one with headroom). Cheap signals (no heavy capture yet):
+
+```bash
+# CoreWeave: failure_count + per-task retry state (authoritative), and the pod GENERATION suffix.
+$PY scripts/iris/watch_job_state.py /benjaminfeuer/<job> --once --json     # → failure_count (retries burned so far)
+$IRIS --cluster=cw-us-east-02a job summary /benjaminfeuer/<job> --json     # per-task state + restart/generation
+# pod name = iris-benjaminfeuer-<slug>-<rank>-<hash>-<GEN>; GEN -0 = first attempt, -1/-2 = after a re-bring-up.
+kubectl get pods -n iris -o name | grep "<slug>" | sed -E 's/.*-([0-9]+)$/gen \1/' | sort -u   # max GEN > 0 ⇒ restarts burned
+```
+Compare burned-count to the launch's **`--max-retries K`** (we launch with `K=1`) → `remaining = K − burned`.
+**SLURM (Leonardo/TACC):** the restarts are the **`afterany` chain-restart legs** — `sacct -u <user> --name <jobname>
+-X --format=JobID,State,Start,End,ExitCode` lists every chain link; each prior **terminal (FAILED/TIMEOUT/CANCELLED)**
+leg before the running one is a burned attempt (a clean TIMEOUT→successor is a *normal* chain restart, NOT a burn —
+distinguish: a wall-clock TIMEOUT with a healthy successor ≠ a crash-and-retry). `scontrol show job <id>` `Restarts=`
+also counts requeues.
+
+Record **`restarts burned = B / max K` (remaining = K−B)** and, if `B>0`, the **terminal state + exit/error of each
+prior attempt** (from the summary/sacct). If `B>0`, set the syncdown in §1 to **include the failed runs** (next
+section), and carry `B`, the remaining budget, and "same failure each attempt?" into Gate A (§2) and the verdict
+(§5): the same crash repeating across every restart = **deterministically doomed → KILL**; a restart burned on a
+genuine transient (e.g. an HF-weight-resolution flake the retry-wrapper now catches) that is now healthy = benign.
+
 ---
 
 ## 1. Sync the artifacts (use the existing tool — never ad-hoc)
@@ -95,6 +121,22 @@ IRIS_BIN=$IRIS bash scripts/iris/peek_rl_rollouts.sh <pod-name-substring> pull
 The per-rank `pod_rank*.log` files **are** the engine/Ray stderr+stdout (k8s merges container stdout/stderr).
 For deeper Ray actor logs, `kubectl exec -n iris <pod> -c task -- bash -lc 'ls /tmp/ray/session_latest/logs'`
 and pull any `worker-*.err` / `raylet.*` of interest (the finelog usually surfaces the real traceback first).
+
+> **If the §0 restart-burn check found `B>0` burned restarts → the syncdown MUST include the FAILED runs, not
+> just the live generation.** The default `pull` captures the *current* (latest-generation) pods' logs + the
+> shared trials — but the prior attempts are exactly the evidence you need. Capture them:
+> - **iris finelog spans ALL generations** — it is the durable record of every burned attempt's bring-up +
+>   crash (the GC'd prior-generation pods' stdout is gone, but the finelog kept it). `peek … pull` already
+>   pulls it `--no-tail` full-history; **confirm it covers the original submission** (if it was tailed, re-pull
+>   with `$IRIS … job logs /benjaminfeuer/<job> --since-ms <ORIGINAL submitted_at_ms> --no-tail`, using the
+>   *first* submission time, not the latest generation's). Then **grep it for each prior attempt's terminal
+>   traceback** — the real reason each restart was burned (and whether it's the SAME failure every time).
+> - **The REMOTE R2 trials_dir is shared across generations** (`s3://marin-na/iris/<job>/trace_jobs`), so
+>   `pull` already grabbed failed-generation trials too — segregate/label them by episode/timestamp so the
+>   §4 rollout read doesn't conflate a dead generation's reward-0 trials with the live one's.
+> - **SLURM:** the failed legs are *separate job IDs* in the `afterany` chain — `rsync` the **`.out`/`.err` of
+>   each prior terminal leg** (its own jobid, located via `scontrol`/`sacct` per §0) into the capture dir,
+>   alongside the running leg's. Don't sync only the live leg.
 
 **SLURM (Leonardo/TACC):** there is no `peek` tool — the equivalent is: locate the `.out`/`.err` via
 `scontrol show job <id> -o` (`StdOut=`/`StdErr=`/`%Z` workdir — **never `find`/`du` on GPFS**, per
@@ -264,6 +306,7 @@ Emit exactly one verdict to the supervisor, in this shape:
 RL-JOB-HEALTH — /benjaminfeuer/<job>  (<model>, <geometry>, <stage>)   captured: <traces dir>
 
 VERDICT: KILL | NO-KILL          confidence: high|medium|low
+Restarts: <B/K burned, remaining K−B> — <none | same failure each attempt: … | transient, recovered>
 
 Gate A (liveness):   PASS|FAIL — <state-poll verdict + log-freshness + any wedge/death signature>
 Gate B (resources):  PASS|FAIL — <per-engine util/mem; aggregate tok/s vs LUT floor; Waiting/Running; enforce_eager; OOM?>
@@ -280,6 +323,11 @@ NEXT STEPS (if NO-KILL): <what to watch next sweep + the specific signal that wo
   resident-but-not-generating or floored throughput w/ `enforce_eager:false` or training-OOM (B); incoherent
   generations / all-reward-0 from a serving/sync/verifier fault on a new geometry (C). Give the root cause +
   fix — a KILL recommendation without a "what to change before relaunch" is incomplete.
+- **KILL (restart-burn corroboration, from §0)** if the job has burned restarts repeating the **SAME** failure
+  each attempt — it is **deterministically doomed**, and the remaining retry budget will only burn more
+  nodes-hours reproducing it. State `B/K burned, remaining K−B, same failure: <traceback>` and the fix that
+  must land before any relaunch. (A restart burned on a genuine *transient* the run has since recovered from is
+  NOT a kill — say so and weigh the other gates.)
 - **NO-KILL** if all three gates pass, **OR** the only failures have a legitimate transient/early-bring-up
   explanation (e.g. 0 completed trials at +15 min on a long-episode arm; an HF-weight-resolution flake that the
   `--max-retries`/retry-wrapper is catching; gang still admitting). Say what you're waiting on and the signal
