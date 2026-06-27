@@ -123,6 +123,29 @@ For Qwen3-Next-80B-A3B: `num_experts=512`, `ep_size=8` → 64 experts/EP-rank. V
 
 ---
 
+## MoE served-policy token-salad on the RL update path → `SKYRL_W13_RELOAD_BRACKET` (FIXED `2bb70a88`)
+
+A served MoE policy emitting incoherent CJK token-salad (100% reward-0) on EVERY generation after a
+disaggregated weight sync = the FusedMoE **`w13` gate/up halves are in the wrong kernel order**. Root cause:
+vLLM's initial from-disk load runs `process_weights_after_loading`, which for FusedMoE under
+**FlashInfer-CUTLASS / TRTLLM** (auto-selected on H100) applies `swap_w13_to_w31` (`[gate;up]→[up;gate]`).
+The RL update path did per-chunk `model.load_weights` with **no finalize**, reverting `w13` to checkpoint
+`[gate;up]` and never re-swapping → the kernel reads the wrong halves → salad. **TRITON / AITER backends do
+NOT swap** → the same skip is harmless there (the likely Jupiter-GH200-OK reconciliation).
+
+- **Env var `SKYRL_W13_RELOAD_BRACKET`** (default `1`): brackets the multi-chunk sync in
+  `fsdp_worker.broadcast_to_inference_engines` with `WorkerWrap.skyrl_begin/finish_weight_reload`
+  (= vLLM `initialize/finalize_layerwise_reload`) so `process_weights_after_loading` runs **exactly once**
+  post-sync (re-applies the swap; avoids the #1737 per-chunk re-finalize/absent-layer hazard). Set `0` for
+  the exact prior behavior — it is **swap-inert on triton/dense → byte-identical there**, so leave it on.
+- **Scope:** only the non-IPC, non-`_fuse_weights` broadcast path is bracketed. Diagnosis was **MoE-specific
+  × FlashInfer-CUTLASS × disaggregated-RL-update** — NOT NCCL (a P2P/NVLS-disable A/B was falsified), NOT the
+  gather (EP=8 on-GPU gather proven bit-exact vs disk), NOT placement/broadcast (engine-held == disk).
+- **Bring-up check:** confirm the bracket engaged — engine log shows `initialize_layerwise_reload` /
+  `finish_weight_reload`. Full account: `agent_logs/2026-06-27_coreweave_moe_ep_garbage_debug_cycle.md`.
+
+---
+
 ## 80B RL is TRAINING-bound, and SkyRL FSDP is ALWAYS cross-node
 
 The Qwen3-Next-80B-A3B production RL step (EP=8×FSDP=8, 32k, R3+TIS) is **training-bound, NOT

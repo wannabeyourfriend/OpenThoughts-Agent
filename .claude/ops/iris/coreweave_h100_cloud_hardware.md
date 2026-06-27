@@ -58,9 +58,10 @@ H100x8 node totals:
 - **Intra-node = NVLink/NVSwitch, 900 GB/s/GPU, full all-to-all.** This is why TP=8 (and TP=8 + DCP=2)
   belongs ON ONE NODE: the decode/EP all-reduce + all-to-all ride NVLink, not the slower fabric. **Use NCCL
   defaults** — the GH200/SIF disables (`NCCL_P2P_DISABLE` / `NVLS=0` / `COLLNET=0`) would cripple this
-  on-node path. *(The 2026-06-27 doubt that these disables were the MoE-salad cause was FALSIFIED by A/B r9 —
-  re-adding all three left the salad unchanged; the bug is in the FSDP→vLLM MoE/EP weight-sync, not NCCL. See
-  `agent_logs/2026-06-27_coreweave_nccl_defaults_doubt.md`.)*
+  on-node path. *(The 2026-06-27 doubt that these disables were the MoE-salad cause was FALSIFIED by A/B r9.
+  The salad was RESOLVED as the FusedMoE `w13` gate/up swap not re-applied on the disaggregated RL weight
+  update — fixed by `SKYRL_W13_RELOAD_BRACKET` (MarinSkyRL `2bb70a88`), NOT an NCCL knob. See
+  `agent_logs/2026-06-27_coreweave_moe_ep_garbage_debug_cycle.md`.)*
 - **Inter-node = InfiniBand**, gang-scheduled within a single IB leaf fabric (Kueue `topology 'infiniband'`,
   all-or-nothing — see `coreweave_gpu_ops.md` Scheduling). Typical CoreWeave H100 config is **8× 400 Gb/s
   NDR** (one NIC/GPU, GPUDirect RDMA) ≈ 3.2 Tb/s/node — *not independently re-measured on `cw-us-east-02a`,

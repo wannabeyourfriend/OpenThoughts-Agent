@@ -186,7 +186,10 @@ in the cluster.
   - *(2026-06-27 A/B:* run `rl-131k-cpdcp2r3-think2507-r9` re-added all three disables on a
     reproducing 30B MoE (TP=2+EP=2) — env verified in-pod, nothing else changed — and the
     served policy was **still CJK token-salad**. NCCL P2P/NVLS is therefore **NOT** the
-    MoE-salad cause; the corruption is in the FSDP→vLLM MoE/EP weight-sync path itself. Record:
+    MoE-salad cause. **RESOLVED:** the salad was the FusedMoE `w13` gate/up swap not re-applied
+    on the disaggregated RL weight update (FlashInfer-CUTLASS on H100 swaps `[gate;up]→[up;gate]`
+    on disk-load but the per-chunk RL update skipped it) — fixed by `SKYRL_W13_RELOAD_BRACKET`
+    (MarinSkyRL `2bb70a88`; default on; see the marinskyrl project doc). Record:
     `agent_logs/2026-06-27_coreweave_nccl_defaults_doubt.md`.)*
 - **Egress: CoreWeave nodes have internet.** Models/data are pulled from HF **online** —
   do NOT set `HF_HUB_OFFLINE`/`TRANSFORMERS_OFFLINE` (contrast Leonardo/Jupiter compute

@@ -169,9 +169,15 @@ Porting a Jupiter (Apptainer SIF) config to Iris (Docker) — the load-bearing r
     **NCCL defaults** (NVLink intra-node + IB inter-node); keep `NCCL_DEBUG=INFO` + the observability/raised
     timeouts (`SKYRL_WORKER_NCCL_TIMEOUT_IN_S`, `TORCH_NCCL_*`). `disable_custom_all_reduce: true` STAYS.
     *(2026-06-27: the doubt that these disables were the MoE-salad cause was FALSIFIED — A/B run r9 re-added all
-    three on a reproducing 30B MoE, env verified in-pod, salad unchanged. The MoE salad is in the FSDP→vLLM
-    MoE/EP weight-sync path, not NCCL. Do NOT add these for MoE. Record:
-    `agent_logs/2026-06-27_coreweave_nccl_defaults_doubt.md`.)*
+    three on a reproducing 30B MoE, env verified in-pod, salad unchanged. Do NOT add these for MoE. The salad
+    was RESOLVED as the w13 gate/up swap — see the `SKYRL_W13_RELOAD_BRACKET` note below.)*
+  - **KEEP `SKYRL_W13_RELOAD_BRACKET` ON (default `1`) for MoE.** It re-applies the FusedMoE `w13` gate/up
+    kernel swap (`process_weights_after_loading`) on the disaggregated RL weight update — WITHOUT it, the
+    served MoE policy emits CJK token-salad (100% reward-0) on H100/FlashInfer-CUTLASS (this was the r2–r9
+    salad; fixed MarinSkyRL `2bb70a88`). Swap-inert on triton/dense → byte-identical there, so just leave it
+    on; do NOT set `0` except to reproduce the old bug. Bring-up check: engine log shows
+    `initialize_layerwise_reload` / `finish_weight_reload`. Detail: marinskyrl project doc +
+    `agent_logs/2026-06-27_coreweave_moe_ep_garbage_debug_cycle.md`.
   - **HARDCODE** `LD_LIBRARY_PATH: /opt/openthoughts/envs/rl/lib` (the RL conda prefix) — **NOT
     `$CONDA_PREFIX/lib`**: the launcher injects env as literal k8s values and **k8s does NOT shell-expand
     `$VAR`**, so a literal `$CONDA_PREFIX/lib` is a broken path.

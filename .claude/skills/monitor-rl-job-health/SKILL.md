@@ -275,7 +275,9 @@ qualitative:
      or geometry fault** (the FSDP→vLLM sync or the vLLM-fork build for this model/geometry). This is a **KILL**
      signal on a new/untested geometry — the policy being served is not the trained policy. (Check the
      tokenizer is right first — but a *correct* tokenizer + salad output = sync/build, per the prior CoreWeave
-     diagnosis.)
+     diagnosis.) **Known CoreWeave MoE cause to check first:** the FusedMoE `w13` gate/up swap not re-applied
+     on the disaggregated RL update (H100/FlashInfer-CUTLASS) → confirm `SKYRL_W13_RELOAD_BRACKET` is on
+     (default 1) and the engine log shows `finish_weight_reload` (fix MarinSkyRL `2bb70a88`; marinskyrl doc).
    - **Agent output is COHERENT but wrong / runs out of turns** ⇒ tasks genuinely hard or the harness/verifier
      mis-set — NOT necessarily a kill; this can be a real (if low) learning signal. Read several conversations.
    - **Every trial ends in an environment/infra exception** (`VerificationNotCompletedError` everywhere =
