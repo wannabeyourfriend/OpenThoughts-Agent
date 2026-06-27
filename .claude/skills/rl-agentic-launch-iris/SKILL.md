@@ -164,10 +164,17 @@ Porting a Jupiter (Apptainer SIF) config to Iris (Docker) — the load-bearing r
 - **SIF→Docker env translation (what to DROP / KEEP / hardcode in `extra_env:`):**
   - **DROP** all `APPTAINERENV_*` duplicates, `TRITON_LIBCUDA_PATH`, `LIBRARY_PATH=/.singularity.d/libs`
     (SIF-only), and `HF_HUB_OFFLINE`/`TRANSFORMERS_OFFLINE` (CoreWeave has egress).
-  - **DROP** the GH200/SIF NCCL disables **`NCCL_P2P_DISABLE` / `NCCL_NVLS_ENABLE` / `NCCL_COLLNET_ENABLE`**
-    — on H100+IB they would CRIPPLE the intra-node NVLink all-reduce that a TP=8 engine (DCP) depends on. Use
-    **NCCL defaults** (NVLink intra-node + IB inter-node); keep `NCCL_DEBUG=INFO` + the observability/raised
-    timeouts (`SKYRL_WORKER_NCCL_TIMEOUT_IN_S`, `TORCH_NCCL_*`). `disable_custom_all_reduce: true` STAYS.
+  - **⚠ NCCL disables — DOUBTED / UNDER INVESTIGATION (2026-06-27).** The rule below ("DROP the GH200/SIF
+    disables, use NCCL defaults") was a PERF argument and is now the **leading suspect for the MoE weight-sync
+    token-salad** — the WORKING Jupiter MoE runs explicitly SET `NCCL_P2P_DISABLE=1` + nvls/collnet off, and
+    CoreWeave dropped them. Until the in-flight A/B confirms (see `ops/iris/coreweave_gpu_ops.md` ⚠ + the
+    `agent_logs/2026-06-27_coreweave_nccl_defaults_doubt.md`), do NOT treat the original rule as settled for
+    MoE; if the A/B clears the salad, MoE configs must restore the disable(s) (likely `NCCL_NVLS_ENABLE=0`).
+  - *(Original rule, retained — perf, not a correctness claim:)* **DROP** the GH200/SIF NCCL disables
+    **`NCCL_P2P_DISABLE` / `NCCL_NVLS_ENABLE` / `NCCL_COLLNET_ENABLE`** — on H100+IB they would CRIPPLE the
+    intra-node NVLink all-reduce that a TP=8 engine (DCP) depends on. Use **NCCL defaults** (NVLink intra-node
+    + IB inter-node); keep `NCCL_DEBUG=INFO` + the observability/raised timeouts
+    (`SKYRL_WORKER_NCCL_TIMEOUT_IN_S`, `TORCH_NCCL_*`). `disable_custom_all_reduce: true` STAYS.
   - **HARDCODE** `LD_LIBRARY_PATH: /opt/openthoughts/envs/rl/lib` (the RL conda prefix) — **NOT
     `$CONDA_PREFIX/lib`**: the launcher injects env as literal k8s values and **k8s does NOT shell-expand
     `$VAR`**, so a literal `$CONDA_PREFIX/lib` is a broken path.

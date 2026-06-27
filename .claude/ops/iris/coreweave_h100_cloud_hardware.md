@@ -56,9 +56,11 @@ H100x8 node totals:
 ## Interconnect (what shapes the parallelism)
 
 - **Intra-node = NVLink/NVSwitch, 900 GB/s/GPU, full all-to-all.** This is why TP=8 (and TP=8 + DCP=2)
-  belongs ON ONE NODE: the decode/EP all-reduce + all-to-all ride NVLink, not the slower fabric. **Use NCCL
+  belongs ON ONE NODE: the decode/EP all-reduce + all-to-all ride NVLink, not the slower fabric. ~~**Use NCCL
   defaults** — the GH200/SIF disables (`NCCL_P2P_DISABLE` / `NVLS=0` / `COLLNET=0`) would cripple this
-  on-node path; see `coreweave_gpu_ops.md` + the launch skill §4.
+  on-node path~~ → **⚠ DOUBTED for MoE (2026-06-27):** that "use NCCL defaults" rule is the leading suspect
+  for the MoE weight-sync salad (working Jupiter MoE had the disables ON); A/B in flight — see
+  `coreweave_gpu_ops.md` ⚠ + `agent_logs/2026-06-27_coreweave_nccl_defaults_doubt.md`.
 - **Inter-node = InfiniBand**, gang-scheduled within a single IB leaf fabric (Kueue `topology 'infiniband'`,
   all-or-nothing — see `coreweave_gpu_ops.md` Scheduling). Typical CoreWeave H100 config is **8× 400 Gb/s
   NDR** (one NIC/GPU, GPUDirect RDMA) ≈ 3.2 Tb/s/node — *not independently re-measured on `cw-us-east-02a`,

@@ -177,12 +177,23 @@ in the cluster.
   Jupiter's GH200 4-GPU nodes: a TP=8 vLLM engine places **intra-node on ONE 8-GPU node**
   over NVLink (decode), with no cross-node TP — exactly the placement Jupiter's 4-GPU
   nodes could never satisfy for the MoE DCP=2 arm.
-- **Use NCCL DEFAULTS — do NOT set the GH200/SIF NCCL disables here.** On H100+IB,
-  `NCCL_P2P_DISABLE` / `NCCL_NVLS_ENABLE=0` / `NCCL_COLLNET_ENABLE=0` would CRIPPLE the
-  intra-node NVLink all-reduce a TP=8 (DCP) engine depends on. NCCL defaults give NVLink
-  intra-node + IB inter-node; keep only the observability/raised-timeout env
-  (`NCCL_DEBUG=INFO`, `SKYRL_WORKER_NCCL_TIMEOUT_IN_S`, `TORCH_NCCL_*`). (This is the
-  SIF→Docker env-translation rule the launch skill §4 enforces in config-authoring.)
+- **⚠ NCCL DEFAULTS — UNDER ACTIVE INVESTIGATION (2026-06-27), DOUBTED for MoE weight-sync.**
+  The original claim (below) was a PERF argument, never validated for correctness. It is now
+  the **leading suspect for the MoE FSDP→vLLM weight-sync token-salad** (the WORKING Jupiter
+  MoE runs — incl. Qwen3-Coder-30B-A3B job 860696 + the Mixtral wiring — explicitly set
+  `NCCL_P2P_DISABLE=1` + nvls/collnet OFF; CoreWeave dropped exactly those for the perf
+  reason below, and MoE RL has saladded ever since while DENSE RL on the same runtime is
+  clean). An A/B (re-adding the disables on a reproducing MoE) is in flight; **do NOT treat
+  "NCCL defaults" as validated ground truth for MoE until that confirms.** Full reasoning +
+  evidence extracted to `agent_logs/2026-06-27_coreweave_nccl_defaults_doubt.md` (+ the
+  debug cycle log). If the A/B clears the salad, the fix is to restore the disable(s) on the
+  weight-sync path (likely just `NCCL_NVLS_ENABLE=0`, which keeps NVLink P2P) and this bullet
+  gets rewritten.
+  - *(Original perf rationale, retained for context — true for throughput, NOT a correctness
+    claim):* On H100+IB, `NCCL_P2P_DISABLE` / `NCCL_NVLS_ENABLE=0` / `NCCL_COLLNET_ENABLE=0`
+    would cripple the intra-node NVLink all-reduce a TP=8 (DCP) engine depends on; NCCL
+    defaults give NVLink intra-node + IB inter-node. Keep the observability/raised-timeout env
+    (`NCCL_DEBUG=INFO`, `SKYRL_WORKER_NCCL_TIMEOUT_IN_S`, `TORCH_NCCL_*`).
 - **Egress: CoreWeave nodes have internet.** Models/data are pulled from HF **online** —
   do NOT set `HF_HUB_OFFLINE`/`TRANSFORMERS_OFFLINE` (contrast Leonardo/Jupiter compute
   nodes, which have none). The cost is the transient HF-weight-resolution flake below.
