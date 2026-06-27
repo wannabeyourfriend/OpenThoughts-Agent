@@ -58,7 +58,7 @@ models:
     limit_mm_per_prompt: '{"image":0,"video":0}'
     agent_kwargs:
       - 'extra_body={"chat_template_kwargs":{"enable_thinking":true}}'
-    extra_args: "--enable-prefix-caching"
+    extra_args: "--enable-prefix-caching --max-num-seqs 512"
 
   "Qwen/Qwen3.5-35B-A3B":
     tensor_parallel_size: 1
@@ -68,7 +68,7 @@ models:
     limit_mm_per_prompt: '{"image":0,"video":0}'
     agent_kwargs:
       - 'extra_body={"chat_template_kwargs":{"enable_thinking":true}}'
-    extra_args: "--enable-prefix-caching"
+    extra_args: "--enable-prefix-caching --max-num-seqs 512"
 
 # Pattern fallbacks — all force TP=1 (single GH200/node) + prefix-caching.
 patterns:
