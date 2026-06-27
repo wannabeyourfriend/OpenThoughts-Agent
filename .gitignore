@@ -465,6 +465,10 @@ eval/lists/reeval_refill_*.txt
 # Also ignore the eval/lists/ copies of the reeval_priority_* campaign scratch (the existing
 # unanchored reeval_priority_*.txt already covers these, but kept explicit for clarity).
 eval/lists/reeval_priority_a1-*.txt
+# Per-sweep reeval RELAUNCH priority lists (dated, e.g. eval/lists/reeval_relaunch_swe_20260627.txt) —
+# the relaunch-path siblings of reeval_refill_*; regenerated each campaign relaunch, never tracked.
+eval/lists/reeval_relaunch_*.txt
+reeval_relaunch*.txt
 # Repo-root per-sweep reeval REFILL scratch (dated, e.g. reeval_refill16_swe_20260626.txt /
 # reeval_refill_swe2_20260626.txt) — regenerated every refill (the eval/lists/ copies are ignored above).
 reeval_refill*.txt
