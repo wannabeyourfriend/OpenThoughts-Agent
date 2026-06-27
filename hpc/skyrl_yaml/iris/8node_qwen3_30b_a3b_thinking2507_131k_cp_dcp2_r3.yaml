@@ -367,21 +367,26 @@ generator:
   model_dtype: bfloat16
 
   # DCP=2 / TP=8 (the unblocked Option A). TP=8 = exactly ONE 8-GPU CoreWeave node
-  # per engine -> the per-engine STRICT_PACK PG (ray backend) places on a single node
-  # and the decode TP all-reduce is on-node NVLink (NO cross-node IB). TP=8 divides 32
-  # attn heads (4/GPU), 4 KV heads (KV-sharded under DCP=2), 128 experts (16/GPU).
-  inference_engine_tensor_parallel_size: 8
-  # 4 TP=8 engines = 32 inference GPU = 4 nodes. Set EXPLICITLY (not null): the launcher
-  # derivation (num_nodes*gpus)//tp = 8*8//8 = 8 would be WRONG (4 nodes are policy-only).
-  num_inference_engines: 4
+  # per engine -> the per-engine STRICT_PACK PG (ray backend) places on a single node and
+  # the decode TP all-reduce is on-node NVLink. RETUNED 2026-06-27: TP=8 was massive overkill
+  # for a 30B-A3B MoE (~3B active) -> TP=2 + EP=2. TP=2 divides 32 attn heads (16/GPU) + 4 KV
+  # heads (2/GPU); the 128 experts are EXPERT-PARALLEL across the 2 GPUs (64 whole experts/GPU)
+  # instead of TP-sharded. 4 engines per 8-GPU node => far more concurrent generation per node.
+  inference_engine_tensor_parallel_size: 2
+  # 16 TP=2 engines = 32 inference GPU = 4 engine nodes (4 engines/node). Set EXPLICITLY (not
+  # null): the launcher derivation counts the 4 policy-only nodes too and would be WRONG.
+  num_inference_engines: 16
 
-  inference_engine_expert_parallel_size: 1
+  # EP=2 (= TP), ENABLED 2026-06-27: the MoE experts are expert-parallel across the engine's
+  # 2 GPUs (each holds whole experts), not TP-sharded. 128 % 2 == 0. (EP+R3 on the engine is
+  # newly enabled here — watch the routed-experts capture / generation correctness on relaunch.)
+  inference_engine_expert_parallel_size: 2
 
-  # AXIS 3 (DCP=2): decode-context-parallel ENABLED. dcp(2) <= tp(8)/num_kv_heads(4) = 2
-  # -> LEGAL. DCP=2 shards the 131k KV across the 8-GPU node (~1.6 GB/131k-seq/GPU vs
-  # ~3.2 GB under DCP=1) -> friendlier KV pressure than Jupiter's DCP=1. The R3+DCP>1
-  # guard-lift env (VLLM_ALLOW_ROUTED_EXPERTS_DCP=1) is LOAD-BEARING here.
-  inference_engine_decode_context_parallel_size: 2
+  # DCP=1 (FORCED by TP=2): dcp <= tp/num_kv_heads = 2/4 = 0.5 -> dcp must be 1; DCP=2 is no
+  # longer legal at TP=2 (DCP=2 required TP>=8). RETUNED 2026-06-27: the DCP=2 131k-KV sharding
+  # is dropped as a consequence of the TP=8->2 efficiency change; VLLM_ALLOW_ROUTED_EXPERTS_DCP=1
+  # is now a no-op (left harmlessly). NOTE: this run is no longer the "DCP=2" experiment.
+  inference_engine_decode_context_parallel_size: 1
 
   # RAY executor backend (R3 + DCP path). The ray backend splits TP=8 into 8x{GPU:1}
   # bundles (STRICT_PACK on one node); the mp backend's single atomic {GPU:8} bundle is

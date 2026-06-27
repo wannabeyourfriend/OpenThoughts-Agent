@@ -468,18 +468,17 @@ generator:
   # TP=4 — the Qwen3-Next/3.5 hybrid-MoE model-card recommendation. Divides 16
   # attn heads (4/GPU) + 256 experts (64/GPU); 2 KV heads REPLICATED across TP
   # (GQA, legal — and the reason the 131k KV is not sharded; see MEMORY (A)).
-  # 8 engines x TP=4 = 32 gen GPU = 4 nodes. A TP=4 engine places intra-node on
-  # 4 of the 8 GPUs of one CoreWeave node (NVLink decode).
-  inference_engine_tensor_parallel_size: 4
-  # 8 TP=4 engines = 32 inference GPU = 4 nodes. Set EXPLICITLY (not null): the
-  # launcher derivation (num_nodes*8)//tp = 8*8//4 = 16 would be WRONG (4 of the
-  # 8 nodes are policy-only). 8 is authoritative.
-  num_inference_engines: 8
+  # RETUNED 2026-06-27: TP=4 was overkill for a 35B-A3B MoE (~3B active) -> TP=2 + EP=2.
+  # A TP=2 engine places intra-node on 2 of the 8 GPUs (NVLink decode); 4 engines/node.
+  inference_engine_tensor_parallel_size: 2
+  # 16 TP=2 engines = 32 inference GPU = 4 engine nodes (4 engines/node). Set EXPLICITLY
+  # (not null): the launcher derivation counts the 4 policy-only nodes too and would be WRONG.
+  num_inference_engines: 16
 
-  # EP off on the engine side (TP=4 already shards 256 experts 64/GPU). Enable
-  # later (inference_engine_expert_parallel_size>1) only if routing load
-  # imbalance becomes the gen bottleneck (UNVALIDATED on qwen3_5_moe in vLLM).
-  inference_engine_expert_parallel_size: 1
+  # EP=2 (= TP), ENABLED 2026-06-27: the 256 experts are expert-parallel across the engine's
+  # 2 GPUs (128 whole experts/GPU) rather than TP-sharded. 256 % 2 == 0. (Was UNVALIDATED on
+  # qwen3_5_moe in vLLM — watch generation correctness on relaunch.)
+  inference_engine_expert_parallel_size: 2
 
   # DCP OFF (decode-context-parallel = 1): the hybrid arch's low 131k KV (~2.68
   # GB/seq, ~20 concurrent at 0.85) does NOT need KV sharding. If DCP were ever
