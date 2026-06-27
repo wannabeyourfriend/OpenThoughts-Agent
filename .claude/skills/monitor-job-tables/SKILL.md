@@ -88,6 +88,14 @@ For a fresh CoreWeave launch still in bring-up (gang/leafgroup Kueue admission, 
 resolving — `shm_broadcast …60s` + a transient ghcr ImagePullBackOff self-heal are BENIGN) put it in the
 buffer-filling table with `—` metrics until the first step lands.
 
+**New/untested RL run? → deep-probe it, don't trust the row.** A table row (state + step/reward/grad/entropy)
+can read "healthy" on a run that is silently dead — weight-sync garbage (all-reward-0 from incoherent
+generations), an engine-starvation wedge, or 0 trials ever completing. For any RL job in a **new/untested
+setting** (new config/geometry/model/image, "debug"/"smoke-test", first launch after a code/config change),
+dispatch a subagent armed with **`monitor-rl-job-health`** → it syncs trace_jobs + logs, live-polls the GPUs
+against the serving-throughput LUT, reads the literal rollouts, and returns a **KILL/NO-KILL recommendation**.
+The row alone is necessary-but-not-sufficient for unproven runs.
+
 **Inspecting the literal CoreWeave RL rollouts (not just metrics):** `scripts/iris/peek_rl_rollouts.sh
 <pod-name-substr> [ls|cat|grep|cp]` exec's into the rank-0 pod and reads Harbor's per-trial `trace_jobs`
 (the literal agent trajectory + observations + `verifier_output` + `result.json` reward — same layout as

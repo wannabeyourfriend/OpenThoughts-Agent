@@ -123,7 +123,12 @@ For each bucket, pull the type's signals and render its table. **Unify all clust
 ONE table.** Extraction pointers:
 - **RL** — Step (`.out` tqdm `Training Step Progress: N/M` or `trainer/global_step`) + reward/grad/entropy/
   TIS from the WANDB_MIRROR lines (chain-restart logs may have step but not the dict — scan the chain's logs).
-  Apply the collapse-signal rule.
+  Apply the collapse-signal rule. **For any RL job in a NEW/UNTESTED setting** (new config/geometry/model/image,
+  a "debug"/"smoke-test" run, or the first launch after a code/config change), the table row is NOT enough —
+  **dispatch a subagent armed with `monitor-rl-job-health`** this tick to deep-probe it (sync trace_jobs +
+  logs, live-poll GPUs vs the serving LUT, read the literal rollouts) → a **KILL/NO-KILL recommendation**.
+  State-poll + metrics can read "healthy" on a run that is silently dead (weight-sync garbage, engine-starvation
+  wedge, all-reward-0). Carry the verdict into §4; the supervisor owns the actual kill.
 - **SFT** — Step + `{'loss','grad_norm'}` from the `.out` (NOT trainer_log.jsonl); total steps from the config/banner.
 - **Datagen** — chunks done/total (squeue+sacct) + `result.json` count + avg_turns (realness gate: ≈1.0 = dead) + exc%.
 - **Eval** — `result.json`/total + pass-rate + top exception + the 4 infra checks (`eval-agentic-launch` §4 for greps).
@@ -179,6 +184,11 @@ ONE table.** Extraction pointers:
 - **Genuine FAILED** (exit≠0, not a wall TIMEOUT) → diagnose (read the first real traceback, often masked by
   the elastic summary) + a dated **`agent_logs/`** entry; recurring identical failures ≠ transient.
 - **RL collapse rule** (≥2 signals fire same step) → flag for cancel+salvage per `rl-agentic-job-cleanup`.
+- **New/untested RL → `monitor-rl-job-health` verdict.** When this tick deep-probed an unproven RL run (above),
+  act on its recommendation: **NO-KILL** → note it + the watch-signal that would flip it; **KILL** → it is one
+  of OUR OWN doomed/wedged jobs, so (with the standing kill-permission in mind) the supervisor cancels +
+  relaunches on the corrected setting per `rl-agentic-launch-iris`/`rl-*-launch-*`, and logs the probe + verdict
+  to a dated `agent_logs/` entry. Don't sit on a confirmed-garbage run for another 3h sweep.
 - **Eval** stall/zombie/instant-fail red-flags → act per `job_monitor_table.md` Eval section; **`DCAgent2/*`
   measurement runs are EXEMPT** (report as calibration, not production).
 

@@ -50,6 +50,7 @@ whole operation organized, and guard the secrets. Run this checklist to assume t
 6. **Conclude — stand up monitoring (in this order):**
    1. Invoke **`monitor-restore`** to (re-)create the 3-hour Jupiter+Leonardo sweep loop (it's session-only and lost on restart). Check for an existing one first (no duplicates).
    2. Run an **initial sweep now** via **`monitor-cron-sweep`** (render the status tables per `monitor-job-tables`, flag completions → cleanup skills, failures → diagnose+remediate) so the session starts from a known state instead of waiting up to 3 h for the first tick.
+   3. **For any RL job in a NEW/UNTESTED setting** (new config/geometry/model/image, a "debug" or "smoke-test" run, or the first launch after a code/config change), dispatch a subagent armed with **`monitor-rl-job-health`** on **every monitor tick** (and at the 15/30-min fresh-launch check-ins) — state-poll + table metrics are necessary but NOT sufficient to tell "progressing" from "silently dead." The subagent returns a **KILL/NO-KILL recommendation + evidence**; YOU own the kill decision (standing guardrail: never kill a RUNNING job without permission). Stable, proven-config RL runs only need the normal sweep — reserve the deep probe for the unproven ones.
 
 ## Canonical codebases — you own ground truth (non-delegable)
 

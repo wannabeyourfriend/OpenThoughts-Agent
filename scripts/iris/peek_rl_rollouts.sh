@@ -117,6 +117,14 @@ if mode == "count":
 elif mode == "listdirs":
     for d in dirs:
         print(d)
+elif mode == "listkeys":
+    # "<size> <trial-relative-key>" per object (size first; keys have no spaces, so
+    # the Mac splits on the first space). Used by `pull` to fetch + size-verify each object.
+    for page in c.get_paginator("list_objects_v2").paginate(Bucket=BUCKET, Prefix=PREFIX):
+        for o in page.get("Contents", []):
+            r = o["Key"][len(PREFIX):]
+            if r:
+                print(f"{o['Size']} {r}")
 elif mode == "download":
     dest = arg or "/tmp/peek_tj"
     n = 0
@@ -235,14 +243,68 @@ PYEOF
       { kubectl exec -n "$NS" "$POD" -c "$CONTAINER" -- tar cf - -C "$PARENT" "$BASE" 2>/dev/null | tar xf - -C "$DEST/"; } \
         || echo "[pull] WARN: trace_jobs tar returned nonzero (capture may be partial)" >&2
     else
-      echo "[pull] syncing trace_jobs from R2 ($S3_TJ) via rank-0 pod ..."
-      POD_TMP="/tmp/peek_tj_capture_$$"
-      kubectl exec -n "$NS" "$POD" -c "$CONTAINER" -- rm -rf "$POD_TMP" 2>/dev/null || true
-      NOBJ=$(r2_op download "$POD_TMP" 2>/dev/null | tail -1 | tr -dc '0-9' || true)
-      { kubectl exec -n "$NS" "$POD" -c "$CONTAINER" -- tar cf - -C "$POD_TMP" . 2>/dev/null | tar xf - -C "$DEST/trace_jobs/"; } \
-        || echo "[pull] WARN: trace_jobs tar-stream returned nonzero (capture may be partial)" >&2
-      kubectl exec -n "$NS" "$POD" -c "$CONTAINER" -- rm -rf "$POD_TMP" 2>/dev/null || true
-      echo "[pull]   R2 objects downloaded: ${NOBJ:-0}"
+      echo "[pull] downloading trace_jobs DIRECT from R2 ($S3_TJ) — Mac<-R2 via boto3 ..."
+      # Bulk artifacts download DIRECTLY from R2 to the Mac (boto3 download_file = native
+      # multipart + retries), NOT through `kubectl exec`: result.json can be 100s of MB and
+      # truncates over the exec/SPDY stream. The Mac has no marin-na creds of its own, so we
+      # lift the rank-0 pod's injected R2 creds (endpoint+key+secret) into THIS process's env
+      # only (never printed). R2 (Cloudflare) is internet-reachable and egress-free; force
+      # region=auto (the Mac's default AWS_REGION e.g. us-east-2 is rejected by R2).
+      PEEK_PY="${PEEK_PY:-$(dirname "$IRIS_BIN")/python}"
+      creds=$(kubectl exec -n "$NS" "$POD" -c "$CONTAINER" -- sh -c \
+        'printf "%s\n%s\n%s\n" "$AWS_ENDPOINT_URL" "$AWS_ACCESS_KEY_ID" "$AWS_SECRET_ACCESS_KEY"' 2>/dev/null | tr -d '\r')
+      R2_ENDPOINT=$(printf '%s\n' "$creds" | sed -n 1p)
+      R2_KEY=$(printf '%s\n' "$creds" | sed -n 2p)
+      R2_SECRET=$(printf '%s\n' "$creds" | sed -n 3p)
+      if [ -z "$R2_ENDPOINT" ] || [ -z "$R2_KEY" ] || [ -z "$R2_SECRET" ]; then
+        echo "[pull] WARN: could not lift R2 creds from pod; skipping trace_jobs download." >&2
+      else
+        AWS_ENDPOINT_URL="$R2_ENDPOINT" AWS_ACCESS_KEY_ID="$R2_KEY" AWS_SECRET_ACCESS_KEY="$R2_SECRET" \
+          AWS_REGION=auto AWS_DEFAULT_REGION=auto \
+          "$PEEK_PY" - "$S3_TJ" "$DEST/trace_jobs" "$DEST/.r2_failed.tsv" <<'PYEOF'
+import os, sys, boto3, botocore, concurrent.futures as cf
+from boto3.s3.transfer import TransferConfig
+s3url, dest, faillog = sys.argv[1], sys.argv[2], sys.argv[3]
+bucket, _, prefix = s3url[5:].partition("/"); prefix = prefix.rstrip("/") + "/"
+cfg = botocore.config.Config(region_name="auto", connect_timeout=15, read_timeout=120,
+                             retries={"max_attempts": 5, "mode": "standard"}, max_pool_connections=64)
+c = boto3.client("s3", endpoint_url=os.environ["AWS_ENDPOINT_URL"], config=cfg)
+tcfg = TransferConfig(multipart_threshold=16 * 1024**2, multipart_chunksize=16 * 1024**2,
+                      max_concurrency=4, use_threads=True)
+objs, total = [], 0
+for page in c.get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=prefix):
+    for o in page.get("Contents", []):
+        rel = o["Key"][len(prefix):]
+        if rel:
+            objs.append((o["Key"], rel, o["Size"])); total += o["Size"]
+print(f"[pull]   R2 objects to fetch: {len(objs)}  ({total/1e9:.1f} GB)", flush=True)
+fails = []
+def fetch(item):
+    key, rel, size = item
+    out = os.path.join(dest, rel); os.makedirs(os.path.dirname(out), exist_ok=True)
+    for _ in range(3):
+        try:
+            c.download_file(bucket, key, out, Config=tcfg)
+            if os.path.getsize(out) == size:
+                return True
+        except Exception:
+            pass
+    # A size mismatch is expected for objects a LIVE job is still writing — log, keep going.
+    fails.append((rel, size, os.path.getsize(out) if os.path.exists(out) else 0)); return False
+ok = 0
+with cf.ThreadPoolExecutor(max_workers=12) as ex:
+    for i, r in enumerate(ex.map(fetch, objs), 1):
+        ok += 1 if r else 0
+        if i % 1000 == 0:
+            print(f"[pull]   ... {i}/{len(objs)} done ({ok} verified)", flush=True)
+with open(faillog, "w") as f:
+    for rel, want, got in fails:
+        f.write(f"{rel}\twant={want}\tgot={got}\n")
+print(f"[pull]   R2 objects verified: {ok}/{len(objs)}  (size-mismatch/failed: {len(fails)})", flush=True)
+PYEOF
+        NFAIL=$([ -f "$DEST/.r2_failed.tsv" ] && wc -l < "$DEST/.r2_failed.tsv" | tr -d ' ' || echo 0)
+        [ "${NFAIL:-0}" -gt 0 ] && echo "[pull]   note: $NFAIL objects failed size-verify (usually live-job churn); see .r2_failed.tsv" >&2
+      fi
     fi
     N_TRIALS=$(ls -d "$DEST"/trace_jobs/*/ 2>/dev/null | wc -l | tr -d ' ')
     N_DONE=$(find "$DEST/trace_jobs" -name result.json 2>/dev/null | wc -l | tr -d ' ')
