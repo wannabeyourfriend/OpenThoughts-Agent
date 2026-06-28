@@ -389,6 +389,55 @@ def wait_for_nodes(ray_address: str, expected_nodes: int, timeout: int, rewrite_
 # ---------------------------------------------------------------------------
 
 
+def capture_termination_artifacts(rendezvous_dir: str | None, reason: str) -> None:
+    """On teardown, snapshot a FAST diagnostic summary to the rendezvous store
+    BEFORE the pod is reaped. Best-effort; never raises; bounded to finish inside
+    the k8s grace period.
+
+    WHY: an iris/k8s-level termination (ephemeral-storage EVICTION, cgroup OOM,
+    VRAM OOM) sends the controller a plain SIGTERM and leaves NOTHING in the iris
+    finelog — and the per-node Ray logs are deleted with the pod, so the real
+    cause is unrecoverable post-mortem (seen 2026-06-28, rl-q36-35b-w13fix: rank-0
+    EVICTED for ephemeral-storage>512Gi mid-training-step; no traceback anywhere,
+    k8s event TTL'd in ~1h). This persists disk-hogs + GPU mem + df + dmesg-OOM,
+    keyed by task id, to ``<rendezvous_dir>/term_artifacts/`` so the next probe
+    reads the true cause (disk vs VRAM-OOM vs RAM-OOM)."""
+    if not rendezvous_dir:
+        return
+    import subprocess as _sp
+
+    task_id = os.environ.get("IRIS_TASK_ID", "unknown").replace("/", "_")
+    ts = int(time.time())
+
+    def _run(cmd: str, timeout: int = 7) -> str:
+        try:
+            return _sp.run(cmd, shell=True, capture_output=True, text=True,
+                           timeout=timeout).stdout
+        except Exception as exc:  # noqa: BLE001 - best-effort
+            return f"<{cmd!r} failed: {exc}>"
+
+    summary = "\n".join([
+        f"=== TERMINATION ARTIFACT task={task_id} ts={ts} reason={reason} ===",
+        "--- df -h /tmp /dev/shm ---", _run("df -h /tmp /dev/shm 2>&1"),
+        "--- top /tmp disk hogs (ephemeral-storage eviction cause) ---",
+        _run("du -sh /tmp/* /tmp/ray/session*/logs /tmp/ray/session*/*spill* 2>/dev/null | sort -rh | head -25", 9),
+        "--- nvidia-smi (VRAM OOM cause) ---",
+        _run("nvidia-smi --query-gpu=index,memory.used,memory.total,utilization.gpu --format=csv 2>&1"),
+        "--- top RSS procs (host-RAM OOM cause) ---",
+        _run("ps -eo pid,rss,comm --sort=-rss 2>/dev/null | head -12"),
+        "--- dmesg OOM/kill tail ---",
+        _run("dmesg 2>/dev/null | grep -iE 'oom|killed process|out of memory|Xid' | tail -10"),
+    ])
+    try:
+        uri = f"{rendezvous_dir.rstrip('/')}/term_artifacts/{task_id}_{ts}.txt"
+        fs, path = _fs_and_path(uri)
+        with fs.open(path, "w") as f:
+            f.write(summary)
+        _log(f"[term-capture] wrote termination artifact -> {uri}")
+    except Exception as exc:  # noqa: BLE001 - still emit to finelog as fallback
+        _log(f"[term-capture] upload FAILED ({exc}); emitting inline:\n{summary}")
+
+
 def run_head(args: argparse.Namespace, train_argv: list[str]) -> int:
     num_tasks = _num_tasks()
     head_ip = _own_ip()
@@ -432,6 +481,9 @@ def run_head(args: argparse.Namespace, train_argv: list[str]) -> int:
 
     def _shutdown(signum, _frame) -> None:
         _log(f"Received signal {signum}; terminating training driver and stopping Ray...")
+        # Capture FIRST (before teardown mutates disk/GPU state) — a SIGTERM here is
+        # often a k8s eviction / OOM whose cause survives nowhere else.
+        capture_termination_artifacts(args.rendezvous_dir, f"signal {signum} (head rank 0)")
         try:
             os.killpg(os.getpgid(process.pid), signal.SIGTERM)
             process.wait(timeout=60)
@@ -449,6 +501,8 @@ def run_head(args: argparse.Namespace, train_argv: list[str]) -> int:
     signal.signal(signal.SIGTERM, _shutdown)
 
     exit_code = process.wait()
+    if exit_code != 0:
+        capture_termination_artifacts(args.rendezvous_dir, f"driver exit_code={exit_code} (head rank 0)")
     # Signal workers to unpark, then tear down.
     if args.rendezvous_dir and num_tasks > 1:
         _set_marker(args.rendezvous_dir, DONE_FILENAME)
@@ -484,6 +538,9 @@ def run_worker(args: argparse.Namespace) -> int:
 
     def _shutdown(signum, _frame) -> None:
         _log(f"Worker rank {rank} received signal {signum}; stopping Ray.")
+        # A SIGTERM on a worker node is often a k8s eviction/OOM of that node (it
+        # hosts the training actors' GPUs); capture its disk/GPU state before reap.
+        capture_termination_artifacts(args.rendezvous_dir, f"signal {signum} (worker rank {rank})")
         stop.set()
 
     signal.signal(signal.SIGINT, _shutdown)
