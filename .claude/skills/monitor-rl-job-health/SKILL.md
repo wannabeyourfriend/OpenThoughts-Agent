@@ -179,6 +179,25 @@ Then read the captured logs (§1) for **freshness + wedge signatures**:
   `rollout_train_prob_diff_mean` in the millions (outlier-dominated, normal). `opCount dead` is benign debug-token
   noise, not `EngineDeadError`.
 
+> **⚠️ THE COLOCATED-ENGINE DECEPTION — a wedged POLICY mesh that falsely reads ALIVE (learned 2026-06-28, BOTH
+> MoE-EP8 arms wedged ~1h apart, undetected for hours).** In a disaggregated/colocated RL job the vLLM
+> **inference engines + RolloutCoordinator are SEPARATE Ray actors** from the **policy FSDP mesh**. When the
+> POLICY mesh hangs in a NCCL collective (`ProcessGroupNCCL watchdog got stuck for 1800s` → SIGABRT on rank-0 →
+> gang wedges), the engines KEEP GENERATING — so **every cheap "liveness" signal LIES**: (a) the **state-poll**
+> still reads `running / pods=N / failure_count=0` (pods alive, just not computing); (b) the **wandb heartbeat
+> stays FRESH** (the engine/coordinator actors keep emitting system metrics — *wandb liveness is NOT policy-mesh
+> liveness*); (c) **GPU util reads HIGH (28–96%)** on the engine-colocated pods (engines busy-generating
+> rollouts no training step will ever consume). A util-only read MIS-diagnoses this as ALIVE-SLOW. **The three
+> signals that DON'T lie — check ALL of them every probe on any multi-mesh (FSDP×EP×CP) RL run, proactively, do
+> NOT wait for util to look wrong:**
+> 1. **Ray logs (authoritative for actor/worker death).** kubectl-exec rank-0 (`-c task`):
+>    `grep -iE 'died|SYSTEM_ERROR|connection error code 2|End of file|SIGABRT|Aborted|raylet.*fail|ActorDied' /tmp/ray/session_latest/logs/{raylet.*,python-core-*,worker-*.err}`. A `worker died … SYSTEM_ERROR … connection error code 2 … End of file` = the policy worker is DEAD (Ray may even respawn it and it re-hangs → a SECOND watchdog-stuck).
+> 2. **The NCCL watchdog in the finelog** — `ProcessGroupNCCL('s)? watchdog got stuck for <N> seconds` / `Fatal Python error: Aborted` / `WorkNCCL(SeqNum=…,OpType=…) ran for … before timing out` / the **`TCPStore … sendBytes failed … Broken pipe`** cascade across FSDP ranks. The **1800s watchdog makes a hang detectable within ~30 min of onset** — grepping this each probe is the FASTEST catch (we set `TORCH_NCCL_DUMP_ON_TIMEOUT` → a flight-recorder dump also lands; capture it before any kill).
+> 3. **Is the TRAINER/DRIVER log ADVANCING** (not just engine generation)? `mesh_fsdp` / `run_training` / `fwd_logprobs` / the step counter must MOVE; a frozen trainer + spinning engines = wedge. **Separate POLICY-mesh GPUs from the colocated ENGINE GPUs** — a wedged policy reads **0% on the policy ranks** even while engine GPUs show util (identify policy vs engine pods/GPUs from the placement; don't average them).
+> A `running / fresh-heartbeat / high-util` reading is **necessary-but-NOT-sufficient** for a multi-mesh RL job —
+> clear all three above before calling Gate A PASS. NB: this is a **NCCL-collective hang, NOT an OOM** (memory.peak
+> held ~35% when it bit) — rule OOM out, but never let a clean memory read *imply* liveness.
+
 **Gate A verdict:**
 - **DEAD / TERMINAL** (state-poll says failed/killed/absent, or 0 pods) → there's nothing to kill; report
   TERMINAL + the root-cause traceback + whether it's transient (relaunch-worthy) or deterministic.
