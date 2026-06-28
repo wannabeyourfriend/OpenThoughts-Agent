@@ -289,6 +289,102 @@ else:
 Also check `sandbox_trial_model_usage` (FK→models) the same way. Reads are always
 safe; the danger is exclusively delete/update.
 
+## Subskill: remove STALE UNPOPULATED PENDING evals (a DELETE — guardrailed)
+
+A launch creates a placeholder `sandbox_jobs` row (`Pending`, then `Started`) before the
+eval produces a score. When the run dies/never finishes, that placeholder lingers forever
+(no `Finished`, no `metrics`, no `stats`), clogging the table and the listener's dedup. This
+subskill removes **only** the dead placeholders we own, leaving live jobs and other users'
+rows untouched.
+
+**Schema facts that drive the filter** (verified against `schema/sandbox_jobs`):
+- Timestamps are `created_at` / `started_at` / `ended_at` / `submitted_at` — **there is NO
+  `updated_at`.** Use `created_at` for absolute age, and `started_at` (set when the job leaves
+  `Pending`) as the secondary recency gate.
+- **`n_trials` is the PLANNED trial count from config, NOT progress** — a brand-new placeholder
+  already has `n_trials=128`. Do **NOT** read `n_trials` as a "populated" signal.
+- The real "never populated" signals are **`metrics IS NULL`** (no score) **AND `stats IS NULL`**
+  (no per-trial progress). Empirically every `Pending`/`Started` row has BOTH null; a live job
+  that had begun scoring would have a non-null `stats`. (`ended_at` is also always null for these.)
+- **No table FKs `sandbox_jobs.id`** (checked the schema DDL): `sandbox_trial_model_usage` keys on
+  `trial_id`/`model_id`, not the job id. So deleting a `sandbox_jobs` row orphans nothing — the
+  cross-user risk is purely *deleting a row another user owns*, not breaking an FK.
+
+**A row qualifies for removal iff ALL hold:**
+1. `job_status IN ('Pending','Started')` — never `Finished`/a failure state.
+2. `metrics IS NULL` (no real accuracy via `get_metric`) **AND `stats IS NULL`** (never populated).
+3. `ended_at IS NULL` (didn't terminate into a recorded result).
+4. **Age > 36h:** `created_at` ≥ 36h ago **AND**, if `started_at` is set, `started_at` ≥ 36h ago
+   (whichever is more recent must still be older than 36h) — so a legitimately-RUNNING recent eval
+   (Pending/Started but <36h) is EXCLUDED.
+
+**Default-scope to OUR rows** (the re-eval/eval owners `feuer1` + `bfeuer00`). Stale rows owned by
+OTHER users (`zhuang1`, `richard.zhuang`, `penfever`, `benjaminfeuer`, …) are **REPORTED, never
+deleted** — the cross-user guardrail forbids touching another user's rows without authorization.
+
+**DRY-RUN first, then delete, then re-read.** Idempotent (scoped to `id` + `username`==owner).
+`STOP + surface` if any qualifying row has a non-null `stats`/`metrics` (ambiguous "never
+populated") rather than guess-deleting.
+
+```python
+import os
+from datetime import datetime, timezone, timedelta
+from supabase import create_client
+c = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_SERVICE_ROLE_KEY"])
+NOW = datetime.now(timezone.utc); CUTOFF_H = 36
+OURS = {"feuer1", "bfeuer00"}          # the re-eval/eval owners we may delete
+
+def age_h(ts):                          # hours since an ISO ts (None -> None)
+    return None if not ts else (NOW - datetime.fromisoformat(ts)).total_seconds()/3600
+
+def qualifies(r):
+    if r["job_status"] not in ("Pending", "Started"):       return False
+    if get_metric(r["metrics"]) is not None:                return False   # has a real score
+    if r["stats"] is not None:                              return False   # has progress -> not "never populated"
+    if r["ended_at"] is not None:                           return False   # terminated into a result
+    ca = age_h(r["created_at"]); sa = age_h(r["started_at"])
+    recent = min(x for x in (ca, sa) if x is not None)      # most-recent activity
+    return recent is not None and recent > CUTOFF_H         # older than 36h
+
+rows = c.table("sandbox_jobs").select(
+    "id,job_name,username,job_status,created_at,started_at,ended_at,n_trials,metrics,stats,model_id,benchmark_id"
+).in_("job_status", ["Pending", "Started"]).execute().data
+q = [r for r in rows if qualifies(r)]
+
+# Safety assert: nothing we matched may carry a real score/progress (never guess-delete)
+bad = [r for r in q if r["stats"] is not None or get_metric(r["metrics"]) is not None]
+assert not bad, f"STOP: {len(bad)} matched rows have stats/metrics — ambiguous, surface to supervisor"
+
+ours   = [r for r in q if r["username"] in OURS]
+others = [r for r in q if r["username"] not in OURS]
+from collections import Counter
+bm = {b["id"]: b["name"] for b in c.table("benchmarks").select("id,name").execute().data}
+mn = {m["id"]: m["name"] for m in c.table("models").select("id,name").execute().data}
+print(f"QUALIFY total={len(q)}  OURS={len(ours)}  OTHERS(report-only)={len(others)}")
+print("OURS by user:", Counter(r['username'] for r in ours))
+print("OTHERS by user:", Counter(r['username'] for r in others))
+for r in ours[:10]:                     # sample: id, user, model, benchmark, status, age
+    print(f"  {r['id']} | {r['username']} | {mn.get(r['model_id'],'?')[:40]} | "
+          f"{bm.get(r['benchmark_id'],'?')} | {r['job_status']} | {age_h(r['created_at']):.0f}h")
+
+# --- DELETE (ours only, idempotent, scoped id + username) — run AFTER reviewing the dry-run ---
+DELETE = False                          # flip to True to execute
+if DELETE:
+    for r in ours:
+        c.table("sandbox_jobs").delete().eq("id", r["id"]).eq("username", r["username"]) \
+         .in_("job_status", ["Pending", "Started"]).execute()
+    # re-read: confirm gone + that NO Finished/scored row was touched
+    left = c.table("sandbox_jobs").select("id").in_("id", [r["id"] for r in ours]).execute().data
+    fin  = c.table("sandbox_jobs").select("id").eq("job_status", "Finished") \
+            .in_("id", [r["id"] for r in ours]).execute().data
+    assert not left, f"{len(left)} of ours survived"; assert not fin, "touched a Finished row!"
+    print(f"DELETED {len(ours)} ours; OTHERS left for supervisor: {Counter(r['username'] for r in others)}")
+```
+
+> Cross-user FK pre-check is satisfied structurally (no table FKs `sandbox_jobs.id`) **and**
+> by scope (`username` IN OURS on both the match and the delete `.eq`). Other users' stale rows
+> are reported with counts, never deleted. Never raise `CUTOFF_H` to sweep more aggressively.
+
 ## Quick recipes
 
 - **"What are model X's ID/OOD scores?"** → `get_model_scores(stub)` → `set_stat(ID,…)`,
