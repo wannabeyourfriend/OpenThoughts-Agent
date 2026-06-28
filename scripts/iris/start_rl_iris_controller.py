@@ -314,25 +314,93 @@ def _ray_port_flags() -> list[str]:
     ]
 
 
-def ray_start_head(head_ip: str, ray_port: int) -> None:
+# --- R2 object-store spilling (added 2026-06-28) -----------------------------------
+# WHY: Ray spills its object store to /tmp/ray/session*/ray_spilled_objects on LOCAL
+# disk when plasma (~95GB) overflows. The fully-async RL generator over-produces
+# rollouts during the slow (~55-min) first training step, so the spill grows ~370 G/h
+# to >1.6 TB and the kubelet EVICTS rank-0 on its ephemeral-storage limit -> gang
+# bounce. CoreWeave/iris task pods have R2 (Cloudflare S3-compatible) creds + endpoint
+# in env (AWS_ENDPOINT_URL / AWS_*_KEY / AWS_REGION=auto), and boto3 honors
+# AWS_ENDPOINT_URL natively, so we redirect Ray's spill to s3://marin-na/... instead of
+# local disk. Validated 2026-06-28 in a running w13fix-r3 pod: with this exact config
+# Ray spilled 25 objects to R2 and 0 to /tmp (see ray._private.external_storage
+# ExternalStorageSmartOpenImpl, which does boto3.resource("s3") -> picks up the R2
+# endpoint from env). NOTE: requires boto3 in the rl env (baked into the gpu-rl image).
+# Set on BOTH head and worker: object spilling is per-raylet (node-local), the
+# smart_open backend appends "_<node_id>" to the prefix so nodes never collide.
+# Gate: OT_AGENT_RAY_SPILL_TO_R2 (default "1" = on); set to "0" to fall back to local
+# /tmp spilling. Spill prefix is derived per-job from --rendezvous-dir so runs and
+# task-retries within a run share one prefix without colliding across jobs.
+RAY_SPILL_BUFFER_SIZE = 100 * 1024 * 1024  # 100MB multipart buffer (>=1MB recommended for remote)
+
+
+def _ray_spill_uri(rendezvous_dir: str | None) -> str | None:
+    """Per-job R2 spill prefix derived from the rendezvous dir, or None if R2 spilling
+    is disabled / no rendezvous dir is available (single-node runs with no s3 dir fall
+    back to local /tmp spilling)."""
+    if os.environ.get("OT_AGENT_RAY_SPILL_TO_R2", "1") != "1":
+        return None
+    if not rendezvous_dir or not rendezvous_dir.startswith("s3://"):
+        return None
+    # SELF-GATE on boto3: Ray's smart_open spill backend imports boto3 directly, and it
+    # is NOT in the gpu-rl image's rl env until the Dockerfile.gpu-rl boto3 add is baked.
+    # On an image without boto3, return None -> clean fallback to local /tmp spill (no
+    # `ray start` crash). R2 spilling AUTO-ACTIVATES once the rebuilt image ships boto3.
+    try:
+        import boto3  # noqa: F401
+    except ImportError:
+        _log("WARNING: boto3 missing -> Ray R2 object-spilling DISABLED (local /tmp fallback); "
+             "rebuild gpu-rl image with boto3 (Dockerfile.gpu-rl) to enable. This run risks "
+             "the ephemeral-storage eviction if its object store spills > the --disk limit.")
+        return None
+    return f"{rendezvous_dir.rstrip('/')}/ray_spill"
+
+
+def _ray_spill_flags(spill_uri: str | None) -> list[str]:
+    """Build the `--system-config` flag that redirects Ray object spilling to R2.
+
+    The object_spilling_config VALUE is itself a JSON STRING (double-encoded), per Ray's
+    system-config schema. min_spilling_size=0 forces every overflow to spill remotely
+    rather than buffering small objects locally first."""
+    if not spill_uri:
+        return []
+    spilling_config = json.dumps(
+        {
+            "type": "smart_open",
+            "params": {"uri": spill_uri, "buffer_size": RAY_SPILL_BUFFER_SIZE},
+        }
+    )
+    system_config = json.dumps(
+        {"object_spilling_config": spilling_config, "min_spilling_size": 0}
+    )
+    return [f"--system-config={system_config}"]
+
+
+def ray_start_head(head_ip: str, ray_port: int, spill_uri: str | None = None) -> None:
     cmd = [
         _ray_bin(), "start", "--head",
         f"--node-ip-address={head_ip}",
         f"--port={ray_port}",
         "--dashboard-host=0.0.0.0",
         *_ray_port_flags(),
+        *_ray_spill_flags(spill_uri),
     ]
+    if spill_uri:
+        _log(f"Ray object spilling -> R2 prefix {spill_uri} (no local /tmp spill)")
     _log(f"Starting Ray HEAD: {' '.join(cmd)}")
     subprocess.run(cmd, check=True)
 
 
-def ray_start_worker(head_ip: str, ray_port: int, node_ip: str) -> None:
+def ray_start_worker(head_ip: str, ray_port: int, node_ip: str, spill_uri: str | None = None) -> None:
     cmd = [
         _ray_bin(), "start",
         f"--address={head_ip}:{ray_port}",
         f"--node-ip-address={node_ip}",
         *_ray_port_flags(),
+        *_ray_spill_flags(spill_uri),
     ]
+    if spill_uri:
+        _log(f"Ray object spilling -> R2 prefix {spill_uri} (no local /tmp spill)")
     _log(f"Starting Ray WORKER: {' '.join(cmd)}")
     subprocess.run(cmd, check=True)
 
@@ -450,7 +518,7 @@ def run_head(args: argparse.Namespace, train_argv: list[str]) -> int:
     if num_tasks > 1 and args.rendezvous_dir:
         clear_rendezvous(args.rendezvous_dir)
 
-    ray_start_head(head_ip, ray_port)
+    ray_start_head(head_ip, ray_port, spill_uri=_ray_spill_uri(args.rendezvous_dir))
 
     if num_tasks > 1:
         if not args.rendezvous_dir:
@@ -530,7 +598,7 @@ def run_worker(args: argparse.Namespace) -> int:
     ray_port = int(payload.get("port", args.ray_port))
     ray_address = f"{head_ip}:{ray_port}"
 
-    ray_start_worker(head_ip, ray_port, node_ip)
+    ray_start_worker(head_ip, ray_port, node_ip, spill_uri=_ray_spill_uri(args.rendezvous_dir))
     wait_for_nodes(ray_address, num_tasks, args.cluster_join_timeout)
     _log(f"Worker rank {rank} joined Ray cluster at {ray_address}; parking until the head finishes.")
 
