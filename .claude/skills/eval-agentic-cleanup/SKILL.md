@@ -48,6 +48,23 @@ Output one row per eval: `✅/⚠️` per check + the single recommended next ac
 remediation** to confirm it flipped to ✅ (that's what makes the whole skill idempotent — the audit is the
 source of truth, the remediations below are the only side-effecting parts and you run them deliberately).
 
+> **⚠️ <90% COMPLETE → RESUME, do NOT REGISTER (and DE-REGISTER if it slipped through).** Check 4 is the gate: an eval
+> whose VALID-trial count is **< ~90%** of the planned `n_rep × benchmark_size` (e.g. swebench-100=300, tb2=267, dev_set_v2=300)
+> is **INCOMPLETE** — it must be **RESUMED to completion** (the Check-4 resume below), **NOT registered.** A partial score on the
+> leaderboard is worse than no score — it silently MIS-RANKS the model. So **never run §1's register/upload on a <90% eval**, and
+> never treat a job that terminated (TIMEOUT/CANCELLED) at <90% as "done to clean up." **If the eval was AUTO-registered while
+> still <90%** — a lingering `Pending`/`Started` row, OR a prematurely-`Finished` partial row the auto-harvest wrote — **DE-REGISTER
+> it: delete that ONE row** so it doesn't pollute the leaderboard; it re-registers cleanly when the resume finishes. (≥90% / a
+> ~99% tail-short is fine to finalize + register normally.)
+>
+> **🔑 The SAME (model × benchmark) pair can have MULTIPLE rows in `sandbox_jobs`** — a `Pending` + a `Finished`, reruns, a
+> resume that minted a new row, sibling `model_id`s, AND other users' rows. **Before you delete/de-register ANYTHING, query ALL
+> rows for that pair and disambiguate by `created_at` TIMESTAMP and `username`:** delete ONLY the specific partial/stale row **you
+> own** (`assert username` ∈ your usernames — feuer1/bfeuer00/penfever/benjaminfeuer; scope the delete to `id`+`username`). **NEVER
+> delete a complete (≥90% `Finished`) row, a newer good row, or ANY other user's row** because a partial sibling exists — that is
+> exactly the cross-user mutation that broke `zhuang1`'s eval jobs (2026-05-26). Skip a candidate whose slurm job is still RUNNING
+> (a live eval or an in-flight resume). When you can't tell which row is the partial → **STOP and surface, do not guess.**
+
 ### Check 4 — counting VALID trials (parse, never file-count) — STANDARD report element
 Trial dirs live at `eval_jobs/eval-<safe_model>_<safe_dataset>/<task>__<id>/result.json` (depth-1 under the
 run dir; the run-dir-root `result.json` is the aggregate — exclude it via the `*/` glob). Each per-trial
