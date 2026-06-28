@@ -685,12 +685,22 @@ patterns:
   # dp = gpus_per_node // tp = 4 // 4 = 1 → NO --data-parallel-size, avoiding the
   # broken DPLBAsyncMPClient path entirely. This unblocks the gptlong/tezos/fresh/
   # gptlong_continue/nemotron Tier-1 32B family (all pattern-matched, no exact entry).
+  #
+  # --enforce-eager (added 2026-06-28): with TP=4 + gpu_mem_util 0.9 on the 64GB
+  # A100 node, vLLM's FULL_AND_PIECEWISE CUDA-graph capture (51 piecewise + 35 full
+  # graphs) OOMs at the tail of capture — engine-core init + weight load + KV alloc
+  # (39.8 GiB, 19.9x concurrency @ 32k) all SUCCEED, then `torch.AcceleratorError:
+  # CUDA error: out of memory` in capture_model() kills a worker (jobs 48022043/etc,
+  # all 16 relaunched legs, identical). enforce-eager skips graph capture entirely,
+  # eliminating the capture-time OOM (mirrors the SERA-32B paper-parity entries,
+  # which already serve eager). Decode is slightly slower but the 32B 16x timeout
+  # multiplier absorbs it; correctness > a few % serve throughput.
   - match: "(?i)32[Bb]"
     trust_remote_code: true
     tensor_parallel_size: 4
     max_model_len: 32768
     swap_space: 32
-    extra_args: "--enable-prefix-caching"
+    extra_args: "--enable-prefix-caching --enforce-eager"
 
   - match: "131k|-lc$"
     trust_remote_code: true
