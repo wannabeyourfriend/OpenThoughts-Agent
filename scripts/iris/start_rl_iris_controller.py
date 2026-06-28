@@ -326,8 +326,14 @@ def _ray_port_flags() -> list[str]:
 # Ray spilled 25 objects to R2 and 0 to /tmp (see ray._private.external_storage
 # ExternalStorageSmartOpenImpl, which does boto3.resource("s3") -> picks up the R2
 # endpoint from env). NOTE: requires boto3 in the rl env (baked into the gpu-rl image).
-# Set on BOTH head and worker: object spilling is per-raylet (node-local), the
-# smart_open backend appends "_<node_id>" to the prefix so nodes never collide.
+# Set on the HEAD ONLY. `object_spilling_config` lives in Ray's `_system_config`, which
+# Ray REJECTS on a worker `ray start --address=...` ("System config parameters can only be
+# set on the head node" -> the worker's ray start exits 1 -> the coscheduled gang dies; this
+# bit both MoE relaunches 2026-06-28, the first runs on the boto3 image where the spill URI
+# was non-None on workers). The head's config propagates cluster-wide via GCS, and each
+# worker raylet still spills its OWN objects per-node — the smart_open backend appends
+# "_<node_id>" to the prefix at spill time so nodes never collide. So head-only is BOTH
+# required (Ray forbids it on workers) and sufficient (config + per-node suffix propagate).
 # Gate: OT_AGENT_RAY_SPILL_TO_R2 (default "1" = on); set to "0" to fall back to local
 # /tmp spilling. Spill prefix is derived per-job from --rendezvous-dir so runs and
 # task-retries within a run share one prefix without colliding across jobs.
@@ -445,16 +451,19 @@ def ray_start_head(head_ip: str, ray_port: int, spill_uri: str | None = None) ->
 
 
 def ray_start_worker(head_ip: str, ray_port: int, node_ip: str, spill_uri: str | None = None) -> None:
+    # NOTE: do NOT pass _ray_spill_flags here — `--system-config` is head-only in Ray
+    # (see the R2-spill block comment). The head's object_spilling_config propagates to
+    # this worker's raylet via GCS; the worker still spills its own objects per-node.
     cmd = [
         _ray_bin(), "start",
         f"--address={head_ip}:{ray_port}",
         f"--node-ip-address={node_ip}",
         *_ray_port_flags(),
         *_ray_mem_flags(),
-        *_ray_spill_flags(spill_uri),
     ]
     if spill_uri:
-        _log(f"Ray object spilling -> R2 prefix {spill_uri} (no local /tmp spill)")
+        _log(f"Ray object spilling -> R2 prefix {spill_uri} (cluster config from head; "
+             f"this worker spills per-node, no local /tmp spill)")
     _log(f"Starting Ray WORKER: {' '.join(cmd)}")
     subprocess.run(cmd, check=True)
 
