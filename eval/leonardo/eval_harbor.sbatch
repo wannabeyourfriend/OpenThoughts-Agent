@@ -69,6 +69,41 @@ fi
 SHORT_MODEL=$(echo "$MODEL" | awk -F'/' '{print $NF}')
 scontrol update JobId=$SLURM_JOB_ID Name="eval_${SHORT_MODEL}" 2>/dev/null || true
 
+# --- Served-model-name alias for over-long HF names (FIX 2026-06-28) -----------
+# harbor's validate_hosted_vllm_model_config (llms/utils.py) rejects any
+# hosted_vllm model whose `/`-separated segment exceeds 64 chars
+# (_HOSTED_VLLM_MODEL_PATTERN = ^[A-Za-z0-9._-]{1,64}$). Long exp-* runs (e.g.
+# laion/exp-syh-r2egym-askllm-constrained_glm_4-7_traces_jupiter_cleaned-exp-
+# gfi-swesmith-random-fi, basename 80+ chars) fail FAST at terminus-2 LiteLLM
+# init: "hosted_vllm model names must be ... 1-64 characters" → 0 trials, exit 1
+# (job 48009912). vLLM's --model is the LOAD path (the real HF repo) and
+# --served-model-name is the API NAME harbor calls — they need not match the repo
+# id. So when any segment of $MODEL is too long, we serve it under a SHORTENED,
+# deterministic alias and point harbor at that alias. The real weights still load
+# from $MODEL; only the API-facing name changes. Common case (every segment ≤64):
+# SERVED_MODEL = $MODEL byte-for-byte (no behavior change).
+SERVED_MODEL="$MODEL"
+_NEEDS_ALIAS=0
+while IFS= read -r _seg; do
+    if [ "${#_seg}" -gt 64 ]; then _NEEDS_ALIAS=1; fi
+done < <(echo "$MODEL" | tr '/' '\n')
+if [ "$_NEEDS_ALIAS" = "1" ]; then
+    # Deterministic 8-hex suffix off the full name keeps the alias stable across
+    # relaunches/resumes (same $MODEL -> same alias) and collision-safe. Org kept
+    # as the first segment; basename truncated to fit 64 with a "-<hash>" tail.
+    _HASH=$(printf '%s' "$MODEL" | sha1sum | cut -c1-8)
+    _ORG=$(echo "$MODEL" | awk -F'/' 'NF>1{print $1}')
+    # Truncate the basename to 64 - 9 (for "-<8hex>") = 55 chars, then append hash.
+    _BASE_TRUNC=$(printf '%s' "$SHORT_MODEL" | cut -c1-55)
+    if [ -n "$_ORG" ] && [ "${#_ORG}" -le 64 ]; then
+        SERVED_MODEL="${_ORG}/${_BASE_TRUNC}-${_HASH}"
+    else
+        # org itself over-long (rare) -> collapse to a single short segment.
+        SERVED_MODEL="${_BASE_TRUNC}-${_HASH}"
+    fi
+    echo "[served-name-alias] MODEL='$MODEL' has a >64-char segment -> serving under alias '$SERVED_MODEL' (real weights still load from \$MODEL)"
+fi
+
 echo "=============================================="
 echo "Leonardo Eval Harbor"
 echo "=============================================="
@@ -357,7 +392,9 @@ export HF_HUB_OFFLINE=1  # Prevent further network access during vLLM startup
 
 echo "Starting vLLM server for model: $MODEL"
 source "$DCFT/eval/build_vllm_cmd.sh"
-build_vllm_cmd "$SERVE_PYTHON_BIN" "$MODEL" "$GPU_MEMORY_UTIL"
+# 4th arg = the API-facing served-model-name (an ALIAS when $MODEL has a >64-char
+# segment; otherwise == $MODEL). vLLM loads weights from --model "$MODEL".
+build_vllm_cmd "$SERVE_PYTHON_BIN" "$MODEL" "$GPU_MEMORY_UTIL" "$SERVED_MODEL"
 
 # ==============================================================================
 # Build model_info for hosted_vllm (harbor #339 hard-requires it; see Jupiter
@@ -636,11 +673,40 @@ fi
 
 echo "[DEBUG] EXTRA_HARBOR_ARGS=$EXTRA_HARBOR_ARGS"
 echo "[DEBUG] Full harbor command:"
-echo "  harbor jobs start -p $DATASET_PATH --n-concurrent $N_CONCURRENT --agent terminus-2 --model hosted_vllm/$MODEL --env daytona ... $EXTRA_HARBOR_ARGS"
+echo "  harbor jobs start -p $DATASET_PATH --n-concurrent $N_CONCURRENT --agent terminus-2 --model hosted_vllm/$SERVED_MODEL --env daytona ... $EXTRA_HARBOR_ARGS"
 
 # Check if a previous job dir exists for this run tag (for resume)
 if [ -d "$RUN_DIR" ] && [ -f "$RUN_DIR/config.json" ]; then
     echo "Found existing job dir, resuming: $RUN_DIR"
+    # --- Refresh api_base in config.json to the LIVE serve node before resume ---
+    # `harbor jobs resume` has NO --agent-kwarg override (verified: cli/jobs.py
+    # resume() loads config.json into JobConfig verbatim — no kwarg merge). A
+    # same-run_tag job that resumes on a NEW SLURM node would otherwise reuse the
+    # PRIOR run's api_base baked into config.json (agents[].kwargs.api_base),
+    # dialing the DEAD predecessor node -> every LLM call fails "Cannot connect to
+    # host". Rewrite api_base to THIS allocation's MASTER_ADDR so resume dials the
+    # live node. (Local file op — no proxychains needed. TACC parity, 2026-06-28.)
+    NEW_API_BASE="http://${MASTER_ADDR}:8000/v1"
+    echo "Refreshing config.json api_base -> $NEW_API_BASE"
+    $PYTHON_BIN - "$RUN_DIR/config.json" "$NEW_API_BASE" <<'PY'
+import json, sys
+cfg_path, new_api_base = sys.argv[1], sys.argv[2]
+with open(cfg_path) as f:
+    cfg = json.load(f)
+changed = False
+for agent in cfg.get("agents", []):
+    kw = agent.get("kwargs")
+    if isinstance(kw, dict) and kw.get("api_base") != new_api_base:
+        print(f"  agent api_base {kw.get('api_base')!r} -> {new_api_base!r}")
+        kw["api_base"] = new_api_base
+        changed = True
+if changed:
+    with open(cfg_path, "w") as f:
+        json.dump(cfg, f, indent=2)
+    print("  config.json updated")
+else:
+    print("  api_base already current; no change")
+PY
     proxied harbor jobs resume \
         -p "$RUN_DIR" \
         --filter-error-type EnvironmentStartTimeoutError \
@@ -652,7 +718,7 @@ else
         -p "$DATASET_PATH" \
         --n-concurrent "$N_CONCURRENT" \
         --agent terminus-2 \
-        --model "hosted_vllm/$MODEL" \
+        --model "hosted_vllm/$SERVED_MODEL" \
         --env "daytona" \
         --agent-kwarg "api_base=http://${MASTER_ADDR}:8000/v1" \
         --agent-kwarg "key=fake_key" \

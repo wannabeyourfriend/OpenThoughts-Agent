@@ -26,9 +26,15 @@
 # ==============================================================================
 
 build_vllm_cmd() {
-    local python_bin="${1:?Usage: build_vllm_cmd <python_bin> <model> <gpu_mem_util>}"
+    local python_bin="${1:?Usage: build_vllm_cmd <python_bin> <model> <gpu_mem_util> [served_name]}"
     local model="${2:?Missing model}"
     local gpu_mem_util="${3:-0.95}"
+    # Optional 4th arg: the API-facing --served-model-name. vLLM's --model is the
+    # LOAD path (HF repo / local dir); --served-model-name is the name clients
+    # (harbor/litellm) address. They need not match — callers shorten the served
+    # name when the real repo id has a >64-char segment that harbor's hosted_vllm
+    # validator rejects (see eval/leonardo/eval_harbor.sbatch). Defaults to $model.
+    local served_name="${4:-$model}"
 
     # Read overrides from env (set by listener via sbatch --export)
     local tp="${EVAL_VLLM_TENSOR_PARALLEL_SIZE:-4}"
@@ -48,7 +54,7 @@ build_vllm_cmd() {
         "$python_bin" -m vllm.entrypoints.openai.api_server
         --model "$model"
         --host 0.0.0.0 --port "${VLLM_PORT:-8000}"
-        --served-model-name "$model"
+        --served-model-name "$served_name"
         --tensor-parallel-size "$tp"
         --gpu-memory-utilization "$gpu_mem_util"
         --disable-custom-all-reduce
@@ -109,6 +115,9 @@ build_vllm_cmd() {
 
     # Log what we built
     echo "vLLM command config:"
+    if [ "$served_name" != "$model" ]; then
+        echo "  served-model-name='$served_name' (ALIAS; load path --model='$model')"
+    fi
     echo "  TP=$tp, DP=${dp:-1}, swap=$swap_space, max_model_len=${max_model_len:-auto}"
     echo "  trust_remote_code=${trust_remote_code:-no}"
     echo "  tool_call_parser=${tool_call_parser:-none}"

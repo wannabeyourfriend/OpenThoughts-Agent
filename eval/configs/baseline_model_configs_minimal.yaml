@@ -673,9 +673,21 @@ patterns:
     hf_overrides: '{"rope_scaling":{"rope_type":"yarn","factor":4.0,"original_max_position_embeddings":32768}}'
     extra_args: "--enable-prefix-caching"
 
+  # 32B serve geometry = TP=4 / DP=1 (was TP=2, which on a 4-GPU node the listener
+  # node-fills to TP=2/DP=2 → vLLM --data-parallel-size 2). The DP=2 path crashes
+  # deterministically at vLLM engine-core init on Leonardo's otagent vLLM build
+  # (DPLBAsyncMPClient → wait_for_engine_startup → "Engine core initialization
+  # failed. Failed core proc(s): {}"; confirmed jobs 48009185 / 48020392, and the
+  # earlier nemotron leg). It is NOT model-artifact-specific — it hits ANY 32B
+  # served at TP=2/DP=2 here. TP=4 fits a 32B on Leonardo's 4×A100-64GB node
+  # (~65GB bf16 / 4 = ~16GB/GPU, ample KV headroom at 32k; Qwen3-32B's 64 attn /
+  # 8 KV heads divide cleanly by 4) and, being the whole node, the listener sets
+  # dp = gpus_per_node // tp = 4 // 4 = 1 → NO --data-parallel-size, avoiding the
+  # broken DPLBAsyncMPClient path entirely. This unblocks the gptlong/tezos/fresh/
+  # gptlong_continue/nemotron Tier-1 32B family (all pattern-matched, no exact entry).
   - match: "(?i)32[Bb]"
     trust_remote_code: true
-    tensor_parallel_size: 2
+    tensor_parallel_size: 4
     max_model_len: 32768
     swap_space: 32
     extra_args: "--enable-prefix-caching"
