@@ -127,7 +127,10 @@ DEFAULT_CLUSTER = "cw-us-east-02a"
 # (use the immutable :gpu-rl-<gitsha> tag's digest, never the floating :gpu-rl).
 DEFAULT_RL_DOCKER_IMAGE = (
     "ghcr.io/open-thoughts/openthoughts-agent"
-    "@sha256:f9b8beb8d29496edead3669c8db5024792f9cf76df5adb412bcb48e0c7e9c7c0"
+    # gpu-rl-81045a29 — adds boto3 to the rl env so Ray's smart_open object-spilling
+    # can land on R2 (the ephemeral-storage-eviction fix). Same vLLM-fork/torch/flash-attn
+    # /MarinSkyRL as the prior f9b8beb8 image; only boto3 changed. boto3 1.43.36 verified.
+    "@sha256:648199885a1e35cebef029ab2993d527d88d3a2c7f3b30c1313990c81452c99e"
 )
 DEFAULT_GPU_VARIANT = "H100"
 DEFAULT_GPUS_PER_NODE = 8           # gd-8xh100ib-i128 = 8x H100-80GB + IB
