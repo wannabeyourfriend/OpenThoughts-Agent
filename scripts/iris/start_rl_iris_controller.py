@@ -376,6 +376,58 @@ def _ray_spill_flags(spill_uri: str | None) -> list[str]:
     return [f"--system-config={system_config}"]
 
 
+# --- Ray cgroup-aware memory (added 2026-06-28) ------------------------------------
+# WHY: in a memory-cgroup-limited pod, Ray can read the HOST's physical RAM (~2 TB via
+# /proc/meminfo) instead of the --memory cgroup limit, and size its plasma object store
+# at the default ~30% of that (~600 GB). On top of FSDP `cpu_offload`'s params+optimizer
+# (also host RAM, OUTSIDE Ray's accounting) + the first training step's activations, that
+# overran the 1400 GiB container limit -> the OOM killer SIGKILLed an FSDP worker ->
+# NCCL-watchdog (1800s) gang death. Proven byte-exact 2026-06-28 on the 30B/35B MoE arms
+# (rank-0 cgroup memory.peak == memory.max == 1400 GiB). Fix: read the container's cgroup
+# limit and pass it to `ray start` as --memory, and BOUND the plasma store so it can't
+# balloon off a misread host figure — leaving the bulk of host RAM for cpu_offload.
+RAY_OBJECT_STORE_CAP_GIB = 96  # bounded plasma; default can be ~30% of *detected* RAM (huge if host is misread)
+
+
+def _cgroup_mem_limit_bytes() -> int | None:
+    """The container's memory cgroup limit in bytes (cgroup v2 then v1), or None if
+    unreadable / unlimited (so callers fall back to Ray's own detection for --memory)."""
+    for path in ("/sys/fs/cgroup/memory.max",                    # cgroup v2
+                 "/sys/fs/cgroup/memory/memory.limit_in_bytes"):  # cgroup v1
+        try:
+            raw = open(path).read().strip()
+        except OSError:
+            continue
+        if raw in ("max", ""):           # v2 unlimited
+            return None
+        try:
+            v = int(raw)
+        except ValueError:
+            continue
+        if v <= 0 or v > (1 << 62):      # v1 "unlimited" sentinel is a near-2^63 value
+            return None
+        return v
+    return None
+
+
+def _ray_mem_flags() -> list[str]:
+    """Make `ray start` cgroup-aware (see the block comment above). Always bounds the
+    plasma object store; additionally pins --memory to the cgroup limit when readable."""
+    store_cap = RAY_OBJECT_STORE_CAP_GIB * (1 << 30)
+    limit = _cgroup_mem_limit_bytes()
+    flags: list[str] = []
+    if limit:
+        store_cap = min(store_cap, limit // 8)  # never let the store exceed ~1/8 of the container
+        flags.append(f"--memory={limit}")
+        _log(f"Ray cgroup-aware: --memory={limit} (~{limit / (1 << 30):.0f}GiB cgroup limit), "
+             f"--object-store-memory={store_cap} (~{store_cap / (1 << 30):.0f}GiB plasma cap)")
+    else:
+        _log(f"Ray cgroup-aware: no cgroup mem limit readable; bounding "
+             f"--object-store-memory={store_cap} (~{store_cap / (1 << 30):.0f}GiB) only")
+    flags.append(f"--object-store-memory={store_cap}")
+    return flags
+
+
 def ray_start_head(head_ip: str, ray_port: int, spill_uri: str | None = None) -> None:
     cmd = [
         _ray_bin(), "start", "--head",
@@ -383,6 +435,7 @@ def ray_start_head(head_ip: str, ray_port: int, spill_uri: str | None = None) ->
         f"--port={ray_port}",
         "--dashboard-host=0.0.0.0",
         *_ray_port_flags(),
+        *_ray_mem_flags(),
         *_ray_spill_flags(spill_uri),
     ]
     if spill_uri:
@@ -397,6 +450,7 @@ def ray_start_worker(head_ip: str, ray_port: int, node_ip: str, spill_uri: str |
         f"--address={head_ip}:{ray_port}",
         f"--node-ip-address={node_ip}",
         *_ray_port_flags(),
+        *_ray_mem_flags(),
         *_ray_spill_flags(spill_uri),
     ]
     if spill_uri:
