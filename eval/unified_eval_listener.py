@@ -418,6 +418,7 @@ import re
 import subprocess
 import sys
 import time
+import warnings
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -785,6 +786,14 @@ def get_vllm_env_overrides(hf_model: str, configs: Dict[str, Dict]) -> Dict[str,
     )
     if cfg.get("max_model_len") is not None:
         env["EVAL_VLLM_MAX_MODEL_LEN"] = str(cfg["max_model_len"])
+    # OPTIONAL per-model serve-output-token budget. Mirrors max_model_len exactly: when the
+    # registry pins `max_output_tokens` on a model/variant, forward it as EVAL_MAX_OUTPUT_TOKENS;
+    # ABSENT -> do NOT set the env var, so the sbatch :-16384 default applies unchanged. This is
+    # the single registry home for a model's serve-token budget (fixes the implicit-16k-default
+    # gap for thinking models). Not EVAL_VLLM_* — it is forwarded as its own EVAL_MAX_OUTPUT_TOKENS
+    # (the same env the --max-output-tokens CLI sets), consumed by eval/*/eval_harbor.sbatch.
+    if cfg.get("max_output_tokens") is not None:
+        env["EVAL_MAX_OUTPUT_TOKENS"] = str(cfg["max_output_tokens"])
     if cfg.get("swap_space") is not None:
         env["EVAL_VLLM_SWAP_SPACE"] = str(cfg["swap_space"])
     if cfg.get("trust_remote_code"):
@@ -4522,20 +4531,45 @@ def build_config(args: argparse.Namespace) -> ListenerConfig:
             "NOT apply; models needing a non-default serve env (e.g. qwen3_5_moe "
             "-> eval-qwen35) will fall back to the default env and likely crash.")
 
-    # Shared model-config registry (decoupling refactor). OFF unless the CLI flag is set or
-    # the cluster config carries `use_model_registry: true`. Path + hardware_profile resolve
-    # CLI > cluster-config > sensible default. When OFF, the legacy baseline path above is
-    # authoritative and the registry is never loaded (G1 flag-off no-op).
-    use_model_registry = bool(
-        args.use_model_registry if args.use_model_registry is not None
-        else _cc("use_model_registry", False)
-    )
+    # Shared model-config registry (decoupling refactor) — DEFAULT-ON as of the Stage-4 cutover.
+    # The registry is now the default resolution path for ALL clusters; resolution is
+    # CLI > cluster-config > DEFAULT-ON. The legacy --baseline-model-configs path STILL works as
+    # an explicit per-launch override (G5 backward-compat), but a CLI --baseline-model-configs is
+    # treated as an explicit OPT-OUT of the registry and emits a DeprecationWarning. A cluster
+    # config's `baseline_model_configs:` key is the benign legacy fallback (no warning) and is
+    # superseded whenever the registry is on. Path + hardware_profile resolve CLI > cluster-config
+    # > sensible default.
+    legacy_override = bool(args.baseline_model_configs)  # explicit CLI flag = opt-out
+    if legacy_override and args.use_model_registry:
+        log("WARNING: both --use-model-registry and --baseline-model-configs given; "
+            "the explicit --baseline-model-configs override wins (legacy path).")
+    if args.use_model_registry is not None:
+        use_model_registry = bool(args.use_model_registry)
+    elif legacy_override:
+        # Explicit legacy CLI flag, no explicit --use-model-registry -> honor the legacy path.
+        use_model_registry = False
+    else:
+        # DEFAULT-ON: registry is the default for every cluster (a cluster yaml that omits the
+        # key still gets the registry). A cluster may still pin `use_model_registry: false`.
+        use_model_registry = bool(_cc("use_model_registry", True))
+    if legacy_override and not use_model_registry:
+        # G5 deprecation window: the forked per-cluster baseline files still load, with a warning.
+        warnings.warn(
+            "--baseline-model-configs is DEPRECATED: the shared model-config registry "
+            "(eval/configs/model_configs.yaml) is now the default for all clusters; this flag "
+            "will be removed. Migrate the model's entry into the registry "
+            "(name@<profile> / variants: + cluster hardware_profile).",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        log("DEPRECATED: --baseline-model-configs is superseded by the shared model-config "
+            "registry (eval/configs/model_configs.yaml) — this flag will be removed.")
     model_registry_path = (
         args.model_registry or _cc("model_registry") or "eval/configs/model_configs.yaml"
     )
     hardware_profile = args.hardware_profile or _cc("hardware_profile")
     if use_model_registry:
-        log(f"Model-config registry ENABLED: {model_registry_path} "
+        log(f"Model-config registry ENABLED (default-on): {model_registry_path} "
             f"(hardware_profile={hardware_profile or 'default'}) — "
             f"superseding the legacy baseline-model-configs path for this launch.")
 

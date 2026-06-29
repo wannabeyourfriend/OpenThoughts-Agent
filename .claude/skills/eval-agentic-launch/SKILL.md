@@ -133,7 +133,6 @@ sbatch_script / hardware / conda_envs / paths, so you no longer pass `--sbatch-s
 export PYTHONPATH="$PWD:${PYTHONPATH:-}"   # $PWD = the OpenThoughts-Agent repo root
 python eval/unified_eval_listener.py \
   --cluster-config eval/clusters/<cluster>.yaml \
-  --baseline-model-configs eval/configs/baseline_model_configs_minimal.yaml \
   --preset <preset> \
   --require-priority-list --priority-file eval/lists/<file>.txt \
   --config-yaml dcagent_eval_config_no_override.yaml \
@@ -142,30 +141,33 @@ python eval/unified_eval_listener.py \
   --once --verbose 2>&1 | tee eval/<cluster>/logs/<preset>_listener_$(date +%Y%m%d_%H%M%S).log
 ```
 Per-model serve settings (`conda_env` — e.g. `eval-qwen35` for qwen3_5 — `tensor_parallel_size`,
-`data_parallel_size`, `max_model_len`, `limit_mm_per_prompt`) come from `--baseline-model-configs`;
-the preset forwards `--config-yaml dcagent_eval_config_no_override.yaml` so harbor inherits per-task
-sandbox sizes (no per-cluster config). **Thinking is per-model authoritative** —
-sourced from the baseline model config (`eval/configs/baseline_model_configs_minimal.yaml`),
-where each thinking-capable model carries `agent_kwargs: [extra_body={…enable_thinking:true}]`;
+`data_parallel_size`, `max_model_len`, `limit_mm_per_prompt`, and the optional `max_output_tokens`
+serve-token budget) now come from the **shared model-config registry**
+(`eval/configs/model_configs.yaml`), which is the **DEFAULT** resolution path for every cluster
+(no flag needed). The cluster yaml's `hardware_profile:` (e.g. `gh200` on TACC/Vista) selects the
+per-cluster recipe; a model that diverges on intrinsic fields per cluster is a flat
+`name@<profile>` standalone entry, a pure hardware delta is a `variants: {<profile>: {…}}` block.
+The preset forwards `--config-yaml dcagent_eval_config_no_override.yaml` so harbor inherits per-task
+sandbox sizes (no per-cluster config). **Thinking is per-model authoritative** — sourced from the
+registry, where each thinking-capable model carries `agent_kwargs: [extra_body={…enable_thinking:true}]`;
 presets do NOT carry thinking, so a preset can never force thinking on a non-thinking
 model. There is **no `--enable-thinking` flag**. To override a model's resolved
 kwargs, pass `--agent-kwarg 'extra_body={"chat_template_kwargs":{"enable_thinking":true}}'`
-(precedence: CLI `--agent-kwarg` > per-model baseline > preset).
+(precedence: CLI `--agent-kwarg` > per-model registry > preset).
 
-> **🚧 `--baseline-model-configs` is LOAD-BEARING — omitting it SILENTLY drops every per-model override.**
-> The flag has **no built-in default**; `load_baseline_model_configs(None)` returns `{}` with no error and
-> (older code) no log line, so the serve falls back to the cluster's DEFAULT conda env (e.g. `otagent` =
-> vanilla vLLM 0.16 / transformers 4.x, `TP=1`, `trust_remote_code=no`) and **none** of `conda_env` /
-> `tensor_parallel_size` / `data_parallel_size` / `max_model_len` / `limit_mm_per_prompt` apply. This is not
-> hypothetical: on 2026-06-25 six **Qwen3.5/3.6-35B-A3B** legs were launched without the flag → fell back to
-> `otagent` → `ValidationError: model type qwen3_5_moe not recognized by installed Transformers` (the
-> `eval-qwen35` env was fine; the flag was missing). **ALWAYS pass `--baseline-model-configs
-> eval/configs/baseline_model_configs_minimal.yaml`** for any model needing a non-default serve env (all
-> qwen3_5/3.6, the tmax models, anything with a per-model `conda_env`/TP/DP override). Mitigation now in
-> place (still pass it explicitly): the listener resolves it **CLI flag → cluster-config `baseline_model_configs:`
-> key → None** and **WARNs loudly** when neither is set; `eval/clusters/leonardo.yaml` carries a top-level
-> default. Confirm it loaded: the listener logs `Loaded N baseline model config(s)` + `Using conda env
-> '<env>' for <model>` — if you DON'T see those, the override was dropped and you're serving on the default env.
+> **✅ Per-model serve overrides come from the registry BY DEFAULT — `--baseline-model-configs` is now a DEPRECATED optional override.**
+> As of the Stage-4 cutover the shared registry (`eval/configs/model_configs.yaml`) is the default
+> resolution path for ALL clusters, so omitting `--baseline-model-configs` is now **correct** — the
+> registry supplies every per-model `conda_env` / `tensor_parallel_size` / `data_parallel_size` /
+> `max_model_len` / `limit_mm_per_prompt` (the cluster's `hardware_profile:` picks the right variant /
+> `name@profile` recipe). The earlier failure mode (omitting the flag → fell back to vanilla `otagent`
+> → `model type qwen3_5_moe not recognized`, 2026-06-25) **no longer applies**: the registry, not a CLI
+> flag, now carries those entries. Confirm it loaded: the listener logs `Model-config registry ENABLED
+> (default-on): …` + `Loaded model registry: N model config(s)` + `Using conda env '<env>' for <model>`.
+> Passing `--baseline-model-configs <file>` STILL works (loads via the legacy per-cluster baseline file)
+> but is **deprecated** — it emits a `DeprecationWarning` + a `DEPRECATED: --baseline-model-configs is
+> superseded by the shared model-config registry …` log line, and is treated as an explicit opt-OUT of
+> the registry for that launch. Migrate any model into the registry instead.
 
 > **🚧 Concurrent-submit guard — ONE listener enqueues many legs; do NOT fire N concurrent `--once`
 > processes.** A refill of several legs (e.g. all flawed-summ legs, or the three ID legs across a list)
@@ -208,8 +210,8 @@ with what actually ran (a 32B's 16.0 row dedups against 16.0, an 8B's against 2.
 1. **Explicit `--harbor-config` / preset `harbor_config`** — overrides the size selection for **every**
    model (use it for 131k context / `openhands_*` installed-harness needs). Its `timeout_multiplier` is
    used as-is.
-2. **Per-model entry** — a `timeout_multiplier:` under a model (or pattern) in
-   `eval/configs/baseline_model_configs_minimal.yaml`. Overrides the selected config's value. Use this for models whose
+2. **Per-model entry** — a `timeout_multiplier:` under a model (or pattern) in the shared registry
+   `eval/configs/model_configs.yaml`. Overrides the selected config's value. Use this for models whose
    **name has no size token** (e.g. `laion/GLM-4_7-swesmith-…` is really a Qwen3-8B → add an entry with
    `timeout_multiplier: 2.0`) or for out-of-band sizes you want a deliberate value for.
 3. **Size-based config selection** — the table above, derived from the name.
@@ -217,7 +219,7 @@ with what actually ran (a 32B's 16.0 row dedups against 16.0, an 8B's against 2.
 **Rule for sizes the table doesn't name:** ~28–42B → `_32b.yaml` (16×) and everything else → the base
 default (2×) are applied automatically (1.5B is *covered* by the base 2× config; 80B / 70B fall to the base
 default with a logged note). To give an out-of-band model a deliberate multiplier, add a per-model entry in
-`eval/configs/baseline_model_configs_minimal.yaml`. For a one-off manual `harbor jobs start`, point `--config` at
+the shared registry `eval/configs/model_configs.yaml`. For a one-off manual `harbor jobs start`, point `--config` at
 `dcagent_eval_defaults.yaml` (8B) / `dcagent_eval_defaults_32b.yaml` (32B) (see `docs/EVAL_GUIDE.md`).
 
 ## 4. VERIFY the launch — the 15-min infra sanity check (do NOT trust "RUNNING")

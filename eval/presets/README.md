@@ -24,7 +24,7 @@ Each file is a flat mapping. `load_presets()` returns
 | `n_concurrent` | int | Harbor `--n-concurrent`. |
 | `error_threshold` | int | Max invalid errors before abort. (SLURM-only) |
 | `vllm_max_retries` | int | vLLM startup retries. (SLURM/serve-only) |
-| `agent_kwargs` | list[str] | Generic extra harbor agent-kwargs as `key=value` strings, each forwarded as `--agent-kwarg key=value`. **Thinking is NOT set here** — it is **per-model authoritative**, sourced from the baseline model config (`eval/configs/baseline_model_configs_minimal.yaml`), so a preset can never force thinking on a non-thinking model. Affects results. |
+| `agent_kwargs` | list[str] | Generic extra harbor agent-kwargs as `key=value` strings, each forwarded as `--agent-kwarg key=value`. **Thinking is NOT set here** — it is **per-model authoritative**, sourced from the shared model-config registry (`eval/configs/model_configs.yaml`, the default path), so a preset can never force thinking on a non-thinking model. Affects results. |
 | `agent_parser` | str | Harbor agent-kwarg `parser=<value>` (e.g. `xml`). Affects results. |
 | `auto_snapshot` | bool | Pre-build Daytona snapshots. (SLURM-only) |
 | `config_yaml` | str | Listener eval config YAML. (SLURM-only) |

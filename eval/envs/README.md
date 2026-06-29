@@ -82,12 +82,12 @@ If you don't run installed-agent fires, you don't need these patches.
 
 | Env | Use for |
 |---|---|
-| **`otagent-fix`** (transformers 4.x) | Default for everything. Terminus-2 reg eval, OOD presets, swe-agent / openhands text-tools / mini-swe-agent / aider installed-agent fires. Most baseline-yaml entries default to this env. |
+| **`otagent-fix`** (transformers 4.x) | Default for everything. Terminus-2 reg eval, OOD presets, swe-agent / openhands text-tools / mini-swe-agent / aider installed-agent fires. Most registry entries default to this env. |
 | **`otagent2-fix`** (transformers 5.x) | Models that don't load on transformers 4.x: axolotl-trained Qwen3 finetunes (the `extra_special_tokens` list crash), Qwen3.5 family. Also required for Pattern C scaffolds that use `--reasoning-parser-plugin` (Nemotron-Nano, Qwen3-Coder native) — needs vLLM ≥ 0.17. |
 
-Per-model env selection lives in
-[`../configs/baseline_model_configs_minimal.yaml`](../configs/baseline_model_configs_minimal.yaml)
-under each model's `conda_env:` field. The listener reads it and sets
+Per-model env selection lives in the shared registry
+[`../configs/model_configs.yaml`](../configs/model_configs.yaml)
+(the default resolution path) under each model's `conda_env:` field. The listener reads it and sets
 `PYTHON_BIN` for the sbatch from your cluster config's
 `conda_envs:` map.
 

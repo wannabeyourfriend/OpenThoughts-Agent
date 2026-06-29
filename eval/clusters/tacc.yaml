@@ -36,14 +36,16 @@ cluster_name: tacc
 # bf16 ~64GB fits the 96GB GH200 at TP=1 with ~30GB KV headroom at 32k).
 baseline_model_configs: eval/clusters/tacc_baseline_model_configs.yaml
 
-# Model-config decoupling (Stage 3): resolve per-model serve config from the SHARED
-# registry under the Vista hardware profile. The Vista-divergent models live in the
-# registry as flat name@gh200 STANDALONE entries (no inheritance — they differ from the
-# Leonardo/Jupiter base on INTRINSIC fields: terminus-2 Pattern D = no parsers, otagent
-# fork-vLLM = no eval-qwen35 conda_env / no DP), and the gh200 pattern fallbacks force
-# TP=1. The 65k launch selects hardware_profile gh200-65k (overriding only what differs —
-# tmax-9b max_model_len 65536) via --hardware-profile on the command line. The legacy
-# baseline_model_configs key above stays valid (G5) until the Stage-4 cutover.
+# Model-config decoupling: resolve per-model serve config from the SHARED registry under the
+# Vista hardware profile. As of the Stage-4 cutover the registry is DEFAULT-ON for every cluster
+# (use_model_registry is now redundant but kept explicit); hardware_profile is what makes TACC
+# select its gh200 recipe. The Vista-divergent models live in the registry as flat name@gh200
+# STANDALONE entries (no inheritance — they differ from the Leonardo/Jupiter base on INTRINSIC
+# fields: terminus-2 Pattern D = no parsers, otagent fork-vLLM = no eval-qwen35 conda_env / no
+# DP), and the gh200 pattern fallbacks force TP=1. The 65k launch selects hardware_profile
+# gh200-65k (overriding only what differs — tmax-9b max_model_len 65536) via --hardware-profile
+# on the command line. The legacy baseline_model_configs key above stays valid as a DEPRECATED
+# fallback (G5).
 use_model_registry: true
 model_registry: eval/configs/model_configs.yaml
 hardware_profile: gh200

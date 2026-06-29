@@ -13,12 +13,13 @@
 # old `OpenThoughts-Agent` checkout.
 cluster_name: jupiter_eval
 
-# Model-config decoupling (Stage 2): resolve per-model serve config from the SHARED
-# registry. Jupiter's 4-GPU GH200 node uses the registry's multi-GPU BASE entries (no
-# hardware variant), so hardware_profile is left default. Jupiter has no
-# baseline_model_configs key (it loaded eval/configs/baseline_model_configs_minimal.yaml
-# via the CLI flag) — the registry now carries the same content. The legacy CLI flag still
-# works (G5) until the Stage-4 cutover; use_model_registry supersedes it when set.
+# Model-config decoupling: resolve per-model serve config from the SHARED registry. As of the
+# Stage-4 cutover the registry is DEFAULT-ON for every cluster (this key is now redundant but
+# kept explicit). Jupiter's 4-GPU GH200 node uses the registry's multi-GPU BASE entries (no
+# hardware variant), so hardware_profile is left default. Jupiter has no baseline_model_configs
+# key (it loaded eval/configs/baseline_model_configs_minimal.yaml via the CLI flag) — the
+# registry now carries the same content. The legacy --baseline-model-configs CLI flag still
+# works as a DEPRECATED override (G5); the registry supersedes it.
 use_model_registry: true
 model_registry: eval/configs/model_configs.yaml
 hardware_profile: default

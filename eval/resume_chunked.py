@@ -104,7 +104,6 @@ def build_listener_argv(
         "--cluster-config", args.cluster_config,
         "--preset", preset,
         "--priority-file", str(priority_file),
-        "--baseline-model-config", args.baseline_model_config,
         "--conda-env", args.conda_env,
         "--tp-size", str(args.tp_size),
         "--dp-size", str(args.dp_size),
@@ -123,6 +122,11 @@ def build_listener_argv(
         "--once",
         "--force-reeval",
     ]
+    # Per-model serve config now resolves from the shared registry (default-on) — the resume
+    # rides it automatically. Pass --baseline-model-config ONLY if the caller explicitly set the
+    # (deprecated) legacy override; otherwise leave it off so the registry default applies.
+    if args.baseline_model_config:
+        cmd += ["--baseline-model-config", args.baseline_model_config]
     # Pass --resume-error-threshold only when explicitly set, so we don't shadow
     # the listener's own default. Setting this to -1 promotes DONE dirs (with
     # infra_errors=0) into DONE_WITH_ERRORS classification, which is the only
@@ -132,7 +136,7 @@ def build_listener_argv(
     if args.resume_error_threshold is not None:
         cmd += ["--resume-error-threshold", str(args.resume_error_threshold)]
     # Pass agent kwargs through to the listener. Thinking is resolved PER-MODEL
-    # from the baseline config (the listener looks up each model's agent_kwargs),
+    # from the shared model-config registry (the listener looks up each model's agent_kwargs),
     # so the resume reproduces the original fire's per-model thinking on its own —
     # do NOT inject a thinking kwarg here (a default would override the per-model
     # config and force thinking on non-thinking models). Only forward an explicit
@@ -230,7 +234,10 @@ def main() -> int:
 
     # Listener flag pass-through (must match the original fire to avoid config.json conflict)
     p.add_argument("--cluster-config", default="eval/clusters/jupiter.yaml")
-    p.add_argument("--baseline-model-config", default="eval/configs/baseline_model_configs_minimal.yaml")
+    # DEPRECATED legacy override. Default OFF -> the resume rides the shared model-config
+    # registry (eval/configs/model_configs.yaml), which is now the default for all clusters.
+    # Set it only to force the legacy per-cluster baseline file (emits a DeprecationWarning).
+    p.add_argument("--baseline-model-config", default=None)
     p.add_argument("--conda-env", default="otagent-fix")
     p.add_argument("--tp-size", type=int, required=True)
     p.add_argument("--dp-size", type=int, default=2)
@@ -239,9 +246,9 @@ def main() -> int:
     p.add_argument("--agent-kwarg", action="append", default=None,
                    metavar="KEY=VALUE",
                    help="Extra harbor agent kwarg KEY=VALUE (repeatable), passed through to "
-                        "the listener. Thinking is resolved per-model from the baseline "
-                        "config, so leave this unset for a normal resume; pass it only to "
-                        "override a model's resolved agent-kwargs.")
+                        "the listener. Thinking is resolved per-model from the shared "
+                        "model-config registry, so leave this unset for a normal resume; pass "
+                        "it only to override a model's resolved agent-kwargs.")
     p.add_argument("--slurm-partition", default="booster")
     p.add_argument("--slurm-time", default="11:59:00")
     p.add_argument("--max-resume-count", type=int, default=1,

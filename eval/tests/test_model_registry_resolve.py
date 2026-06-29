@@ -70,6 +70,14 @@ models:
   # standalone for a DIFFERENT profile only — must be ignored when active profile != that.
   "org/other-only@some-other-profile":
     tensor_parallel_size: 8
+  # max_output_tokens forwarding: a model that PINS a serve-output-token budget. Absent on every
+  # other entry -> EVAL_MAX_OUTPUT_TOKENS unset (sbatch :-16384 default). A variant may pin it too.
+  "org/pinned-budget":
+    tensor_parallel_size: 2
+    max_output_tokens: 32768
+    variants:
+      gh200:
+        max_output_tokens: 8192
 
 patterns:
   - match: "(?i)32[Bb]"
@@ -245,6 +253,23 @@ def main() -> int:
     env_70 = uel.get_vllm_env_overrides("unlisted/Foo-70B", cfg_g3)
     check("profile-scoped pattern fires (gh200, 70B name -> TP=1 from its pattern)",
           env_70["EVAL_VLLM_TENSOR_PARALLEL_SIZE"] == "1", repr(env_70))
+
+    # --- max_output_tokens forwarding (Stage-4) ---
+    # ABSENT on a normal entry -> EVAL_MAX_OUTPUT_TOKENS NOT set (sbatch :-16384 default applies).
+    uel._CLUSTER_CONFIG = {"hardware": {"gpus_per_node": 8}}
+    cfg_mot, _ = _load(None)
+    env_absent = uel.get_vllm_env_overrides("org/no-variant", cfg_mot)
+    check("max_output_tokens absent -> EVAL_MAX_OUTPUT_TOKENS NOT set (sbatch default)",
+          "EVAL_MAX_OUTPUT_TOKENS" not in env_absent, repr(env_absent))
+    # SET on the entry -> forwarded as EVAL_MAX_OUTPUT_TOKENS=<v> (mirrors max_model_len).
+    env_set = uel.get_vllm_env_overrides("org/pinned-budget", cfg_mot)
+    check("max_output_tokens set -> EVAL_MAX_OUTPUT_TOKENS=32768",
+          env_set.get("EVAL_MAX_OUTPUT_TOKENS") == "32768", repr(env_set))
+    # A variant may PIN a different budget; the active gh200 variant wins per-field.
+    cfg_mot_g, _ = _load("gh200")
+    env_var_set = uel.get_vllm_env_overrides("org/pinned-budget", cfg_mot_g)
+    check("max_output_tokens variant override -> EVAL_MAX_OUTPUT_TOKENS=8192 (gh200)",
+          env_var_set.get("EVAL_MAX_OUTPUT_TOKENS") == "8192", repr(env_var_set))
 
     print(f"\n== {len(_failures)} failure(s) ==" if _failures else "\n== ALL TESTS PASS ==")
     return 1 if _failures else 0

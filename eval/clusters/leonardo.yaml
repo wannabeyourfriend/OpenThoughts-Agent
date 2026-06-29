@@ -33,11 +33,12 @@ cluster_name: leonardo
 # bug was purely the missing config flag.
 baseline_model_configs: eval/configs/baseline_model_configs_minimal.yaml
 
-# Model-config decoupling (Stage 2): resolve per-model serve config from the SHARED
-# registry instead of the legacy baseline file above. Leonardo's 4-GPU A100 node uses
-# the registry's multi-GPU BASE entries (no hardware variant), so hardware_profile is
-# left default. The baseline_model_configs key above stays valid (legacy fallback) until
-# the Stage-4 cutover (G5). When use_model_registry is true it supersedes the baseline path.
+# Model-config decoupling: resolve per-model serve config from the SHARED registry instead
+# of the legacy baseline file above. As of the Stage-4 cutover the registry is DEFAULT-ON for
+# every cluster (this key is now redundant but kept explicit). Leonardo's 4-GPU A100 node uses
+# the registry's multi-GPU BASE entries (no hardware variant), so hardware_profile is left
+# default. The baseline_model_configs key above stays valid as a DEPRECATED legacy fallback
+# (G5); the registry supersedes it.
 use_model_registry: true
 model_registry: eval/configs/model_configs.yaml
 hardware_profile: default

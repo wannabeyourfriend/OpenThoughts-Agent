@@ -22,6 +22,23 @@
 #   merge). No matching variant -> base entry unchanged. Precedence:
 #       exact+variant[profile] > exact > group > pattern -> size-default
 #   (a strict superset of today's exact/group/pattern chain).
+#
+# DEFAULT-ON (Stage-4 cutover): this registry is now the DEFAULT resolution path for ALL
+#   clusters. The legacy --baseline-model-configs flag still works as an explicit per-launch
+#   override but is DEPRECATED (emits a DeprecationWarning); migrate any model into this file
+#   instead (a `name@<profile>` standalone for an intrinsic divergence, or a `variants:` block
+#   for a pure hardware delta + the cluster's `hardware_profile`).
+#
+# max_output_tokens (OPTIONAL, model-intrinsic): the per-model serve-OUTPUT-token budget. When
+#   set on a model entry (or a variant), the listener forwards it as EVAL_MAX_OUTPUT_TOKENS,
+#   exactly mirroring how `max_model_len` -> EVAL_VLLM_MAX_MODEL_LEN. ABSENT (the default for
+#   EVERY model here) -> the env var is NOT set, so the sbatch :-16384 default applies unchanged.
+#   This is the single home to PIN a model's generation budget (e.g. a thinking model that needs
+#   a larger-than-16384 budget); pinning a specific model is a parity-changing follow-up, NOT a
+#   no-op — do it deliberately. Example:
+#       "org/some-thinking-model":
+#         max_model_len: 65536
+#         max_output_tokens: 32768   # -> EVAL_MAX_OUTPUT_TOKENS=32768 (overrides the 16384 default)
 
 models:
   # SA-SWE-32B: authors use custom SkyRL OHCodeActAgent (engine-direct, not
