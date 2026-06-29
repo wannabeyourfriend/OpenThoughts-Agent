@@ -707,11 +707,24 @@ if changed:
 else:
     print("  api_base already current; no change")
 PY
+    # Derive --filter-error-type flags from the canonical INFRA_ERROR_TYPES set
+    # (database/unified_db/infra_errors.py) at runtime — single source of truth,
+    # shared with the listener's resume manager, so the resume filter can never
+    # drift from the set the listener counts. Reuses the same $PYTHON_BIN +
+    # PYTHONPATH (incl. $DCFT repo root) the listener/uploads use.
+    _RESUME_FILTER_STR="$(proxied $PYTHON_BIN -m database.unified_db.infra_errors --filter-flags)" || {
+        echo "[resume] FATAL: failed to derive --filter-error-type flags from INFRA_ERROR_TYPES (bad PYTHONPATH?). Refusing to resume — a zero-filter resume would silently change scope." >&2
+        exit 1
+    }
+    if [ -z "${_RESUME_FILTER_STR// /}" ]; then
+        echo "[resume] FATAL: empty --filter-error-type flags from INFRA_ERROR_TYPES; refusing to resume with no infra filter." >&2
+        exit 1
+    fi
+    read -ra RESUME_FILTER_FLAGS <<< "$_RESUME_FILTER_STR"
+    echo "[resume] infra filter flags (from INFRA_ERROR_TYPES): ${RESUME_FILTER_FLAGS[*]}"
     proxied harbor jobs resume \
         -p "$RUN_DIR" \
-        --filter-error-type EnvironmentStartTimeoutError \
-        --filter-error-type DaytonaError \
-        --filter-error-type DaytonaRateLimitError
+        "${RESUME_FILTER_FLAGS[@]}"
 else
     echo "Starting new job"
     proxied harbor jobs start \
