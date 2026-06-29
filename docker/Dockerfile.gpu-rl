@@ -335,6 +335,28 @@ RUN uv venv --python 3.12 $RL_ENV_DIR
 
 ENV TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST}"
 
+# =============================================================================
+# PIN THE RL-STAGE DEPS, not just the wheels (the gpu-rl-00220aac regression).
+# -----------------------------------------------------------------------------
+# The vLLM-fork + flash-attn WHEELS above are ABI-pinned, but the rl-env
+# `uv pip install`s below were NOT version-locked, so a later rebuild silently
+# re-resolved DIFFERENT transitive versions of NCCL-affecting deps (the
+# torch-bundled `nvidia-nccl-cu12`, `ray`, the `nvidia-*-cu12` CUDA libs). That
+# drift REGRESSED the 32-rank `default_pg` NCCL rendezvous (rebuild
+# gpu-rl-00220aac @sha256:65b07cec died at build_models/init_weight_sync_state:
+# `DistBackendError: store->get('0') wait timeout after 1200000ms`).
+#
+# UV_CONSTRAINT makes EVERY `uv pip install` below honor the frozen known-good
+# version set (docker/rl_env_constraints.txt = `uv pip freeze` of the
+# last-known-good image gpu-rl-81045a29 @sha256:648199...c99e). uv applies a
+# constraint only by NAME, so the `--no-deps` wheel/git installs (flash-attn,
+# vllm, torchtitan, harbor — deliberately absent from the constraints file) are
+# untouched; only the resolved RL deps are locked. To intentionally bump a dep,
+# regenerate the constraints file from the new good image's freeze — NEVER let
+# the transitive set float. See .claude/skills/build-gpu-rl-image-iris/SKILL.md
+# ("PIN THE RL-STAGE DEPS, not just the wheels").
+ENV UV_CONSTRAINT=/opt/openthoughts/docker/rl_env_constraints.txt
+
 # Bring in the WHEELS from the `wheels` alias (= prebuilt-wheelhouse by default,
 # or wheel-builder when built with --build-arg WHEEL_SOURCE=wheel-builder). The
 # default path requires docker/build_wheels.sh to have populated the wheelhouse.
@@ -442,6 +464,10 @@ RUN . $RL_ENV_DIR/bin/activate && \
         "harbor[daytona] @ git+https://github.com/marin-community/harbor.git@${HARBOR_COMMIT}" && \
     python -c "import harbor, importlib.metadata as m; print('baked harbor', m.version('harbor'))" && \
     echo "baked harbor commit: ${HARBOR_COMMIT}"
+
+# Clear the rl-stage dep pin so it does not leak into runtime `uv` invocations
+# (the constraints file is build-time only; the env is unset for the final image).
+ENV UV_CONSTRAINT=""
 
 # Set up PYTHONPATH for MarinSkyRL.
 # `/sky/workdir` (runtime-synced source) is prepended by the launcher so it wins;
