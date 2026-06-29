@@ -2,7 +2,6 @@
   "_meta": {
     "coverage": {
       "jupiter": {
-        "baseline_file": "eval/configs/baseline_model_configs_minimal.yaml",
         "gpus_per_node": 4,
         "n_exact_entries": 43,
         "n_pairs_resolved": 992,
@@ -12,10 +11,10 @@
           "(?i)32[Bb]": 260,
           "(?i)qwen3\\.5": 4,
           "131k|-lc$": 35
-        }
+        },
+        "source": "registry[default]"
       },
       "leonardo": {
-        "baseline_file": "eval/configs/baseline_model_configs_minimal.yaml",
         "gpus_per_node": 4,
         "n_exact_entries": 43,
         "n_pairs_resolved": 992,
@@ -25,10 +24,10 @@
           "(?i)32[Bb]": 260,
           "(?i)qwen3\\.5": 4,
           "131k|-lc$": 35
-        }
+        },
+        "source": "registry[default]"
       },
       "tacc": {
-        "baseline_file": "eval/clusters/tacc_baseline_model_configs.yaml",
         "gpus_per_node": 1,
         "n_exact_entries": 6,
         "n_pairs_resolved": 978,
@@ -36,10 +35,10 @@
         "pattern_hits": {
           "(?i)32[Bb]": 276,
           ".*": 696
-        }
+        },
+        "source": "legacy:eval/clusters/tacc_baseline_model_configs.yaml"
       },
       "tacc-65k": {
-        "baseline_file": "eval/clusters/tacc_baseline_model_configs_65k.yaml",
         "gpus_per_node": 1,
         "n_exact_entries": 3,
         "n_pairs_resolved": 978,
@@ -47,7 +46,8 @@
         "pattern_hits": {
           "(?i)32[Bb]": 276,
           ".*": 699
-        }
+        },
+        "source": "legacy:eval/clusters/tacc_baseline_model_configs_65k.yaml"
       }
     },
     "n_eval_list_names": 968,
@@ -8899,7 +8899,7 @@
         "conda_env": "otagent2-fix",
         "env": {
           "EVAL_VLLM_DATA_PARALLEL_SIZE": "2",
-          "EVAL_VLLM_EXTRA_ARGS": "--reasoning-parser-plugin /Users/benjaminfeuer/Documents/OpenThoughts-Agent/eval/configs/nano_v3_reasoning_parser.py --chat-template /Users/benjaminfeuer/Documents/OpenThoughts-Agent/eval/configs/nemotron_chat_template.jinja --enable-prefix-caching --override-generation-config {\"temperature\":0.6,\"top_p\":0.95}",
+          "EVAL_VLLM_EXTRA_ARGS": "--reasoning-parser-plugin /__DCFT__/eval/configs/nano_v3_reasoning_parser.py --chat-template /__DCFT__/eval/configs/nemotron_chat_template.jinja --enable-prefix-caching --override-generation-config {\"temperature\":0.6,\"top_p\":0.95}",
           "EVAL_VLLM_MAX_MODEL_LEN": "32768",
           "EVAL_VLLM_REASONING_PARSER": "nano_v3",
           "EVAL_VLLM_SWAP_SPACE": "32",
@@ -18072,7 +18072,7 @@
         "conda_env": "otagent2-fix",
         "env": {
           "EVAL_VLLM_DATA_PARALLEL_SIZE": "2",
-          "EVAL_VLLM_EXTRA_ARGS": "--reasoning-parser-plugin /Users/benjaminfeuer/Documents/OpenThoughts-Agent/eval/configs/nano_v3_reasoning_parser.py --chat-template /Users/benjaminfeuer/Documents/OpenThoughts-Agent/eval/configs/nemotron_chat_template.jinja --enable-prefix-caching --override-generation-config {\"temperature\":0.6,\"top_p\":0.95}",
+          "EVAL_VLLM_EXTRA_ARGS": "--reasoning-parser-plugin /__DCFT__/eval/configs/nano_v3_reasoning_parser.py --chat-template /__DCFT__/eval/configs/nemotron_chat_template.jinja --enable-prefix-caching --override-generation-config {\"temperature\":0.6,\"top_p\":0.95}",
           "EVAL_VLLM_MAX_MODEL_LEN": "32768",
           "EVAL_VLLM_REASONING_PARSER": "nano_v3",
           "EVAL_VLLM_SWAP_SPACE": "32",

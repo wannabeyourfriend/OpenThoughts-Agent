@@ -38,8 +38,13 @@ from pathlib import Path
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
-# Pin DCFT so the nemotron entry's ${DCFT} in extra_args expands identically every run.
-os.environ.setdefault("DCFT", str(_REPO_ROOT))
+# Pin DCFT to a FIXED, location-independent sentinel so the nemotron entry's ${DCFT} in
+# extra_args expands identically regardless of WHERE the harness runs (repo root vs a git
+# worktree). Using the repo root made the golden path-dependent (a worktree checkout expands
+# ${DCFT} to a different absolute path and spuriously fails --check); a stable sentinel keeps
+# the resolved env byte-comparable everywhere. os.environ (not setdefault) so an inherited
+# DCFT can't perturb the golden.
+os.environ["DCFT"] = "/__DCFT__"
 
 import yaml  # noqa: E402
 
