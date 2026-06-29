@@ -1,15 +1,21 @@
 ---
-name: monitor-restore-iris-cron
-description: Re-register the every-3-hours Iris job-monitor cron (status check + datagen auto-rescue/keep-2-in-flight) if it has been lost. Covers BOTH the marin TPU cluster and the CoreWeave GPU cluster (cw-us-east-02a). Use at the start of a new session, after a restart, or when the user asks to restore/check the datagen-eval monitoring cron.
+name: monitor-restore-iris
+description: Re-register the every-3-hours Iris job-monitor cron (status check + datagen auto-rescue/keep-2-in-flight) if it has been lost. Primarily the marin TPU datagen/eval jobs ("iris" = the marin TPU cluster); also queries CoreWeave (cw-us-east-02a) GPU-RL as monitor-only. The cron is session-only and recurring crons auto-expire after 7 days, so it's routinely lost on a session restart. Use at the start of a new session, after a restart, or when the user asks to restore/check the iris monitoring cron. The sweep PROCEDURE the cron runs lives in monitor-cron-sweep-iris.
 ---
 
-# monitor-restore-iris-cron
+# monitor-restore-iris
 
 The recurring cron that watches all of `benjaminfeuer`'s Iris jobs is
 **session-only** (it lives in the Claude session, not on disk) and recurring
-crons **auto-expire after 7 days**. So it is routinely lost on a session
-restart. This skill is the durable source of truth for re-creating it — the
-cron prompt below is canonical; copy it verbatim into `CronCreate`.
+crons **auto-expire after 7 days** — so it is routinely lost on a session
+restart. This skill is the durable source of truth for re-creating it: the
+**canonical cron prompt below is what gets (re-)installed — copy it verbatim
+into `CronCreate`.** The per-tick sweep *methodology* the prompt executes is
+**monitor-cron-sweep-iris**.
+
+(This is the lightweight marin-TPU-centric monitor. The separate broader
+tri-cluster monitor — Leonardo + CoreWeave + TACC — is restored via
+**monitor-restore** / **monitor-cron-sweep**.)
 
 ## When to run
 - Start of a new session where Iris jobs are in flight.
@@ -19,17 +25,16 @@ cron prompt below is canonical; copy it verbatim into `CronCreate`.
 ## Steps
 1. **Check if it already exists** — call `CronList`. If a recurring job whose
    prompt mentions "status check on ALL Iris jobs for user benjaminfeuer" is
-   present, do nothing (don't create a duplicate — duplicate monitors cause
-   redundant SQL/tunnel load). If a stale **datagen-only** variant exists
-   (prompt mentions only `qwen3.5-122b-32k-%`), `CronDelete` it and recreate
-   with the all-jobs prompt below.
+   present, do nothing (a duplicate causes redundant SQL/tunnel load). If a stale
+   **datagen-only** variant exists (prompt mentions only `qwen3.5-122b-32k-%`),
+   `CronDelete` it and recreate with the all-jobs prompt below.
 2. **If absent, call `CronCreate`** with:
    - `cron`: `23 */3 * * *`  (every 3 h at :23 — off the :00/:30 marks)
    - `recurring`: `true`
    - `prompt`: the exact text in the fenced block below.
-3. Tell the user the new job id, and the two caveats: **session-only** (dies
-   when this Claude session exits — re-run this skill next session) and
-   **7-day auto-expiry**.
+3. Tell the user the new job id + the two caveats: **session-only** (dies when
+   this Claude session exits — re-run this skill next session) and **7-day
+   auto-expiry**.
 
 ## Notes
 - `durable: true` is NOT honored in this harness (it still creates a
@@ -39,18 +44,21 @@ cron prompt below is canonical; copy it verbatim into `CronCreate`.
   launchd monitor (out of scope here).
 - It tracks ALL `/benjaminfeuer/%` jobs but the autonomous write actions
   (auto-rescue, keep-2-in-flight) are **datagen-only**; eval jobs are
-  monitor-only (they self-sync to Supabase+HF). See the `datagen-launch-iris` and
-  `eval-agentic-launch-iris` skills.
+  monitor-only (they self-sync to Supabase+HF). See **datagen-launch-iris** and
+  **eval-agentic-launch-iris**.
 - **Two clusters.** The cron queries both the **marin** TPU cluster and the
-  **`cw-us-east-02a`** CoreWeave GPU cluster. The marin `.venv` iris now carries
-  the `[controller]` deps so it drives CoreWeave too — but the CoreWeave query
-  MUST be prefixed `KUBECONFIG=~/.kube/coreweave-iris-gpu`, else iris falls back
-  to the shell-default kubeconfig (`~/.kube/lambdaconfig`) and errors with
-  `Invalid kube-config file … Expected object with name`. GPU-RL jobs on
-  CoreWeave are **monitor-only** (no rescue, no keep-2 — those are TPU-datagen
-  concepts); their pods GC on terminal, so logs come from the persistent finelog
-  server. Other CoreWeave GPU configs exist (`coreweave*` = US-WEST-04A,
-  CI/smoke) but are NOT in scope unless the user runs jobs there.
+  **`cw-us-east-02a`** CoreWeave GPU cluster. The marin `.venv` iris carries the
+  `[controller]` deps so it drives CoreWeave too — but the CoreWeave query MUST be
+  prefixed `KUBECONFIG=~/.kube/coreweave-iris-gpu`, else iris falls back to the
+  shell-default kubeconfig (`~/.kube/lambdaconfig`) and errors with
+  `Invalid kube-config file … Expected object with name`. GPU-RL jobs on CoreWeave
+  are **monitor-only** (no rescue, no keep-2); their pods GC on terminal, so logs
+  come from the persistent finelog server. Other CoreWeave GPU configs exist
+  (`coreweave*` = US-WEST-04A, CI/smoke) but are NOT in scope unless the user runs
+  jobs there.
+- **The methodology each step encodes** (how to run the analyzer, classify, rescue,
+  refill) is **monitor-cron-sweep-iris** — read it when actually executing a tick;
+  this skill is just the (re)install wrapper + the canonical prompt.
 
 ## Canonical cron prompt (copy verbatim into CronCreate)
 
@@ -64,9 +72,9 @@ Every-3-hours status check on ALL Iris jobs for user benjaminfeuer (datagen + ev
        KUBECONFIG=~/.kube/coreweave-iris-gpu /Users/benjaminfeuer/Documents/marin/.venv/bin/iris --cluster=cw-us-east-02a query "SELECT job_id, state FROM jobs WHERE state IN (1,2,3) AND job_id LIKE '/benjaminfeuer/%' ORDER BY job_id DESC LIMIT 20" -f csv
    For EACH cluster also query state IN (4,5,6) LIMIT 8 to catch jobs that went terminal since the last tick. If the cw query errors (cluster down / creds), report that and continue with marin — do not fail the whole tick.
 
-2. For each ACTIVE marin (TPU) datagen/eval job, run the harbor analyzer (TPU/harbor-shaped — does NOT apply to CoreWeave GPU-RL jobs; handle those per class D):
+2. For each ACTIVE marin (TPU) datagen/eval job, run the harbor analyzer (TPU/harbor-shaped — does NOT apply to CoreWeave GPU-RL jobs; handle those per class D). Use the analyze-job-history-iris skill (the reliable foreground-and-wait recipe; dispatch a patient subagent for the big task-history jobs):
    /Users/benjaminfeuer/miniconda3/envs/otagent/bin/python /Users/benjaminfeuer/Documents/OpenThoughts-Agent/scripts/iris/analyze_job_history.py <job_id> --output /tmp/$(basename <job_id>)_history.md --refresh
-   Report from the .json sidecar: runtime_h, iris_preemption_count, cycles total/served, samples (serving_summary.gen_tps.n), gen tok/s mean/peak, Running mean/peak, non_empty/total trials = rate, t_first_serve, top harbor_exception_stats.
+   Report from the .json sidecar: runtime_h, iris_preemption_count, cycles total/served, samples (serving_summary.gen_tps.n), gen tok/s mean/peak, Running mean/peak, non_empty/total trials = rate, t_first_serve, top harbor_exception_stats. ALSO report mean reward + completed/total tasks from the harbor progress line (NOT in the sidecar): /Users/benjaminfeuer/Documents/marin/.venv/bin/iris --cluster=marin job logs <job_id> --max-lines 8000 | grep -aoE '[0-9]+/[0-9]+ Mean: [-0-9.]+' | tail -1
 
 3. Print `## Iris jobs status — <ISO UTC>`: one line per job (name + state + CLOSED/PARTIAL/OPEN/DEAD), a compact metrics block, and a survival check (past cold compile? throughput sane? traces/results landing on HF?). Classify each job by job_id prefix and apply the right treatment:
 
@@ -88,5 +96,6 @@ STANDING ACTIONS — DATAGEN JOBS ONLY (override read-only; see memories auto_re
 6. NEVER kill/restart/bounce a RUNNING job or the cluster without express user permission — with ONE exception: a **confirmed zombie DATAGEN job** per §4b (the kill is the precondition of a datagen rescue, which IS autonomously authorized). The autonomous write actions are: datagen rescue (incl. the §4b zombie kill-then-rescue), datagen refill-launch. This exception is **datagen-only** — GPU-RL and all other RUNNING jobs stay strictly no-touch (flag for the user, never kill). If a job is stuck PENDING (no capacity), report it and surface the unpinned-relaunch option — do not kill a running/placed job unprompted.
 ```
 
-If you change the cadence or scope, update BOTH the `cron`/`prompt` above and
-the live job (delete + recreate), so this skill stays the canonical copy.
+If you change the cadence or scope, update BOTH the `cron`/`prompt` above and the
+live job (delete + recreate), and keep **monitor-cron-sweep-iris** (the procedure)
+in sync — so this skill stays the canonical copy.
