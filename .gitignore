@@ -477,3 +477,9 @@ reeval_refill*.txt
 launch_wave*.sh
 wave*_launch.sh
 wave*_prep.sh
+
+# Transient per-sweep generated eval priority-lists (regenerated each refill; not reusable artifacts)
+eval/lists/a1_resume_*.txt
+eval/lists/tacc_refill_*.txt
+eval/lists/tacc_sanity_*.txt
+eval/lists/reeval_priority_*.txt
