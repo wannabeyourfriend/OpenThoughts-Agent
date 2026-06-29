@@ -299,7 +299,7 @@ These were paid for this week (`agent_logs/2026-06-25_coreweave_131k_cpdcp2r3_re
 
 > **⚠ FRESH-LAUNCH 15-MIN + 30-MIN CHECK-INS MUST PARSE THE ROLLOUT LOGS — lifecycle state is necessary but
 > NOT sufficient.** (The 15/30-min check-ins AND every monitor tick on a new/untested arm are exactly when to
-> dispatch a subagent armed with **`monitor-rl-job-health`** — it operationalizes the ladder below into a
+> dispatch a subagent armed with **`rl-job-health-deep-dive`** — it operationalizes the ladder below into a
 > KILL/NO-KILL recommendation: syncs trace_jobs + logs via `peek … pull`, live-polls the GPUs against the
 > serving-throughput LUT, and reads the literal rollouts. Use it for the unproven arms; the rungs below are
 > what it checks.) `watch_job_state` says `running, pods=8, failure_count=0` for a job that is **silently dead**:

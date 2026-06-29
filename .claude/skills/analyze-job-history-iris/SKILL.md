@@ -47,7 +47,7 @@ to wait” before it finishes. It is NOT a background job; nothing re-wakes you.
   `--cluster cw-us-east-02a` AND have `KUBECONFIG=~/.kube/coreweave-iris-gpu` in
   the env AND use the otagent-env python above (the marin `.venv` iris cannot
   drive CoreWeave). **But:** GPU-RL jobs have **no harbor trial sidecars**, so §2
-  is empty and most of the value is gone — for GPU-RL use **monitor-rl-job-health**
+  is empty and most of the value is gone — for GPU-RL use **rl-job-health-deep-dive**
   instead. This analyzer is for **harbor-shaped jobs (datagen / agentic eval)**.
 
 ## Parse the sidecar (exact keys)
@@ -136,4 +136,4 @@ if the agent yielded — re-parse it directly.
 
 ## Related skills
 - **monitor-cron-sweep** / **monitor-job-tables** — the status sweeps that call this.
-- **monitor-rl-job-health** — the GPU-RL equivalent (no harbor sidecars; uses the finelog).
+- **rl-job-health-deep-dive** — the GPU-RL equivalent (no harbor sidecars; uses the finelog).

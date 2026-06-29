@@ -92,7 +92,7 @@ buffer-filling table with `—` metrics until the first step lands.
 can read "healthy" on a run that is silently dead — weight-sync garbage (all-reward-0 from incoherent
 generations), an engine-starvation wedge, or 0 trials ever completing. For any RL job in a **new/untested
 setting** (new config/geometry/model/image, "debug"/"smoke-test", first launch after a code/config change),
-dispatch a subagent armed with **`monitor-rl-job-health`** → it syncs trace_jobs + logs, live-polls the GPUs
+dispatch a subagent armed with **`rl-job-health-deep-dive`** → it syncs trace_jobs + logs, live-polls the GPUs
 against the serving-throughput LUT, reads the literal rollouts, and returns a **KILL/NO-KILL recommendation**.
 The row alone is necessary-but-not-sufficient for unproven runs.
 

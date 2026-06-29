@@ -124,7 +124,7 @@ ONE table.** Extraction pointers:
   TIS from the WANDB_MIRROR lines (chain-restart logs may have step but not the dict — scan the chain's logs).
   Apply the collapse-signal rule. **For any RL job in a NEW/UNTESTED setting** (new config/geometry/model/image,
   a "debug"/"smoke-test" run, or the first launch after a code/config change), the table row is NOT enough —
-  **dispatch a subagent armed with `monitor-rl-job-health`** this tick to deep-probe it (sync trace_jobs +
+  **dispatch a subagent armed with `rl-job-health-deep-dive`** this tick to deep-probe it (sync trace_jobs +
   logs, live-poll GPUs vs the serving LUT, read the literal rollouts) → a **KILL/NO-KILL recommendation**.
   State-poll + metrics can read "healthy" on a run that is silently dead (weight-sync garbage, engine-starvation
   wedge, all-reward-0). Carry the verdict into §4; the supervisor owns the actual kill.
@@ -187,7 +187,7 @@ ONE table.** Extraction pointers:
   unvalidated claim goes to a dated `agent_logs/` entry with a ⚠ pointer left in the ops doc, NOT asserted as
   fact; mark unvalidated assumptions AS unvalidated.
 - **RL collapse rule** (≥2 signals fire same step) → flag for cancel+salvage per `rl-agentic-job-cleanup`.
-- **New/untested RL → `monitor-rl-job-health` verdict.** When this tick deep-probed an unproven RL run (above),
+- **New/untested RL → `rl-job-health-deep-dive` verdict.** When this tick deep-probed an unproven RL run (above),
   act on its recommendation: **NO-KILL** → note it + the watch-signal that would flip it; **KILL** → it is one
   of OUR OWN doomed/wedged jobs, so (with the standing kill-permission in mind) the supervisor cancels +
   relaunches on the corrected setting per `rl-agentic-launch-iris`/`rl-*-launch-*`, and logs the probe + verdict
