@@ -16,6 +16,11 @@ description: >-
 
 # rl-agentic-launch-iris
 
+> **📍 Iris orientation — read first.** Before acting on anything in this skill, read the Iris **tools
+> catalog** (`.claude/ops/iris/iris_tools.md`) and the Iris **ops directory** (`.claude/ops/iris/` — the
+> CoreWeave GPU particulars in `coreweave_gpu_ops.md`, the TPU `marin` particulars in `iris_job_lifecycle.md`).
+> They carry the binding access/preamble/gotchas and the helper-script inventory the steps below rely on.
+
 > **⚠ Local clone = ground truth (CLAUDE.md §Always).** ALL code/config edits (OpenThoughts-Agent +
 > MarinSkyRL + the vLLM fork) go in the local Mac checkouts → commit → (push). **The Iris launcher uploads
 > the LOCAL workspace to `/app`**, so a local commit takes effect on the next launch *immediately* — you do

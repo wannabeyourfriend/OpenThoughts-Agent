@@ -5,6 +5,11 @@ description: Launch, monitor, and manually clean up an eval job on Marin's Iris 
 
 # eval-agentic-launch-iris
 
+> **📍 Iris orientation — read first.** Before acting on anything in this skill, read the Iris **tools
+> catalog** (`.claude/ops/iris/iris_tools.md`) and the Iris **ops directory** (`.claude/ops/iris/` — the
+> CoreWeave GPU particulars in `coreweave_gpu_ops.md`, the TPU `marin` particulars in `iris_job_lifecycle.md`).
+> They carry the binding access/preamble/gotchas and the helper-script inventory the steps below rely on.
+
 End-to-end operation of an eval job through `eval/cloud/launch_eval_iris.py`
 (the Iris analog of the SkyPilot `launch_eval_cloud.py` — same arg names/flow).
 Covers launch → monitor → manual cleanup. For **datagen/tracegen** jobs use the

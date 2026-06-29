@@ -5,6 +5,11 @@ description: Run the Iris harbor job-history analyzer (scripts/iris/analyze_job_
 
 # analyze-job-history-iris
 
+> **📍 Iris orientation — read first.** Before acting on anything in this skill, read the Iris **tools
+> catalog** (`.claude/ops/iris/iris_tools.md`) and the Iris **ops directory** (`.claude/ops/iris/` — the
+> CoreWeave GPU particulars in `coreweave_gpu_ops.md`, the TPU `marin` particulars in `iris_job_lifecycle.md`).
+> They carry the binding access/preamble/gotchas and the helper-script inventory the steps below rely on.
+
 `scripts/iris/analyze_job_history.py` paginates an Iris job's **full** log via
 fixed time windows (not `--tail`, which truncates by line count and lets Ray
 state-dumps + `[fd-monitor]` frames crowd out the throughput emissions), then

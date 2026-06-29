@@ -17,6 +17,11 @@ description: >-
 
 # build-gpu-rl-image-iris
 
+> **📍 Iris orientation — read first.** Before acting on anything in this skill, read the Iris **tools
+> catalog** (`.claude/ops/iris/iris_tools.md`) and the Iris **ops directory** (`.claude/ops/iris/` — the
+> CoreWeave GPU particulars in `coreweave_gpu_ops.md`, the TPU `marin` particulars in `iris_job_lifecycle.md`).
+> They carry the binding access/preamble/gotchas and the helper-script inventory the steps below rely on.
+
 > **⚠ Local clone = ground truth (CLAUDE.md §Always).** ALL Dockerfile / build-script edits go in the local
 > Mac checkout on `penfever/working` → commit → (push). **The iris job bundles the LOCAL workspace to `/app`**
 > via `git ls-files --cached --others --exclude-standard` (respects `.gitignore`; reads WORKING-TREE content,

@@ -11,6 +11,11 @@ description: >-
 
 # monitor-cron-sweep-iris
 
+> **📍 Iris orientation — read first.** Before acting on anything in this skill, read the Iris **tools
+> catalog** (`.claude/ops/iris/iris_tools.md`) and the Iris **ops directory** (`.claude/ops/iris/` — the
+> CoreWeave GPU particulars in `coreweave_gpu_ops.md`, the TPU `marin` particulars in `iris_job_lifecycle.md`).
+> They carry the binding access/preamble/gotchas and the helper-script inventory the steps below rely on.
+
 The per-tick procedure for the lightweight Iris monitor: the **marin TPU**
 datagen/eval pipeline (the autonomous-action surface) plus **CoreWeave**
 (`cw-us-east-02a`) GPU-RL as **monitor-only**. This is distinct from the broader

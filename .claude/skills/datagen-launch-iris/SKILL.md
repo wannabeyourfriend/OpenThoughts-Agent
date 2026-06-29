@@ -5,6 +5,11 @@ description: Launch, monitor, and manually clean up a trajectory-generation (dat
 
 # datagen-launch-iris
 
+> **📍 Iris orientation — read first.** Before acting on anything in this skill, read the Iris **tools
+> catalog** (`.claude/ops/iris/iris_tools.md`) and the Iris **ops directory** (`.claude/ops/iris/` — the
+> CoreWeave GPU particulars in `coreweave_gpu_ops.md`, the TPU `marin` particulars in `iris_job_lifecycle.md`).
+> They carry the binding access/preamble/gotchas and the helper-script inventory the steps below rely on.
+
 End-to-end operation of a datagen (trajectory-generation) job through
 `data/cloud/launch_tracegen_iris.py`. Covers launch → monitor → manual cleanup.
 For **eval** jobs use the **eval-agentic-launch-iris** skill instead.
