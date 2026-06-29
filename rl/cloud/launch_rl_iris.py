@@ -127,10 +127,12 @@ DEFAULT_CLUSTER = "cw-us-east-02a"
 # (use the immutable :gpu-rl-<gitsha> tag's digest, never the floating :gpu-rl).
 DEFAULT_RL_DOCKER_IMAGE = (
     "ghcr.io/open-thoughts/openthoughts-agent"
-    # gpu-rl-81045a29 — adds boto3 to the rl env so Ray's smart_open object-spilling
-    # can land on R2 (the ephemeral-storage-eviction fix). Same vLLM-fork/torch/flash-attn
-    # /MarinSkyRL as the prior f9b8beb8 image; only boto3 changed. boto3 1.43.36 verified.
-    "@sha256:648199885a1e35cebef029ab2993d527d88d3a2c7f3b30c1313990c81452c99e"
+    # gpu-rl-00220aac — bumps baked harbor 342729d5 -> f7f51f13 (litellm Provider-List
+    # /_turn_on_debug footer suppression + the TrialNotScoredError de-flatten in history),
+    # and picks up MarinSkyRL tip 23709366 (the async-actor drain fix). vLLM-fork unchanged
+    # (76259c63 == prebuilt-wheelhouse MANIFEST) so rebuilt via the fast prebuilt-wheelhouse
+    # path (zero nvcc, ~22 min). Built 2026-06-29 (kaniko job gpurl-kaniko-00220aac).
+    "@sha256:65b07cec09b015117271dc6a2b19bb657eb1b025f969b3476cea2288501838b6"
 )
 DEFAULT_GPU_VARIANT = "H100"
 DEFAULT_GPUS_PER_NODE = 8           # gd-8xh100ib-i128 = 8x H100-80GB + IB
