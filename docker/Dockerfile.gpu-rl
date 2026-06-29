@@ -431,11 +431,12 @@ RUN . $RL_ENV_DIR/bin/activate && \
 # (marin-community/harbor@penfever/working), which is left floating for the rest
 # of the stack — but for THIS image we re-install harbor at an immutable commit so
 # the build is reproducible and we KNOW which harbor is baked.
-#   342729d5 = "fix(trial-queue): rmtree trial.paths.trial_dir, not
-#   trial.trial_dir (reward-zeroing AttributeError)" — the reward-zeroing fix that
-#   previously had to be runtime-sed'd. (It IS the current penfever/working HEAD.)
+#   f7f51f13 = "Merge feuer/silence-litellm-spam: suppress litellm Provider List
+#   / debug-info footers" — the current penfever/working HEAD. Its history also
+#   carries the TrialNotScoredError de-flatten (stop flattening upstream errors
+#   into VNC) and the earlier reward-zeroing rmtree fix (342729d5).
 # --no-deps so this only swaps the harbor source, not its resolved deps.
-ENV HARBOR_COMMIT=342729d574555c4bd88b0ff8ee1b223bbe46bd72
+ENV HARBOR_COMMIT=f7f51f131577e0d6672ef815a555b507e83778a0
 RUN . $RL_ENV_DIR/bin/activate && \
     uv pip install --no-deps --force-reinstall \
         "harbor[daytona] @ git+https://github.com/marin-community/harbor.git@${HARBOR_COMMIT}" && \
