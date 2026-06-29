@@ -83,3 +83,64 @@ def compute_infra_error_stats(stats: Mapping[str, Any]) -> Tuple[int, Dict[str, 
             n_infra += n
             breakdown[exc_type] = breakdown.get(exc_type, 0) + n
     return n_infra, breakdown
+
+
+def filter_error_type_flags() -> str:
+    """Render `INFRA_ERROR_TYPES` as repeatable harbor `--filter-error-type` flags.
+
+    Returns a single space-joined string, deterministically sorted, e.g.:
+        "--filter-error-type AgentEnvironmentTimeoutError --filter-error-type CancelledError ..."
+
+    This is the canonical representation of the infra set as harbor `jobs resume`
+    filter args, so the cluster sbatches can derive their resume filter from the
+    same set the listener's resume manager imports — no hand-maintained subset that
+    can drift. The set is non-empty by construction; this function never emits an
+    empty string (callers rely on that — emitting zero flags would silently change
+    harbor's resume scope to its `["CancelledError"]` default).
+    """
+    return " ".join(
+        f"--filter-error-type {t}" for t in sorted(INFRA_ERROR_TYPES)
+    )
+
+
+def _main(argv) -> int:
+    import argparse
+    import sys
+
+    parser = argparse.ArgumentParser(
+        prog="python -m database.unified_db.infra_errors",
+        description=(
+            "Emit the canonical INFRA_ERROR_TYPES set as harbor "
+            "--filter-error-type resume filter flags."
+        ),
+    )
+    parser.add_argument(
+        "--filter-flags",
+        action="store_true",
+        help="Print the set as repeatable `--filter-error-type <T>` flags "
+        "(deterministically sorted, space-joined, on one line).",
+    )
+    args = parser.parse_args(argv)
+
+    if args.filter_flags:
+        flags = filter_error_type_flags()
+        # Defensive: the set is non-empty by construction, but never emit an empty
+        # line — a caller that word-splits an empty string into zero flags would
+        # silently change harbor's resume scope.
+        if not flags.strip():
+            print(
+                "ERROR: INFRA_ERROR_TYPES is empty; refusing to emit zero filter flags.",
+                file=sys.stderr,
+            )
+            return 2
+        print(flags)
+        return 0
+
+    parser.print_help(sys.stderr)
+    return 1
+
+
+if __name__ == "__main__":
+    import sys
+
+    raise SystemExit(_main(sys.argv[1:]))
