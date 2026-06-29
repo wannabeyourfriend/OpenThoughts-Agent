@@ -2794,6 +2794,19 @@ def _extract_job_metadata(
                         valid_trials += n
             stats["n_trials"] = valid_trials
 
+    # Additively persist the INFRASTRUCTURE-error count + per-type breakdown so a
+    # plain Supabase query can read them (stats->>'n_infra_errors',
+    # stats->'infra_error_breakdown') without re-deriving the INFRA_ERROR_TYPES
+    # classification from exception_stats. Pure audit fields — they do NOT touch
+    # the accuracy denominator or any existing metric. The classification set is
+    # the single source of truth in database/unified_db/infra_errors.py.
+    if isinstance(stats, dict):
+        from .infra_errors import compute_infra_error_stats
+
+        n_infra, infra_breakdown = compute_infra_error_stats(stats)
+        stats["n_infra_errors"] = n_infra
+        stats["infra_error_breakdown"] = infra_breakdown
+
     job_metadata = {
         "job_id": result["id"],  # Preserve local job ID from result.json
         "job_name": job_name,
