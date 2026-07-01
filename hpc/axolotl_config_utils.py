@@ -260,6 +260,7 @@ def construct_axolotl_config_yaml(exp_args):
         _merge_launch_overrides,
         _extract_dataset_entries,
         _materialize_dataset_and_model,
+        _configure_output_and_logging,
         _write_train_config,
         derive_default_job_name,
     )
@@ -288,12 +289,21 @@ def construct_axolotl_config_yaml(exp_args):
     if base_config.get("dataset_dir") is None:
         base_config["dataset_dir"] = "ONLINE"
     dataset_entries = _extract_dataset_entries(base_config.get("dataset"))
+
+    # The axolotl base template names the model `base_model`; the shared LF prelude
+    # helpers (materialize/reporting) read `model_name_or_path`. Bridge it so the
+    # model resolves + downloads exactly as the LF path does.
+    if not base_config.get("model_name_or_path") and base_config.get("base_model"):
+        base_config["model_name_or_path"] = base_config["base_model"]
     exp_args["_original_model_name_or_path"] = base_config.get("model_name_or_path")
 
     artifacts = _materialize_dataset_and_model(base_config, exp_args, dataset_entries, datasets_dir)
 
     # Reporting/offline handling (sets model_name_or_path=model_path, push_to_hub).
     base_config = configure_sft_reporting(base_config, exp_args, artifacts.model_path)
+    # Route output_dir under $CHECKPOINTS_DIR + the launcher's resume/overwrite guards,
+    # exactly like the LF path (so the WORKDIR write-path guard + checkpoint dirs match).
+    base_config = _configure_output_and_logging(base_config, exp_args, checkpoints_dir)
 
     num_nodes = int(exp_args.get("num_nodes") or 1)
     gpus_per_node = int(exp_args.get("gpus_per_node") or 1)
