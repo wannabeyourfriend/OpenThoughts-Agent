@@ -453,6 +453,13 @@ def _write_train_config(configs_dir: str, job_name: str, base_config: dict) -> s
 
 
 def construct_config_yaml(exp_args):
+    # Axolotl backend: emit an axolotl-schema YAML instead of the LF one. The LF
+    # (default) path below is byte-identical to pre-change — this branch is only
+    # taken when --sft_backend axolotl.
+    if exp_args.get("sft_backend") == "axolotl":
+        from hpc.axolotl_config_utils import construct_axolotl_config_yaml
+        return construct_axolotl_config_yaml(exp_args)
+
     # Load base config first so we can finalize the job name (which may
     # include the model identifier) BEFORE creating experiment directories.
     train_config_path = exp_args.get("train_config_path")
