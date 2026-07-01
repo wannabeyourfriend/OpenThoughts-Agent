@@ -753,6 +753,11 @@ class SFTJobConfig:
     # Training launcher: "torchrun" or "accelerate"
     launcher: str = "torchrun"
 
+    # SFT backend: "llamafactory" (default) or "axolotl". Selects the trainer
+    # entrypoint in SFTJobRunner. Defaults to "llamafactory" so a config JSON
+    # written before this field existed still deserializes to the LF path.
+    sft_backend: str = "llamafactory"
+
     # Accelerate config (if launcher == "accelerate")
     accelerate_config_path: Optional[str] = None
 
@@ -1022,6 +1027,7 @@ def construct_sft_sbatch_script(exp_args: dict, hpc) -> str:
         needs_ssh_tunnel=hpc.needs_ssh_tunnel,
         needs_cuda_detection=hpc.needs_cuda_detection,
         master_port=int(exp_args.get("master_port") or 12802),
+        sft_backend=exp_args.get("sft_backend") or "llamafactory",
     )
 
     # Write config JSON

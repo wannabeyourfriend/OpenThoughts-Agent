@@ -343,6 +343,15 @@ class LaunchArgs:
     train_config_path: Optional[str] = field(
         default=None, metadata={"help": "Path to config file"}
     )
+    sft_backend: str = field(
+        default="llamafactory",
+        metadata={
+            "help": "SFT training backend: 'llamafactory' (default) or 'axolotl'. "
+            "Selects the trainer entrypoint + config schema. Flag-off "
+            "('llamafactory') is byte-identical to the pre-axolotl launch path.",
+            "choices": ["llamafactory", "axolotl"],
+        },
+    )
     experiments_dir: Optional[str] = field(
         default=None,
         metadata={
