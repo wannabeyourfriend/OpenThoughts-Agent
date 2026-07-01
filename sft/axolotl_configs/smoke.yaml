@@ -48,6 +48,12 @@ sample_packing: false
 sequence_len: 1024
 val_set_size: 0.0
 
+# aarch64/TACC: the launcher sets TMPDIR to a deeply-nested experiment path; datasets
+# map with num_proc=CPU_count spawns a multiprocess SyncManager that binds an AF_UNIX
+# socket under TMPDIR -> "OSError: AF_UNIX path too long" (108-char sun_path limit).
+# Single-proc tokenization avoids the SyncManager (tiny smoke -> fast anyway).
+dataset_num_proc: 1
+
 micro_batch_size: 1
 gradient_accumulation_steps: 1
 num_epochs: 1

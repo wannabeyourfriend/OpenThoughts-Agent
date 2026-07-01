@@ -29,6 +29,9 @@ sample_packing: false
 sequence_len: 1024
 val_set_size: 0.0
 
+# aarch64/TACC AF_UNIX-path-too-long on multiproc dataset tokenization (see smoke.yaml).
+dataset_num_proc: 1
+
 micro_batch_size: 1
 gradient_accumulation_steps: 1
 num_epochs: 1

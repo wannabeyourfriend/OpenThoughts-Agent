@@ -151,7 +151,7 @@ def translate_lf_to_axolotl(base_config: dict, exp_args: dict, dataset_paths, mo
         "gradient_checkpointing", "trust_remote_code", "logging_steps",
         "seed", "output_dir", "save_steps", "save_total_limit", "num_epochs", "max_steps",
         "sequence_len", "sample_packing", "val_set_size", "adam_beta1", "adam_beta2",
-        "special_tokens",
+        "special_tokens", "dataset_num_proc",
     ):
         if key in base_config and base_config[key] is not None:
             ax[key] = base_config[key]

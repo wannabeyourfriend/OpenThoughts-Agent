@@ -23,6 +23,7 @@ finetuning_type: full
 template: llama3
 cutoff_len: 1024
 overwrite_cache: true
+preprocessing_num_workers: 1     # aarch64/TACC: avoid multiproc AF_UNIX-path-too-long on long TMPDIR
 
 logging_steps: 1
 save_strategy: "steps"
