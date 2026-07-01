@@ -147,10 +147,11 @@ def translate_lf_to_axolotl(base_config: dict, exp_args: dict, dataset_paths, mo
 
     # --- same-name passthroughs ---
     for key in (
-        "learning_rate", "warmup_ratio", "weight_decay", "max_grad_norm",
+        "learning_rate", "warmup_ratio", "warmup_steps", "weight_decay", "max_grad_norm",
         "gradient_checkpointing", "trust_remote_code", "logging_steps",
-        "seed", "output_dir", "save_steps", "save_total_limit", "num_epochs",
+        "seed", "output_dir", "save_steps", "save_total_limit", "num_epochs", "max_steps",
         "sequence_len", "sample_packing", "val_set_size", "adam_beta1", "adam_beta2",
+        "special_tokens",
     ):
         if key in base_config and base_config[key] is not None:
             ax[key] = base_config[key]
@@ -185,10 +186,15 @@ def translate_lf_to_axolotl(base_config: dict, exp_args: dict, dataset_paths, mo
             ax["gradient_accumulation_steps"] = base_config["gradient_accumulation_steps"]
 
     # --- attention: LF `attn`/`fa2` -> axolotl attn_implementation (varlen) ---
-    # sample_packing without a varlen backend warns about cross-sample
-    # decontamination; a flash backend matches LF throughput/semantics.
+    # An explicit `attn_implementation` in the base config wins (e.g. `sdpa` on
+    # aarch64 clusters like TACC Vista, which have NO flash-attn-2 wheel for
+    # torch 2.11+cu128 — see .claude/ops/tacc/ops.md). Otherwise, sample_packing
+    # without a varlen backend warns about cross-sample decontamination, so a
+    # flash backend matches LF throughput/semantics.
     lf_attn = base_config.get("attn")
-    if lf_attn in ("fa2", "fa3") or base_config.get("flash_attention") or ax.get("sample_packing"):
+    if base_config.get("attn_implementation"):
+        ax["attn_implementation"] = base_config["attn_implementation"]
+    elif lf_attn in ("fa2", "fa3") or base_config.get("flash_attention") or ax.get("sample_packing"):
         ax["attn_implementation"] = "flash_attention_2"
 
     # --- chat_template + fork keys ---
