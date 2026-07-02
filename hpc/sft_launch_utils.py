@@ -863,20 +863,27 @@ class SFTJobRunner:
                 os.environ[key] = value
                 print(f"[cuda] {key}={value}")
 
+        # Anti-fragmentation allocator config — applies to BOTH SFT backends.
+        # expandable_segments:True reduces CUDA reserved-but-unallocated
+        # fragmentation; it changes allocator segment management only, NOT numerics,
+        # so it's safe to share across backends and clusters. It was previously
+        # gated axolotl-only, which OOM'd the LF path on the exact config axolotl
+        # fit (LF left 6.17 GiB reserved-but-unallocated on a 95 GiB GH200 -> OOM by
+        # 224 MiB; expandable_segments recovers it). setdefault so a cluster env or
+        # a backend that sets its own PYTORCH_CUDA_ALLOC_CONF wins.
+        if "PYTORCH_CUDA_ALLOC_CONF" not in os.environ:
+            os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+            print("[sft] PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True")
+
         # Axolotl-backend-only env (cluster-agnostic; gated on backend so the
         # LF path is untouched). Cluster-specific values (compiler CUDA_HOME/
         # GCC_HOME, NCCL_SOCKET_IFNAME, offline flags) come from the cluster
         # dotenv/hpc config via the sbatch template — NOT hardcoded here.
         # setdefault so a value already exported by the cluster env wins.
         if self.config.sft_backend == "axolotl":
-            axolotl_env = {
-                "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
-                "AXOLOTL_DO_NOT_TRACK": "1",
-            }
-            for key, value in axolotl_env.items():
-                if key not in os.environ:
-                    os.environ[key] = value
-                    print(f"[axolotl] {key}={value}")
+            if "AXOLOTL_DO_NOT_TRACK" not in os.environ:
+                os.environ["AXOLOTL_DO_NOT_TRACK"] = "1"
+                print("[axolotl] AXOLOTL_DO_NOT_TRACK=1")
 
         # Short, job-scoped TMPDIR (AF_UNIX fix) — applies to BOTH SFT backends,
         # but ONLY when the inherited TMPDIR is actually too long to be safe.
