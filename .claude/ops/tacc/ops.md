@@ -72,6 +72,12 @@ srun -p gh -N 1 -n 1 -t 12:00:00 --pty bash -l
 > (`memory allocation of 1520 bytes failed`). All `uv pip install` / build-heavy
 > operations MUST run on a **compute node** via `srun` (see Partitions & QOS).
 > The login node is fine for `git pull`, `squeue`, and lightweight commands.
+>
+> **⚠ Eval-scale HF trace uploads ALSO OOM on the login node** (`realloc failed` /
+> shared-memory OOM) — a manual eval-agentic-cleanup trace push (large parquet) can
+> land the score but silently fail to upload the traces. Run the HF trace upload on a
+> **compute node** (a quick `-p gh-dev` sbatch/srun) too, not the login node (observed
+> 2026-07-02 on two swe `__X__` legs; re-ran the upload as job 801969 → uploaded + relinked).
 
 ### otagent env (primary — datagen / eval / RL / SFT)
 
