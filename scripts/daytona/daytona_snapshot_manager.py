@@ -191,10 +191,18 @@ def _as_aware(dt) -> datetime | None:
     return dt
 
 
-def analyze(snapshots: list, stale_days: float) -> list[dict]:
+def analyze(snapshots: list, stale_days: float, name_prefix: str = "") -> list[dict]:
     """Compute per-snapshot age / idle metrics and staleness verdict.
 
     Returns a list of dicts (one per snapshot) sorted most-stale-first.
+
+    ``name_prefix`` restricts the STALE (deletable) verdict to snapshots whose
+    name starts with it — the datagen/eval/RL per-environment snapshots are all
+    ``harbor__<hash>__snapshot``, so the default guards the shared base/template
+    images (``daytonaio/sandbox:*``, ``daytona-*``, ``windows-*``) from ever
+    being flagged: those rebuild-on-demand assumption does NOT hold for base
+    images, and deleting one breaks sandbox creation org-wide. Pass ``""`` to
+    consider every snapshot (audit only — never delete with an empty prefix).
     """
     now = datetime.now(timezone.utc)
     threshold_seconds = stale_days * 86400.0
@@ -219,13 +227,17 @@ def analyze(snapshots: list, stale_days: float) -> list[dict]:
 
         protected = state in PROTECTED_STATES
         is_idle = idle_seconds is not None and idle_seconds > threshold_seconds
+        name_ok = (not name_prefix) or s.name.startswith(name_prefix)
 
-        # Stale = idle past threshold AND not protected. Error/build_failed
-        # states are eligible only when ALSO idle past the window.
-        stale = is_idle and not protected
+        # Stale = matches the reclaim prefix AND idle past threshold AND not
+        # protected. Error/build_failed states are eligible only when ALSO idle
+        # past the window. Base/template images (name_ok False) are never stale.
+        stale = name_ok and is_idle and not protected
 
         # Reason annotation for the report.
-        if protected:
+        if not name_ok:
+            reason = f"kept (not {name_prefix})"
+        elif protected:
             reason = f"protected (state={state})"
         elif not is_idle:
             reason = "fresh (within window)"
@@ -447,6 +459,14 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_STALE_DAYS,
         help=f"Idle days before a snapshot is stale (default: {DEFAULT_STALE_DAYS}).",
     )
+    p.add_argument(
+        "--name-prefix",
+        default="harbor__",
+        help="Only snapshots whose name starts with this prefix are eligible for the "
+        "STALE/deletable verdict (default: harbor__). Guards shared base/template images "
+        "(daytonaio/sandbox:*, daytona-*, windows-*) that do NOT rebuild-on-demand. "
+        "Pass '' to audit every snapshot (never delete with an empty prefix).",
+    )
     # Delete
     p.add_argument(
         "--delete-stale",
@@ -490,7 +510,7 @@ def main() -> int:
         print(f"ERROR: failed to list snapshots: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
 
-    rows = analyze(snapshots, args.stale_days)
+    rows = analyze(snapshots, args.stale_days, name_prefix=args.name_prefix)
     stale_rows = [r for r in rows if r["stale"]]
 
     if args.json:

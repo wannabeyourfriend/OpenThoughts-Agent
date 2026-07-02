@@ -404,27 +404,30 @@ class IrisLauncher:
 
         # Defer the heavy iris imports so --dry-run / --help stay snappy.
         from iris.client import IrisClient
-        from iris.cluster.config import IrisConfig
+        from iris.cluster.config import load_config
+        from iris.cluster.composer import provider_bundle
+        from iris.cluster.local_cluster import LocalCluster
         from iris.cluster.types import EnvironmentSpec, Entrypoint
         from iris.cli.job import build_resources, build_job_constraints, resolve_multinode_defaults, build_tpu_alternatives
+        from iris.cli.main import client_credentials, resolve_cluster_name
         from iris.rpc import job_pb2
 
-        # Tunnel to the controller via the documented IrisConfig pattern
-        # (see lib/iris/.../cluster/config.py:IrisConfig docstring).
-        iris_config = IrisConfig.load(args.cluster_config)
-        bundle = iris_config.provider_bundle()
-        controller_proto = iris_config.proto.controller
-        if controller_proto.WhichOneof("controller") == "local":
-            from iris.cluster.providers.local.cluster import LocalCluster
-            local_cluster = LocalCluster(iris_config.proto)
+        # Tunnel to the controller via the current pydantic config API
+        # (mirrors iris.cli.connect.require_controller_url's SSH-tunnel branch).
+        config = load_config(args.cluster_config)
+        cluster_name = resolve_cluster_name(config, None, Path(args.cluster_config).stem)
+        credentials = client_credentials(config, cluster_name)
+        bundle = provider_bundle(config)
+        if config.controller.controller_kind() == "local":
+            local_cluster = LocalCluster(config)
             controller_address = local_cluster.start()
         else:
             controller_address = (
-                iris_config.controller_address()
-                or bundle.controller.discover_controller(controller_proto)
+                config.controller_address()
+                or bundle.controller.discover_controller(config.controller)
             )
 
-        with bundle.controller.tunnel(controller_address) as controller_url:
+        with bundle.controller.tunnel(address=controller_address) as controller_url:
             resources = build_resources(args.tpu, None, cpu=args.cpu, memory=args.memory, disk=args.disk)
             tpu_variants = build_tpu_alternatives(args.tpu)
             primary_tpu = tpu_variants[0] if tpu_variants else None
@@ -462,7 +465,7 @@ class IrisLauncher:
                 }
                 priority_band = _PRIO.get(args.priority, priority_band)
 
-            client = IrisClient.remote(controller_url, workspace=self.repo_root)
+            client = IrisClient.remote(controller_url, workspace=self.repo_root, credentials=credentials)
 
             wrapped = wrap_task_command(command, extras=extras)
             entrypoint = Entrypoint.from_command(*wrapped)

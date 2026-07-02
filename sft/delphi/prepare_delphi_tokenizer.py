@@ -70,15 +70,19 @@ def rename_reserved_slots(out_dir: Path, token_ids: dict[str, int]) -> None:
     cfg_path = out_dir / "tokenizer_config.json"
     cfg = json.loads(cfg_path.read_text())
     atd = cfg.get("added_tokens_decoder", {})
-    for sid, new in id_to_new.items():
-        key = str(sid)
-        assert key in atd and "reserved_special_token" in atd[key]["content"], (
-            f"added_tokens_decoder[{key}] missing or not reserved"
-        )
-        atd[key]["content"] = new
-        atd[key]["special"] = True
-    cfg["added_tokens_decoder"] = atd
-    cfg_path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2))
+    # transformers 5.x (`TokenizersBackend`) saves a minimal tokenizer_config.json with
+    # NO `added_tokens_decoder` block — all added-tokens live in tokenizer.json (already
+    # renamed above). Only rewrite the config block when the 4.x-style block is present.
+    if atd:
+        for sid, new in id_to_new.items():
+            key = str(sid)
+            assert key in atd and "reserved_special_token" in atd[key]["content"], (
+                f"added_tokens_decoder[{key}] missing or not reserved"
+            )
+            atd[key]["content"] = new
+            atd[key]["special"] = True
+        cfg["added_tokens_decoder"] = atd
+        cfg_path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2))
 
 
 def mean_init_rows(model, token_ids: dict[str, int]) -> None:

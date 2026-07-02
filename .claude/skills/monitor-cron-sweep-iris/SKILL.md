@@ -61,14 +61,25 @@ job_id prefix:
   keep-2. ALWAYS report the leading metric — the `<done>/<total> Mean: <X>` harbor progress line from
   `iris --cluster=marin job logs <job_id>` — plus productive rate + harness exceptions; on a terminal job, whether
   results landed. Never auto-relaunch eval. (See eval-agentic-launch-iris.)
-- **C. Other**: report state + a one-line health read; no autonomous write action.
+- **C. Other** (anything matching none of A/B/D/E — e.g. `serve-%` inference jobs): report state + a one-line
+  health read; no autonomous write action.
+- **E. Executor/Levanter training** (a marin-executor training run — a CPU coordinator `<run>-coord` PLUS its
+  nested v5p training child `<run>-coord/checkpoints-<step>-<hash>`; e.g. the `delphi-%` midtraining runs):
+  **monitor-only — NO rescue, NO keep-2, NO auto-relaunch.** The §2 harbor analyzer does NOT apply (training
+  has no harbor trial sidecars, like GPU-RL). Run the **analyze-training-run-iris** skill on the CHILD job and
+  report its compact line: `step=<cur>/<total> (X%) loss=<L> ~<T>tok/s preempts=<P> gaps=<G>/<H>h ckpt=step-<C>`
+  + a health read (past setup/compile? step rate sane vs last tick? loss finite & trending down? preemptions
+  resuming cleanly — checkpoint advancing? ETA to the K-budget target). That skill reads W&B per-step history
+  (`nyu-dice-lab/delphi-midtraining`, run = the GCS output-path hash) + `iris job summary` (preemptions) + GCS
+  `step-*` checkpoints; empty W&B history = **pre-first-step** (still HF-download/XLA-compile), not a gap. Track
+  progress in steps + MAJOR gaps every tick, just as datagen tracks productive trials. NEVER kill/relaunch.
 - **D. GPU-RL** (CoreWeave, `rl-%` / `rl-iris-%` / MarinSkyRL GRPO on H100×8, possibly multi-node `replicas>1`):
   **monitor-only — NO rescue, NO keep-2, NO auto-relaunch.** The §2 analyzer does NOT apply (no harbor trial
   sidecars). Report state + latest RL progress from the persistent finelog (pods GC on terminal):
   `KUBECONFIG=~/.kube/coreweave-iris-gpu iris --cluster=cw-us-east-02a job logs <job_id> --max-lines 100000 --no-tail`
   then grep `WANDB_MIRROR kind=train step=` for the latest `trainer/global_step`, `loss/avg_raw_reward`,
   `generate/num_failed_trajectories`/`errors`; for multi-node confirm `All N Ray node(s) joined`. On terminal,
-  report exit state. For a NEW/untested RL run, deep-probe via **monitor-rl-job-health** (KILL/NO-KILL). NEVER
+  report exit state. For a NEW/untested RL run, deep-probe via **rl-job-health-deep-dive** (KILL/NO-KILL). NEVER
   kill/relaunch GPU-RL. (Finelog retention is finite — report what survives.)
 
 ## 4. AUTO-RESCUE — DATAGEN ONLY (autonomous; overrides read-only)
@@ -89,8 +100,14 @@ If active datagen (`qwen3.5-122b-32k-%`, state 1/2/3) < 2, auto-launch the next 
 `/Users/benjaminfeuer/Documents/experiments/active/datagen/qwen3.5-122b-tt/tracker.md` via the datagen launch
 template (S1, `ctx32k_verified.yaml`, `--tpu v5p-8 --preemptible`, `--gcs-output-dir gs://marin-models-us/ot-agent`
 unpinned, repo `penfever/<slug>-qwen3.5-122b-32k-traces`) — see **datagen-launch-iris**. Flip its tracker row to
-RUNNING. On Daytona `SnapshotCapExceeded`, delete only MISSING `harbor__` snapshots (memory `daytona_snapshot_cap`)
-then retry. Eval jobs do NOT count toward the 2 and are never auto-launched.
+RUNNING. Eval jobs do NOT count toward the 2 and are never auto-launched.
+
+**Snapshot-cap hygiene (every tick):** audit the cli-org (`DAYTONA_API_KEY`) snapshot count. If a datagen refill
+is blocked by `SnapshotCapExceeded` OR the org is ≥ ~58/60, **reclaim idle `harbor__` snapshots** (idle > 120 min)
+via `daytona_snapshot_manager.py --api-key-env DAYTONA_API_KEY --stale-days 0.0833 --delete-stale --yes`, then retry
+the launch. This deletes ONLY idle `harbor__` env snapshots (rebuilt on demand) — the `--name-prefix harbor__`
+default guards the shared base images (`daytonaio/sandbox:*`, `daytona-*`, `windows-*`), which must never be deleted.
+This supersedes the old MISSING-only rule (which stalls at 0 MISSING). Full procedure: **datagen-reclaim-stale-snapshots**.
 
 ## 6. No-kill guardrail
 Never kill/restart/bounce a RUNNING job or the cluster without express permission — the ONLY exception is the §4b
@@ -100,7 +117,8 @@ capacity) → report + surface the unpinned-relaunch option; don't kill a placed
 
 ## Related skills
 - **monitor-restore-iris** — (re)installs the recurring 3-hour cron that runs this procedure (holds the verbatim prompt).
-- **analyze-job-history-iris** — the §2 analyzer recipe (foreground-and-wait; mean-reward + completed/total extraction).
+- **analyze-job-history-iris** — the §2 analyzer recipe for class A/B datagen+eval (foreground-and-wait; mean-reward + completed/total extraction).
+- **analyze-training-run-iris** — the class-E recipe for executor/Levanter training runs (step progress + major-gap detection via W&B + `iris job summary` + GCS checkpoints).
 - **datagen-launch-iris** — launch / rescue / snapshot-cleanup mechanics for §4–§5.
-- **monitor-rl-job-health** — deep per-RL-job KILL/NO-KILL probe for class-D GPU-RL in new/untested settings.
+- **rl-job-health-deep-dive** — deep per-RL-job KILL/NO-KILL probe for class-D GPU-RL in new/untested settings.
 - **monitor-cron-sweep** / **monitor-restore** — the separate broader tri-cluster (Leonardo+CoreWeave+TACC) campaign.

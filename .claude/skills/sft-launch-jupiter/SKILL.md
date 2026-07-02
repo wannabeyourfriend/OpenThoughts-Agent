@@ -25,9 +25,9 @@ launcher, multi-node via DeepSpeed ZeRO-3). Conda env **`otagent`** for everythi
 source ~/.bashrc; source ~/secrets.env; cd /e/scratch/jureap59/feuer1/harbor; git stash; git pull; \
 cd /e/scratch/jureap59/feuer1/OpenThoughts-Agent/SkyRL; git stash; git pull; conda activate otagent; \
 cd /e/scratch/jureap59/feuer1/OpenThoughts-Agent; git pull; \
-git submodule update --init --remote sft/llamafactory; source hpc/dotenv/jupiter.env;
+git submodule update --init --remote sft/llamafactory; git submodule update --init sft/axolotl; source hpc/dotenv/jupiter.env;
 ```
-(`git submodule update … sft/llamafactory` is essential — SFT won't run on a stale submodule.)
+(`git submodule update … sft/llamafactory` is essential — SFT won't run on a stale submodule. `sft/axolotl` is pinned to a commit — update WITHOUT `--remote` to honor the pin; only needed for `--sft_backend axolotl`.)
 
 > **🚧 SUBMIT FROM THE REPO DIR WITH `DCFT` SET — the sbatch WORKDIR guard hard-fails otherwise.**
 > The preamble above already does this (`cd …/OpenThoughts-Agent` + `source hpc/dotenv/jupiter.env`,

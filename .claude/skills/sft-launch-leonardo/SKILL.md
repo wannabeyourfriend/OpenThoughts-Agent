@@ -70,6 +70,7 @@ source /leonardo_work/AIFAC_5C0_290/bfeuer00/miniforge3/etc/profile.d/conda.sh &
 conda activate otagent && \   # or sft-qwen35 for Qwen3.5 hybrid
 cd /leonardo_work/AIFAC_5C0_290/bfeuer00/code/OpenThoughts-Agent && GIT_TERMINAL_PROMPT=0 git pull && \
 git submodule update --init --remote sft/llamafactory && \
+git submodule update --init sft/axolotl && \   # pinned commit; only needed for --sft_backend axolotl. No --remote (honor the pin).
 source hpc/dotenv/leonardo.env && source ~/secrets.env
 ```
 

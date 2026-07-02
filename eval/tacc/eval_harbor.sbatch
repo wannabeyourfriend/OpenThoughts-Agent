@@ -249,6 +249,20 @@ echo "Run dir: $RUN_DIR"
 # ==============================================================================
 export HF_HUB_OFFLINE=0
 
+# --- TP=1 is a HARD Vista invariant (this sbatch is Vista-EXCLUSIVE) ---------
+# Every Vista GH200 node has EXACTLY 1 GPU and this job hardcodes `#SBATCH --nodes 1`
+# + serves vLLM directly in the single-node allocation (no multi-node vLLM), so the
+# serve tensor-parallel size MUST be 1. But build_vllm_cmd.sh defaults
+# EVAL_VLLM_TENSOR_PARALLEL_SIZE to 4 (a multi-GPU-cluster default). The listener
+# path exports TP=1 via the gh200 registry profile, but a RAW resume submit
+# (`sbatch eval/tacc/eval_harbor.sbatch <MODEL> <REPO> "" <RUN-TAG>`) never runs the
+# listener -> the var is UNSET -> build_vllm_cmd falls back to TP=4 -> vLLM aborts
+# with "World size (4) > available GPUs (1)", the server never comes up, 0 trials
+# (the 2026-07-01 sweep-8 resume crash: jids 801464-801477 all cancelled). Pin the
+# Vista hardware truth here so BOTH the listener path (unchanged: already 1) and the
+# raw-resume path serve at TP=1. See agent_logs/2026-07-02_tacc-resume-tp4-bug.md.
+export EVAL_VLLM_TENSOR_PARALLEL_SIZE="${EVAL_VLLM_TENSOR_PARALLEL_SIZE:-1}"
+
 echo "Starting vLLM server for model: $MODEL"
 source "$DCFT/eval/build_vllm_cmd.sh"
 build_vllm_cmd "$SERVE_PYTHON_BIN" "$MODEL" "$GPU_MEMORY_UTIL"

@@ -161,7 +161,9 @@ terminal_bench:
 
     auto_snapshot: true
 
-    verifier_override_timeout_sec: 120
+    # 120 -> 300 (2026-06-30): Daytona verifier-artifact pull clusters at 122-136s (dense-run
+    # evidence); 300 avoids VerifierTimeout starvation once past the (now-fixed async-actor) wedge.
+    verifier_override_timeout_sec: 300
 
     max_retries: 3
     min_wait_sec: 60.0
@@ -358,6 +360,11 @@ generator:
   # 4 TP=8 engines = 32 inference GPU = 4 nodes. Set EXPLICITLY (not null): the launcher
   # derivation (num_nodes*gpus)//tp = 8*8//8 = 8 would be WRONG (4 nodes are policy-only).
   num_inference_engines: 4
+
+  # CUDA graphs ON (2026-06-30): the MoE arms read 15-75 tok/s under implicit enforce_eager;
+  # CUDA graphs cut decode ~3-10x -> faster rollout/buffer-fill to gs-1. (Wedge is at the
+  # forward, not generation, so this is separable from the async-drain fix under test.)
+  enforce_eager: false
 
   inference_engine_expert_parallel_size: 1
 

@@ -173,6 +173,20 @@ Branch `feuer/fsdp2-cp`, HEAD `18c2606`. Stages 0–2 done.
 
 ---
 
+## GDN + Context-Parallel (CP>1) HARD-CRASHES the 35B GatedDeltaNet MoE at forward
+
+The **Qwen3.6-35B-A3B** MoE has 30 GatedDeltaNet (GDN) linear-attn layers with **no CP-aware kernel** → running it
+under `context_parallel_size > 1` **hard-crashes at the forward pass** (not merely numerically wrong). Proven
+2026-07-02 by moe-grid cell 35B-B (EP8×FSDP2×CP2): `RuntimeError: The expanded size of the tensor (33784) must match
+the existing size (16892) at non-singleton dimension 3` in `FSDPPolicyWorkerBase.forward()` → `fwd_logprobs_values_reward`
+— 33784 = 2×16892 = the CP=2 sequence-shard doubling the GDN attention mask; dies at step-1 forward (0 training steps).
+⇒ **the 35B (GDN) model is CP=1 ONLY**; its CP>1 configs (EP8×CP2, EP8×CP4, EP16×CP2) are infeasible-by-inference. The
+**30B Qwen3-Coder-30B-A3B is full-attention (no GDN)** so CP>1 is fine there. A trainable 35B-CP config would need a
+CP-aware GDN kernel + a CP1-vs-CP2 logprob-parity smoke (`tests/gpu/test_cp_logprob_parity.py`), not yet built. (The
+Stage-2 attn-backend pivot above forces sdpa/flex under CP for the *full-attn* path — it does NOT make GDN CP-correct.)
+
+---
+
 ## 80B placement init-OOM = two-PACK-PG race → `policy_strict_spread_pg`
 
 Qwen3-Next-80B-A3B init-OOM was a **two-PACK-PG race** (inference PG + lazy policy PG, no anti-affinity,

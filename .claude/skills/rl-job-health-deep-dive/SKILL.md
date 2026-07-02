@@ -1,5 +1,5 @@
 ---
-name: monitor-rl-job-health
+name: rl-job-health-deep-dive
 description: >-
   Deep single-RL-job health probe → a KILL / NO-KILL recommendation for the supervisor. Dispatched as a
   subagent on every monitor tick for RL jobs in NEW/UNTESTED settings (new config/geometry/model, "debug" or
@@ -16,7 +16,7 @@ description: >-
   .claude/ops/iris/coreweave_gpu_ops.md, .claude/skills/rl-agentic-launch-iris §8.
 ---
 
-# monitor-rl-job-health
+# rl-job-health-deep-dive
 
 A **deep, single-RL-job** health probe that ends in **one recommendation to the supervisor: `KILL` or
 `NO-KILL`**, backed by hard evidence and next steps. This is the heavier, per-job complement to the breadth

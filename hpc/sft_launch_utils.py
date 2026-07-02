@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -344,7 +345,19 @@ def configure_sft_reporting(base_config: dict, exp_args: dict, model_path: str) 
         base_config["report_to"] = "wandb"
         base_config["push_to_hub"] = push_to_hub
     else:
-        base_config.pop("report_to", None)
+        # No-internet node: default reporting OFF. Popping report_to is NOT enough
+        # — HF transformers defaults an unset report_to to "all", which re-activates
+        # WandbCallback -> wandb.init(). Even with WANDB_MODE=offline (set per-cluster
+        # in hpc.py), wandb 0.28.x still spins up a service and connects over a unix
+        # socket, which fails on compute nodes ("FileNotFoundError: [Errno 2]" from
+        # service_token.connect), crashing LF trainer init. "none" is what the pop
+        # was trying to express; trainer_state.json (the loss series) is written
+        # regardless of report_to. Default to "none" only when unset, so a cluster
+        # whose offline wandb DOES work can still opt back in via an explicit
+        # report_to in the YAML/CLI (no code change, no silent loss of offline logs
+        # on clusters that relied on them).
+        if not base_config.get("report_to"):
+            base_config["report_to"] = "none"
         base_config["push_to_hub"] = push_to_hub
         base_config["model_name_or_path"] = model_path
         # Use a dedicated arrow cache dir alongside HF_HUB_CACHE (not inside it) to avoid
@@ -753,6 +766,11 @@ class SFTJobConfig:
     # Training launcher: "torchrun" or "accelerate"
     launcher: str = "torchrun"
 
+    # SFT backend: "llamafactory" (default) or "axolotl". Selects the trainer
+    # entrypoint in SFTJobRunner. Defaults to "llamafactory" so a config JSON
+    # written before this field existed still deserializes to the LF path.
+    sft_backend: str = "llamafactory"
+
     # Accelerate config (if launcher == "accelerate")
     accelerate_config_path: Optional[str] = None
 
@@ -845,6 +863,84 @@ class SFTJobRunner:
                 os.environ[key] = value
                 print(f"[cuda] {key}={value}")
 
+        # Anti-fragmentation allocator config — applies to BOTH SFT backends.
+        # expandable_segments:True reduces CUDA reserved-but-unallocated
+        # fragmentation; it changes allocator segment management only, NOT numerics,
+        # so it's safe to share across backends and clusters. It was previously
+        # gated axolotl-only, which OOM'd the LF path on the exact config axolotl
+        # fit (LF left 6.17 GiB reserved-but-unallocated on a 95 GiB GH200 -> OOM by
+        # 224 MiB; expandable_segments recovers it). setdefault so a cluster env or
+        # a backend that sets its own PYTORCH_CUDA_ALLOC_CONF wins.
+        if "PYTORCH_CUDA_ALLOC_CONF" not in os.environ:
+            os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+            print("[sft] PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True")
+
+        # Axolotl-backend-only env (cluster-agnostic; gated on backend so the
+        # LF path is untouched). Cluster-specific values (compiler CUDA_HOME/
+        # GCC_HOME, NCCL_SOCKET_IFNAME, offline flags) come from the cluster
+        # dotenv/hpc config via the sbatch template — NOT hardcoded here.
+        # setdefault so a value already exported by the cluster env wins.
+        if self.config.sft_backend == "axolotl":
+            if "AXOLOTL_DO_NOT_TRACK" not in os.environ:
+                os.environ["AXOLOTL_DO_NOT_TRACK"] = "1"
+                print("[axolotl] AXOLOTL_DO_NOT_TRACK=1")
+
+        # Short, job-scoped TMPDIR (AF_UNIX fix) — applies to BOTH SFT backends,
+        # but ONLY when the inherited TMPDIR is actually too long to be safe.
+        # Both axolotl and llamafactory load data via HF `datasets`, whose
+        # tokenization / .map() spawns a multiprocessing SyncManager whose control
+        # socket lives at ``$TMPDIR/pymp-XXXXXXXX/listener-XXXXXXXX`` (~32-char
+        # overhead). If ``len(TMPDIR)+overhead`` exceeds the 108-byte AF_UNIX
+        # ``sun_path`` limit the manager dies -> "OSError: AF_UNIX path too long"
+        # (axolotl) / "EOFError" (llamafactory) at dataset load (num_proc=1 does
+        # NOT help; the manager is created regardless). This bites on clusters with
+        # a deeply-nested TMPDIR (TACC's universal_sft ``tmpfix`` path under
+        # $SCRATCH); it does NOT bite where the path is already short (Leonardo/
+        # Jupiter).
+        #
+        # We redirect TMPDIR/TMP/TEMP to a short local dir ONLY when the current
+        # path is long enough to risk the limit. This is a no-op on clusters where
+        # the inherited TMPDIR is safe — so it cannot regress Leonardo, whose
+        # universal_sft guard deliberately moved TMPDIR OFF the tiny node-local
+        # /tmp (~9.6G LV) to avoid Errno-28 during dataset.map. Even when we DO
+        # redirect, only the tiny SyncManager socket + small tempfiles move to
+        # /tmp; the large HF arrow caches stay on HF_DATASETS_CACHE (set by the
+        # sbatch, untouched here), so /tmp exhaustion is not a concern. Base is
+        # /tmp (POSIX-universal, local on compute nodes); a cluster dotenv can
+        # override the base via SFT_TMPDIR_BASE (legacy AXOLOTL_TMPDIR_BASE also
+        # honored) to point at a short dir on a larger fs if /tmp is unusable.
+        _AF_UNIX_MAX = 108        # Linux sun_path limit
+        _SOCKET_OVERHEAD = 40     # /pymp-XXXXXXXX/listener-XXXXXXXX + margin
+        cur_tmp = os.environ.get("TMPDIR") or tempfile.gettempdir()
+        if len(cur_tmp) + _SOCKET_OVERHEAD > _AF_UNIX_MAX:
+            tmp_base = (
+                os.environ.get("SFT_TMPDIR_BASE")
+                or os.environ.get("AXOLOTL_TMPDIR_BASE")
+                or "/tmp"
+            )
+            job_tag = os.environ.get("SLURM_JOB_ID", str(os.getpid()))
+            short_tmp = os.path.join(tmp_base, f"sft_{job_tag}")
+            try:
+                os.makedirs(short_tmp, exist_ok=True)
+                for key in ("TMPDIR", "TMP", "TEMP"):
+                    os.environ[key] = short_tmp
+                print(f"[sft] TMPDIR/TMP/TEMP={short_tmp} (AF_UNIX short-path fix; "
+                      f"inherited TMPDIR len={len(cur_tmp)} exceeded safe limit)")
+            except OSError as e:
+                print(f"[sft] WARN: could not create short TMPDIR {short_tmp}: {e}; "
+                      f"leaving TMPDIR={cur_tmp}", file=sys.stderr)
+
+    def _train_entrypoint_args(self) -> list:
+        """Trailing entrypoint + config args for the distributed launcher.
+
+        Backend swap point: axolotl runs ``-m axolotl.cli.train <cfg>``; the
+        default llamafactory backend runs the unchanged
+        ``sft/llamafactory/src/train.py <cfg>`` line.
+        """
+        if self.config.sft_backend == "axolotl":
+            return ["-m", "axolotl.cli.train", self.config.train_config_path]
+        return ["sft/llamafactory/src/train.py", self.config.train_config_path]
+
     def _run_torchrun(self) -> int:
         """Launch training with torchrun."""
         # Get distributed training parameters from environment
@@ -861,8 +957,7 @@ class SFTJobRunner:
             f"--rdzv_id={slurm_job_id}",
             "--rdzv_backend=c10d",
             f"--rdzv_endpoint={master_addr}:{master_port}",
-            "sft/llamafactory/src/train.py",
-            self.config.train_config_path,
+            *self._train_entrypoint_args(),
         ]
 
         print(f"Running torchrun command: {' '.join(cmd)}")
@@ -904,8 +999,7 @@ class SFTJobRunner:
             f"--num_machines={num_nodes}",
             f"--num_processes={num_nodes * gpus_per_node}",
             "--tee=1",
-            "sft/llamafactory/src/train.py",
-            self.config.train_config_path,
+            *self._train_entrypoint_args(),
         ]
 
         print(f"Running accelerate command: {' '.join(cmd)}")
@@ -1022,6 +1116,7 @@ def construct_sft_sbatch_script(exp_args: dict, hpc) -> str:
         needs_ssh_tunnel=hpc.needs_ssh_tunnel,
         needs_cuda_detection=hpc.needs_cuda_detection,
         master_port=int(exp_args.get("master_port") or 12802),
+        sft_backend=exp_args.get("sft_backend") or "llamafactory",
     )
 
     # Write config JSON
