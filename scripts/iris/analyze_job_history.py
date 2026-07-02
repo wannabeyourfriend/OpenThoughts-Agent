@@ -64,7 +64,7 @@ from finelog.deploy.config import FinelogConfig, load_finelog_config, tunnel_tar
 from finelog.errors import StatsError
 from rigging.auth import IapLoginRequired
 from rigging.connect import IapAuth, connect, disconnect
-from rigging.iap_login import provider_for
+from rigging.credentials import iap_edge_provider
 from rigging.tunnel import open_tunnel
 
 GCS_ROOT = "gs://marin-models-us/ot-agent"
@@ -457,10 +457,15 @@ def _open_live_client(cfg: FinelogConfig, finelog_name: str) -> "Iterator[LogCli
     otherwise an SSH/k8s tunnel (e.g. cw-us-east-02a).
     """
     if cfg.client_url:
+        provider = iap_edge_provider(finelog_name)
+        if provider is None:
+            raise IapLoginRequired(
+                f"no cached IAP credentials for {finelog_name!r}; log in to {finelog_name!r} to refresh them"
+            )
         client = connect(
             cfg.client_url,
             lambda ep: LogClient.connect(ep.url, interceptors=ep.interceptors, timeout_ms=LIVE_TIMEOUT_MS),
-            auth=IapAuth(provider_for(finelog_name)),
+            auth=IapAuth(provider),
             connect_timeout=60.0,
         )
         try:
