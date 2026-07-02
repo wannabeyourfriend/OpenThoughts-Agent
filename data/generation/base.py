@@ -913,7 +913,7 @@ class BaseDataGenerator(ABC):
         if trace_eval_only_requested:
             self.logger.warning(
                 "trace_eval_only is deprecated. Launch eval workloads via "
-                "`python -m hpc.launch --job_type eval` instead."
+                "`python -m hpc.launch --job_type eval_listener` instead."
             )
 
         trace_n_concurrent = (

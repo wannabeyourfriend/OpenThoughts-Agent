@@ -364,6 +364,22 @@ generator:
   timeout_multiplier: 1.0
   model_dtype: bfloat16
 
+  # THROUGHPUT LEVER (2026-07-02): enable CUDA graphs on the decode engine.
+  # SkyRL's ppo_base_config.yaml defaults generator.enforce_eager: TRUE ("Disable CUDA
+  # graphs by default for stability"); this grid cell never overrode it, so grid-30b-a-n192
+  # served the 30B with cudagraph_mode=NONE (decode ~12-15 tok/s/stream, ~10x below floor).
+  # vLLM is NOT force-eager for this MoE/DCP/EP path (its only auto-forces are ROCm
+  # encoder-decoder + BnB-8bit; the engine log's `vllm.py:955 Enforce eager set` means eager
+  # was PASSED IN, not derived). enforce_eager=false is safe here: the R3 routed-experts
+  # capturer is explicitly cudagraph-designed (vllm::capture_routing custom op with
+  # register_fake -> no graph breaks; row-0 static-buffer writes so replay sees fixed
+  # addresses; cudagraph_mark_tensor_static; #237 rank-symmetric epilogue treats eager as the
+  # HARDER case). The capture op writes the actual topk_ids in-forward, so R3 pi_old==pi_train
+  # holds by construction under cudagraphs; DCP+R3 bf16-tie parity is orthogonal + already
+  # accepted. The cudagraph memory pool is carved from the gpu_memory_utilization budget
+  # (KV shrinks slightly; KV was ~36-54% used at max_num_seqs=24, so headroom exists) -> no OOM.
+  enforce_eager: false
+
   # DCP=2 / TP=8 (the unblocked Option A). TP=8 = exactly ONE 8-GPU CoreWeave node
   # per engine -> the per-engine STRICT_PACK PG (ray backend) places on a single node
   # and the decode TP all-reduce is on-node NVLink (NO cross-node IB). TP=8 divides 32

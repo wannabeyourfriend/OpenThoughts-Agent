@@ -28,15 +28,35 @@ from typing import List, Optional
 
 
 def _is_eval_listener_request(argv: Optional[List[str]] = None) -> bool:
-    """True iff argv asks for the eval_listener fast-path (--job_type eval_listener)."""
+    """True iff argv asks for the eval_listener fast-path.
+
+    Matches both `--job_type eval_listener` (the canonical Stage-1 name) AND
+    `--job_type eval` (the Stage-3 deprecated alias that reroutes to the listener —
+    the single-shot eval path was removed as strictly subsumed; see
+    notes/ot-agent/eval_singleshot_audit.md).
+    """
     argv = list(sys.argv[1:] if argv is None else argv)
     i = 0
     while i < len(argv):
         tok = argv[i]
         if tok == "--job_type" and i + 1 < len(argv):
-            return argv[i + 1] == "eval_listener"
+            return argv[i + 1] in ("eval_listener", "eval")
         if tok.startswith("--job_type="):
-            return tok.split("=", 1)[1] == "eval_listener"
+            return tok.split("=", 1)[1] in ("eval_listener", "eval")
+        i += 1
+    return False
+
+
+def _is_eval_alias(argv: Optional[List[str]] = None) -> bool:
+    """True iff argv uses the deprecated `--job_type eval` alias (not `eval_listener`)."""
+    argv = list(sys.argv[1:] if argv is None else argv)
+    i = 0
+    while i < len(argv):
+        tok = argv[i]
+        if tok == "--job_type" and i + 1 < len(argv):
+            return argv[i + 1] == "eval"
+        if tok.startswith("--job_type="):
+            return tok.split("=", 1)[1] == "eval"
         i += 1
     return False
 
@@ -71,6 +91,16 @@ def launch_eval_listener_from_argv() -> int:
 
     # --- forward the listener's own flags verbatim (strip only --job_type eval_listener) ---
     listener_argv = _strip_job_type(list(sys.argv[1:]))
+
+    # Deprecation nudge for the `eval` alias (one-window; the canonical name is
+    # `eval_listener`). The alias still works — it forwards to the listener unchanged.
+    if _is_eval_alias():
+        print(
+            "[hpc.launch] note: --job_type eval is a deprecated alias for "
+            "--job_type eval_listener (the single-shot eval path was removed); "
+            "rerouting to the listener. Prefer --job_type eval_listener.",
+            file=sys.stderr,
+        )
 
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     listener_script = os.path.join(repo_root, "eval", "unified_eval_listener.py")

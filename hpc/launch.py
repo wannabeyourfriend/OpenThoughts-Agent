@@ -45,11 +45,6 @@ from hpc.datagen_launch_utils import (
 from hpc.consolidate_launch_utils import (
     launch_consolidate_job,
 )
-from hpc.eval_launch_utils import (
-    launch_eval_job_v2,
-    prepare_eval_configuration,
-    remap_eval_cli_args,
-)
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
 
@@ -622,11 +617,6 @@ def main():
 
 def _main_dispatch(cli_args):
 
-    # Apply job-type-specific argument remapping
-    job_type_raw = cli_args.get("job_type", "").lower()
-    if job_type_raw == "eval":
-        cli_args = remap_eval_cli_args(cli_args)
-
     # Storing all the arguments in a dictionary that we add to in order of precedence
     exp_args = dict()
 
@@ -652,7 +642,6 @@ def _main_dispatch(cli_args):
         apply_mca_template_fn=apply_mca_training_template,
         apply_cluster_overrides_fn=maybe_apply_cluster_specific_env_overrides,
         prepare_datagen_fn=_prepare_datagen_configuration,
-        prepare_eval_fn=prepare_eval_configuration,
     )
 
     # Job name
@@ -678,10 +667,6 @@ def _main_dispatch(cli_args):
     if job_type == JobType.DATAGEN.value:
         launch_datagen_job_v2(exp_args, hpc)
         return  # Skip normal training flow
-
-    if job_type == JobType.EVAL.value:
-        launch_eval_job_v2(exp_args, hpc)
-        return
 
     if job_type == JobType.PRETOKENIZE.value:
         schedule_pretokenize(

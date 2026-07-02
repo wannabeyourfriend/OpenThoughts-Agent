@@ -325,7 +325,7 @@ def main() -> None:
     # NOTE: RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES and RAY_NOSET_CUDA_VISIBLE_DEVICES
     # must be set BEFORE the Ray cluster is started (in the sbatch template), not here.
     # Setting them here is too late - Ray actors have already been spawned with modified
-    # CUDA_VISIBLE_DEVICES. See universal_*gen.sbatch and universal_eval.sbatch.
+    # CUDA_VISIBLE_DEVICES. See universal_*gen.sbatch.
 
     print("vLLM controller environment snapshot:")
     for key in (

@@ -772,7 +772,7 @@ def resolve_job_and_paths(
     # suppressed so the launcher lands at the same path the manager prepared.
     disable_dedup = False
     job_type = exp_args.get("job_type")
-    if str(job_type or "").lower() in {"datagen", "eval"}:
+    if str(job_type or "").lower() == "datagen":
         try:
             from hpc.resume_manager import resolve_resume_policy_for_launch
             policy = resolve_resume_policy_for_launch(exp_args, job_name=job_name)
@@ -1377,7 +1377,6 @@ def apply_env_overrides(
     apply_mca_template_fn: Optional[Any] = None,
     apply_cluster_overrides_fn: Optional[Any] = None,
     prepare_datagen_fn: Optional[Any] = None,
-    prepare_eval_fn: Optional[Any] = None,
 ) -> tuple[dict, str, Optional[Any]]:
     """Normalize resource overrides, defaults, and job-type specific toggles.
 
@@ -1395,7 +1394,6 @@ def apply_env_overrides(
         apply_mca_template_fn: Callback for MCA template (SFT_MCA jobs)
         apply_cluster_overrides_fn: Callback for cluster-specific overrides
         prepare_datagen_fn: Callback for datagen configuration
-        prepare_eval_fn: Callback for eval configuration
 
     Returns:
         Tuple of (updated exp_args, job_type string, datagen_runtime or None)
@@ -1535,11 +1533,6 @@ def apply_env_overrides(
     if job_type == JobType.DATAGEN.value or exp_args.get("datagen_script"):
         if prepare_datagen_fn is not None:
             datagen_runtime = prepare_datagen_fn(exp_args)
-    elif job_type == JobType.EVAL.value:
-        if prepare_datagen_fn is not None:
-            datagen_runtime = prepare_datagen_fn(exp_args)
-        if prepare_eval_fn is not None:
-            exp_args = prepare_eval_fn(exp_args)
 
     return exp_args, job_type, datagen_runtime
 
