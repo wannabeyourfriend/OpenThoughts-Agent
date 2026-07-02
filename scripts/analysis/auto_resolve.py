@@ -139,23 +139,46 @@ def _score_of_job(job: Dict[str, Any], key: Optional[str] = None) -> Optional[fl
     return None
 
 
-def _eval_jobs_for_model(client, model_id: str) -> List[Dict[str, Any]]:
-    """Return ALL sandbox_jobs for ``model_id`` that have an hf_traces_link.
+def _recency_key(job: Dict[str, Any]) -> tuple:
+    """Sort key implementing "most-recent eval wins".
 
-    Ordered by ``ended_at`` desc so callers that want "latest" can take
-    the first element, and callers that want to rank by score-delta can
-    walk the whole list.
+    The authoritative "when evaluated" field is ``ended_at`` (the job's
+    completion time), falling back to ``started_at`` then ``created_at``.
+    ``created_at`` is registration/backfill time and can DISAGREE with the
+    true eval order (a batch re-register stamps a *newer* ``created_at`` on an
+    *older* eval), so it is only a last-resort tiebreak.
+
+    A missing timestamp sorts as OLDEST, never newest: the empty string
+    precedes any ISO-8601 value, and callers sort DESCENDING, so a
+    null-``ended_at`` row falls to the end instead of masquerading as "latest".
+    (ISO-8601 UTC strings compare correctly lexicographically.)
+    """
+    return (job.get("ended_at") or "", job.get("started_at") or "", job.get("created_at") or "")
+
+
+def _eval_jobs_for_model(client, model_id: str) -> List[Dict[str, Any]]:
+    """Return ALL sandbox_jobs for ``model_id`` that have an hf_traces_link,
+    sorted MOST-RECENT-FIRST by :func:`_recency_key`.
+
+    Callers dedup a benchmark's multiple evals by taking the FIRST element
+    for that benchmark (``_pick_eval_pair`` / ``list_evals_for_model``), so
+    this ordering is what enforces "when a model has >1 eval on the same
+    benchmark, use the most recent one". The sort is done in Python rather
+    than via the DB ``.order`` because PostgREST's ``desc`` default is
+    NULLS FIRST, which would float a null-``ended_at`` row above a genuinely
+    newer completed eval; :func:`_recency_key` maps null → oldest to prevent
+    that. For rows with populated timestamps this reproduces the previous
+    ``ended_at`` desc order byte-for-byte.
     """
     resp = (
         client.table("sandbox_jobs")
         .select("id,hf_traces_link,benchmark_id,started_at,ended_at,created_at,job_status,metrics")
         .eq("model_id", model_id)
-        .order("ended_at", desc=True)
-        .order("started_at", desc=True)
-        .order("created_at", desc=True)
         .execute()
     )
-    return [r for r in (resp.data or []) if r.get("hf_traces_link")]
+    jobs = [r for r in (resp.data or []) if r.get("hf_traces_link")]
+    jobs.sort(key=_recency_key, reverse=True)
+    return jobs
 
 
 def _benchmark_name_to_id(client, name_or_id: str) -> Optional[str]:
