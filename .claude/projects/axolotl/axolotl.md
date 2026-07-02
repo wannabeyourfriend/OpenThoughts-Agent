@@ -7,7 +7,36 @@ LLaMA-Factory. Axolotl is deployed when the upstream paper's wire format require
 
 - **Version:** axolotl **v0.16.1**, in the **`sera-axolotl`** conda env (torch 2.9.1+cu130, Jupiter GH200 aarch64). Canonical install `/e/scratch/jureap59/feuer1/code/axolotl/`.
 - **Configs:** `baselines/sera/configs/template_qwen3_8b_sera_v4.yaml`, `baselines/coderforge/configs/template_qwen3_8b_cf_v3.yaml` (templated with `__SIZE__`/`__NODES__` via `sed` before submit).
-- **Launch:** SLURM sbatch (`baselines/{sera,coderforge}/sbatch/axolotl_*.sbatch`), multi-node `srun + accelerate launch`, default **4 nodes** (16 GH200) + `zero3_bf16.json`, `booster`/`--account reformo`. **Not** wired into `hpc.launch` — it's its own sbatch path. Compute has no internet → run `axolotl preprocess` on the login node per size first to populate the offline HF cache.
+- **Launch (Sera/CoderForge baselines):** SLURM sbatch (`baselines/{sera,coderforge}/sbatch/axolotl_*.sbatch`), multi-node `srun + accelerate launch`, default **4 nodes** (16 GH200) + `zero3_bf16.json`, `booster`/`--account reformo`. Compute has no internet → run `axolotl preprocess` on the login node per size first to populate the offline HF cache.
+
+---
+
+## As of 2026-07: axolotl is a first-class SFT backend in `hpc.launch` (`--sft_backend axolotl`)
+
+Merged to `penfever/working` (merge `02d676d0`, 2026-07-02) behind `--sft_backend {llamafactory,axolotl}`
+(LF default; flag-off byte-identical). This is SEPARATE from the Sera/CoderForge sbatch path above.
+- **Submodule** `sft/axolotl` @ `3c206072` = marin-community/axolotl `feuer/marin-fork-3feature-port` (axolotl
+  **0.17.0.dev0**), carrying `delphi.jinja` + the `template_integrity` / `mfu` / `supabase_registry` plugins.
+- **Wiring:** `hpc/sft_launch_utils.py` (`_train_entrypoint_args` → `-m axolotl.cli.train`; `_setup_environment`),
+  `hpc/axolotl_config_utils.py` (LF-exp-args → axolotl-YAML translator + `_build_datasets`), configs under
+  `sft/axolotl_configs/`, gate scripts under `sft/axolotl_gates/`.
+- **Validated on TACC Vista (GH200 aarch64), `sft-axolotl` conda env** (torch 2.11.0+cu128, transformers 5.12.1,
+  torchao 0.17.0): Stage 3 smoke GO, Stage 4 footgun-through-launcher GO (delphi chat_template byte-identical
+  to canonical `delphi.jinja` across output + checkpoint dirs). **Delphi masking canary PASS** (job 802053,
+  `sft/axolotl_configs/delphi_canary.yaml`): the `delphi` chat_template masks correctly — `<|start_think|>…
+  <|end_think|>` reasoning + assistant answer TRAINED, user/system MASKED, Llama-3 turn structure segmented,
+  **0 "Last turn is not trainable" skips** (verified via `axolotl.cli.preprocess --debug`; trainable fraction
+  73–96%). So jinja-as-ground-truth (train==serve) holds for the real delphi path. (Stage 6 LF-vs-axolotl
+  loss-match was NO-GO on guanaco/llama3, but that gap was a framework turn-masking divergence on a
+  NON-canonical dataset — the delphi canary is the check that matters, and it passes.)
+- **Launcher gotcha:** `hpc.launch` does NOT honor a config's hand-authored `datasets:` block — `_build_datasets`
+  REBUILDS it from `--dataset` + `--messages/--role_tag/--content_tag` (defaults to sharegpt conversations/
+  from/value). Pass those flags at launch; the in-config `datasets:` block is honored ONLY by direct
+  `axolotl.cli.preprocess`. (aarch64: SDPA; TACC internet_node → `WANDB_MODE=disabled`; a stale `HF_TOKEN` in
+  TACC `~/.bashrc` breaks `axolotl preprocess`'s `whoami` → `unset HF_TOKEN` or refresh.)
+- **Bonus:** the LF parity baseline surfaced + fixed 4 latent LLaMA-Factory transformers-5.x bugs (LF fork pin
+  `d20b8666`: `add_special_tokens` kwarg guard; launcher: short TMPDIR AF_UNIX fix, `report_to=none` on
+  no-internet, `expandable_segments` — the last two now apply to BOTH backends).
 
 ---
 
