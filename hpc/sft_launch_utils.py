@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -865,28 +866,50 @@ class SFTJobRunner:
                     os.environ[key] = value
                     print(f"[axolotl] {key}={value}")
 
-            # Short, job-scoped TMPDIR (AF_UNIX fix). HF `datasets` tokenization
-            # spawns a multiprocessing SyncManager whose control socket lives at
-            # ``$TMPDIR/pymp-*/listener-*`` (~35 char overhead). On clusters with a
-            # long default TMPDIR (nested $SCRATCH/$WORK), that path blows the
-            # 108-byte AF_UNIX ``sun_path`` limit -> "OSError: AF_UNIX path too
-            # long" at dataset load (dataset_num_proc=1 does NOT help; the manager
-            # is created regardless). Redirect TMPDIR/TMP/TEMP to a short local
-            # dir. Base is /tmp (POSIX-universal, local on compute nodes); a
-            # cluster dotenv can override via AXOLOTL_TMPDIR_BASE. We OVERRIDE
-            # (not setdefault) the inherited TMPDIR because the long value is the
-            # bug we are fixing.
-            tmp_base = os.environ.get("AXOLOTL_TMPDIR_BASE", "/tmp")
+        # Short, job-scoped TMPDIR (AF_UNIX fix) — applies to BOTH SFT backends,
+        # but ONLY when the inherited TMPDIR is actually too long to be safe.
+        # Both axolotl and llamafactory load data via HF `datasets`, whose
+        # tokenization / .map() spawns a multiprocessing SyncManager whose control
+        # socket lives at ``$TMPDIR/pymp-XXXXXXXX/listener-XXXXXXXX`` (~32-char
+        # overhead). If ``len(TMPDIR)+overhead`` exceeds the 108-byte AF_UNIX
+        # ``sun_path`` limit the manager dies -> "OSError: AF_UNIX path too long"
+        # (axolotl) / "EOFError" (llamafactory) at dataset load (num_proc=1 does
+        # NOT help; the manager is created regardless). This bites on clusters with
+        # a deeply-nested TMPDIR (TACC's universal_sft ``tmpfix`` path under
+        # $SCRATCH); it does NOT bite where the path is already short (Leonardo/
+        # Jupiter).
+        #
+        # We redirect TMPDIR/TMP/TEMP to a short local dir ONLY when the current
+        # path is long enough to risk the limit. This is a no-op on clusters where
+        # the inherited TMPDIR is safe — so it cannot regress Leonardo, whose
+        # universal_sft guard deliberately moved TMPDIR OFF the tiny node-local
+        # /tmp (~9.6G LV) to avoid Errno-28 during dataset.map. Even when we DO
+        # redirect, only the tiny SyncManager socket + small tempfiles move to
+        # /tmp; the large HF arrow caches stay on HF_DATASETS_CACHE (set by the
+        # sbatch, untouched here), so /tmp exhaustion is not a concern. Base is
+        # /tmp (POSIX-universal, local on compute nodes); a cluster dotenv can
+        # override the base via SFT_TMPDIR_BASE (legacy AXOLOTL_TMPDIR_BASE also
+        # honored) to point at a short dir on a larger fs if /tmp is unusable.
+        _AF_UNIX_MAX = 108        # Linux sun_path limit
+        _SOCKET_OVERHEAD = 40     # /pymp-XXXXXXXX/listener-XXXXXXXX + margin
+        cur_tmp = os.environ.get("TMPDIR") or tempfile.gettempdir()
+        if len(cur_tmp) + _SOCKET_OVERHEAD > _AF_UNIX_MAX:
+            tmp_base = (
+                os.environ.get("SFT_TMPDIR_BASE")
+                or os.environ.get("AXOLOTL_TMPDIR_BASE")
+                or "/tmp"
+            )
             job_tag = os.environ.get("SLURM_JOB_ID", str(os.getpid()))
-            short_tmp = os.path.join(tmp_base, f"ax_{job_tag}")
+            short_tmp = os.path.join(tmp_base, f"sft_{job_tag}")
             try:
                 os.makedirs(short_tmp, exist_ok=True)
                 for key in ("TMPDIR", "TMP", "TEMP"):
                     os.environ[key] = short_tmp
-                print(f"[axolotl] TMPDIR/TMP/TEMP={short_tmp} (AF_UNIX short-path fix)")
+                print(f"[sft] TMPDIR/TMP/TEMP={short_tmp} (AF_UNIX short-path fix; "
+                      f"inherited TMPDIR len={len(cur_tmp)} exceeded safe limit)")
             except OSError as e:
-                print(f"[axolotl] WARN: could not create short TMPDIR {short_tmp}: {e}; "
-                      f"leaving TMPDIR={os.environ.get('TMPDIR', '<unset>')}", file=sys.stderr)
+                print(f"[sft] WARN: could not create short TMPDIR {short_tmp}: {e}; "
+                      f"leaving TMPDIR={cur_tmp}", file=sys.stderr)
 
     def _train_entrypoint_args(self) -> list:
         """Trailing entrypoint + config args for the distributed launcher.
