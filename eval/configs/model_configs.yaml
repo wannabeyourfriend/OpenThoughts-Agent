@@ -1,657 +1,133 @@
-# Shared model-config registry — the SINGLE source of truth for model-INTRINSIC
-# vLLM serving config, keyed by HF model name and shared across ALL clusters.
-#
-# This is the decoupled replacement for the per-cluster baseline-model-config forks
-# (eval/configs/baseline_model_configs_minimal.yaml + eval/clusters/tacc_baseline_model_configs*.yaml).
-# Loaded by eval/unified_eval_listener.py::load_model_registry when a launch opts in via
-# --use-model-registry (or cluster `use_model_registry: true`). The legacy
-# --baseline-model-configs path stays the default until the Stage-4 cutover.
-#
-# Stage 2: `models:`/`patterns:` below are migrated VERBATIM from
-# baseline_model_configs_minimal.yaml (the shared multi-GPU base = Leonardo/Jupiter values).
-# Stage 3 folds the TACC (1x GH200/node) forks in as `variants: {gh200: {...}}` overrides.
-#
-# FORMAT
-#   models:    Per-model entries (exact HF name -> config). Hold the MODEL-INTRINSIC serve
-#              keys PLUS an optional `variants:` block keyed by HARDWARE-PROFILE name.
-#   groups:    Apply one config to many models. Per-model entries merge on top (override wins).
-#   patterns:  Regex fallback when no exact/group match. First match wins (order preserved).
-#
-# VARIANTS: a cluster declaring `hardware_profile: <name>` shallow-merges the matching
-#   `variants[<name>]` over the base entry (variant replaces each named top-level key; no deep
-#   merge). No matching variant -> base entry unchanged. Precedence:
-#       exact+variant[profile] > exact > group > pattern -> size-default
-#   (a strict superset of today's exact/group/pattern chain).
-#
-# DEFAULT-ON (Stage-4 cutover): this registry is now the DEFAULT resolution path for ALL
-#   clusters. The legacy --baseline-model-configs flag still works as an explicit per-launch
-#   override but is DEPRECATED (emits a DeprecationWarning); migrate any model into this file
-#   instead (a `name@<profile>` standalone for an intrinsic divergence, or a `variants:` block
-#   for a pure hardware delta + the cluster's `hardware_profile`).
-#
-# max_output_tokens (OPTIONAL, model-intrinsic): the per-model serve-OUTPUT-token budget. When
-#   set on a model entry (or a variant), the listener forwards it as EVAL_MAX_OUTPUT_TOKENS,
-#   exactly mirroring how `max_model_len` -> EVAL_VLLM_MAX_MODEL_LEN. ABSENT (the default for
-#   EVERY model here) -> the env var is NOT set, so the sbatch :-16384 default applies unchanged.
-#   This is the single home to PIN a model's generation budget (e.g. a thinking model that needs
-#   a larger-than-16384 budget); pinning a specific model is a parity-changing follow-up, NOT a
-#   no-op — do it deliberately. Example:
-#       "org/some-thinking-model":
-#         max_model_len: 65536
-#         max_output_tokens: 32768   # -> EVAL_MAX_OUTPUT_TOKENS=32768 (overrides the 16384 default)
+# AUTO-GENERATED from model_config/ — do NOT hand-edit.
+# Edit the per-model files under model_config/<org>/<slug>.yaml and run:
+#     python scripts/generate_eval_registry.py
+# (or scripts/generate_eval_registry.py --check in CI to detect drift).
+# Source of truth: model_config/ (file-per-model, layered schema).
 
 models:
-  # SA-SWE-32B: authors use custom SkyRL OHCodeActAgent (engine-direct, not
-  # portable). Best knowable scaffold via OpenAI-compat: Pattern B (hermes +
-  # qwen3 reasoning) + swe-agent regular = 24.7% (paper 39.4%). Custom acc-
-  # thinking template REGRESSED to 14.3% by filling 32K context with stale
-  # <think> blocks → stuck-loop failures. See PREFERRED_HARNESS_REPRODUCTION.md §3.
-  "NovaSky-AI/SA-SWE-32B":
-    tensor_parallel_size: 2
+  GAIR/OpenSWE-32B:
     max_model_len: 32768
+    trust_remote_code: true
+    tool_call_parser: hermes
+    tensor_parallel_size: 2
     swap_space: 32
+    extra_args: --enable-prefix-caching --override-generation-config {"temperature":0.7,"top_p":0.8,"top_k":20,"repetition_penalty":1.2}
+  GAIR/daVinci-Dev-32B:
+    max_model_len: 32768
+    trust_remote_code: true
+    tool_call_parser: hermes
+    tensor_parallel_size: 2
+    swap_space: 32
+    extra_args: --enable-prefix-caching
+  Lite-Coder/LiteCoder-Terminal-30b-a3b-sft:
+    max_model_len: 32768
+    trust_remote_code: true
+    tensor_parallel_size: 2
+    swap_space: 32
+    extra_args: --enable-prefix-caching
+  NovaSky-AI/SA-SWE-32B:
+    max_model_len: 32768
     trust_remote_code: true
     tool_call_parser: hermes
     reasoning_parser: qwen3
-    # Qwen3-32B base → hybrid thinking via enable_thinking. Runs thinking-ON
-    # (Pattern B: reasoning_parser qwen3 strips <think>). The PREFERRED_HARNESS
-    # regression was a CUSTOM acc-thinking TEMPLATE, not enable_thinking itself.
+    tensor_parallel_size: 2
+    swap_space: 32
     agent_kwargs:
-      - 'extra_body={"chat_template_kwargs":{"enable_thinking":true}}'
-    extra_args: "--enable-prefix-caching"
-
-  # OpenSWE-32B (GAIR daVinci-Env paper, arxiv 2603.13023): vanilla Qwen2.5
-  # Hermes-style chat template — emits <tool_call>{"name":...}</tool_call> JSON
-  # (NOT XML <function=bash>; earlier subagent claim was wrong). Stock swe-agent
-  # default scaffold, parse_function: function_calling. Authors' sampling:
-  # temp 0.7 / top_p 0.8 / top_k 20 / rep_penalty 1.2 (paper §4.1). Paper 62.4%
-  # at 128k context; we cap at 32k.
-  "GAIR/OpenSWE-32B":
-    tensor_parallel_size: 2
+    - extra_body={"chat_template_kwargs":{"enable_thinking":true}}
+    extra_args: --enable-prefix-caching
+  QuantTrio/GLM-4.6-AWQ:
     max_model_len: 32768
-    swap_space: 32
     trust_remote_code: true
-    tool_call_parser: hermes
-    extra_args: '--enable-prefix-caching --override-generation-config {"temperature":0.7,"top_p":0.8,"top_k":20,"repetition_penalty":1.2}'
-
-  "GAIR/daVinci-Dev-32B":
-    tensor_parallel_size: 2
-    max_model_len: 32768
-    swap_space: 32
-    trust_remote_code: true
-    tool_call_parser: hermes
-    extra_args: "--enable-prefix-caching"
-
-  # Skywork-SWE-32B (Qwen2.5-Coder-32B finetune): plain vLLM serve, no parsers,
-  # no chat template. Authors use OpenHands 0.32.0 CodeActAgent with mock_
-  # function_calling (XML prompt parsed client-side). Paper 38.0% pass@1.
-  # See PREFERRED_HARNESS_REPRODUCTION.md.
-  "Skywork/Skywork-SWE-32B":
-    tensor_parallel_size: 2
-    max_model_len: 32768
-    swap_space: 32
-    extra_args: "--enable-prefix-caching"
-
-  # R2EGym-32B-Agent (Qwen2.5-Coder-32B finetune): plain vLLM serve, no parsers.
-  # Authors use custom R2E-Gym harness with XML <function=NAME><parameter=KEY>VAL
-  # </parameter></function> format which matches OpenHands text-tools (mock_
-  # function_calling). Native ctx 32k matches our cap. Paper 34.4% pass@1.
-  # See PREFERRED_HARNESS_REPRODUCTION.md.
-  "R2E-Gym/R2EGym-32B-Agent":
-    tensor_parallel_size: 2
-    max_model_len: 32768
-    swap_space: 32
-    extra_args: "--enable-prefix-caching"
-
-  # Mistral Devstral-Small-2507 (24B SWE model) — requires mistral-format
-  # tokenizer/config/weights and TP=2 per official Mistral recommendation.
-  "mistralai/Devstral-Small-2507":
-    tensor_parallel_size: 2
-    max_model_len: 32768
-    swap_space: 32
-    tool_call_parser: mistral
-    extra_args: "--tokenizer-mode mistral --config-format mistral --load-format mistral --enable-prefix-caching"
-
-  # Mistral Devstral-Small-2-24B-Instruct-2512 (v2, 24B) — standard HF loading
-  # (no mistral-format flags). Needs mistral_common >= 1.8.6 in the conda env.
-  # Native context 262144; capped at 32768 for eval parity.
-  "mistralai/Devstral-Small-2-24B-Instruct-2512":
-    tensor_parallel_size: 2
-    max_model_len: 32768
-    swap_space: 32
-    tool_call_parser: mistral
-    extra_args: "--enable-prefix-caching"
-
-  # Qwen3-32B — openhands native tool calling config.
-  # hermes parser for tool calls, qwen3 reasoning parser to strip <think> blocks.
-  "Qwen/Qwen3-32B":
-    tensor_parallel_size: 2
-    max_model_len: 32768
-    swap_space: 32
-    trust_remote_code: true
-    tool_call_parser: hermes
-    reasoning_parser: qwen3
-    # Qwen3 dense hybrid-thinking model: enable_thinking toggles <think> via the
-    # chat template (vLLM chat_template_kwargs). Thinking ON.
-    agent_kwargs:
-      - 'extra_body={"chat_template_kwargs":{"enable_thinking":true}}'
-    extra_args: "--enable-prefix-caching"
-
-  # Qwen3-Coder-30B-A3B-Instruct (30B MoE, 3B active) — designed for tool calling.
-  # Model card recommends qwen3_coder parser for native tool calling, newer vLLM
-  # (otagent2-fix, 0.17+) for MoE stability, and specific sampling params:
-  # temperature=0.7, top_p=0.8, top_k=20, repetition_penalty=1.05.
-  # Using --override-generation-config to apply server-side (applies to all
-  # requests regardless of client-side settings).
-  "Qwen/Qwen3-Coder-30B-A3B-Instruct":
-    tensor_parallel_size: 2
-    max_model_len: 32768
-    swap_space: 32
-    trust_remote_code: true
-    tool_call_parser: qwen3_coder
-    extra_args: '--enable-prefix-caching --override-generation-config {"temperature":0.7,"top_p":0.8,"top_k":20,"repetition_penalty":1.05}'
-
-  # NVIDIA Nemotron-3-Nano-30B-A3B-BF16 — 30B MoE, 3B active. Mirrors the legacy
-  # TACC sbatch `openhands_nvidia_eval_harbor.sbatch` (native tool calling
-  # with qwen3_coder parser + custom nano_v3 reasoning parser plugin +
-  # model-specific chat template). otagent2-fix required for MoE on vLLM 0.17+.
-  # Max context capped at 32768 for eval parity with other models.
-  # --enforce-eager matches legacy. Sampling temp=0.6, top_p=0.95.
-  "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16":
-    conda_env: otagent2-fix
-    tensor_parallel_size: 2
-    max_model_len: 32768
-    swap_space: 32
-    trust_remote_code: true
-    tool_call_parser: qwen3_coder
-    reasoning_parser: nano_v3
-    # Nemotron-Nano v3 is a reasoning model, thinking ON. The HF model card's vLLM
-    # snippet uses the SAME chat_template_kwargs.enable_thinking key
-    # (`chat_template_kwargs={"enable_thinking": ...}`), so we deliver it that way.
-    # ⚠ VERIFY-ON-FIRST-RUN: a secondary source suggests the v3 toggle may instead
-    # be a system-prompt `/think` `/no_think` directive (not a kwarg). The model
-    # card form is taken as authoritative; if the kwarg is silently ignored at
-    # serve time, switch to the system-prompt directive. (It also supports a
-    # `reasoning_budget` to cap thinking length — left unset = model default.)
-    agent_kwargs:
-      - 'extra_body={"chat_template_kwargs":{"enable_thinking":true}}'
-    extra_args: '--reasoning-parser-plugin ${DCFT}/eval/configs/nano_v3_reasoning_parser.py --chat-template ${DCFT}/eval/configs/nemotron_chat_template.jinja --enable-prefix-caching --override-generation-config {"temperature":0.6,"top_p":0.95}'
-
-  # Qwen3-30B-A3B-Instruct-2507 (30B MoE, 3B active) — Pattern D for terminus-2.
-  # otagent2-fix required for MoE stability on vLLM 0.17+.
-  "Qwen/Qwen3-30B-A3B-Instruct-2507":
-    tensor_parallel_size: 2
-    max_model_len: 32768
-    swap_space: 32
-    trust_remote_code: true
-    extra_args: "--enable-prefix-caching"
-
-  # Allen AI SERA-32B (SWE-bench model) — Pattern A. Paper-parity vLLM flags
-  # (enforce-eager, disable-cascade-attn, seed 42); no prefix-caching or
-  # reasoning_parser. TP=2 (not paper's TP=4) to fit a single-node serving slot.
-  "allenai/SERA-32B":
-    tensor_parallel_size: 2
-    max_model_len: 32768
-    swap_space: 32
-    trust_remote_code: true
-    tool_call_parser: hermes
-    # SERA is a Qwen3 finetune (paper: Qwen3 base) → inherits Qwen3's hybrid
-    # enable_thinking chat template. Thinking ON. (Pattern A intentionally has NO
-    # reasoning_parser — terminus-2 parses client-side; that's orthogonal to the
-    # enable_thinking chat-template toggle.)
-    agent_kwargs:
-      - 'extra_body={"chat_template_kwargs":{"enable_thinking":true}}'
-    extra_args: "--enforce-eager --disable-cascade-attn --seed 42"
-
-  # Allen AI SERA-8B — mirror SERA-32B paper-parity flags, scaled for 8B.
-  "allenai/SERA-8B":
-    tensor_parallel_size: 1
-    max_model_len: 32768
-    swap_space: 32
-    trust_remote_code: true
-    tool_call_parser: hermes
-    # Qwen3 finetune → Qwen3 enable_thinking template (see SERA-32B). Thinking ON.
-    agent_kwargs:
-      - 'extra_body={"chat_template_kwargs":{"enable_thinking":true}}'
-    extra_args: "--enforce-eager --disable-cascade-attn --seed 42"
-
-  # Allen AI tmax-9b / tmax-27b — model_type: qwen3_5 (Qwen3_5ForConditionalGeneration,
-  # dense, NOT MoE; verified 2026-06-23 for BOTH sizes). The default otagent vLLM
-  # 0.16.0 has NO qwen3_5 impl and transformers 4.x can't parse the config, so these
-  # MUST serve from the eval-qwen35 env (fork-vLLM @ 76259c63a + transformers 5.12.1;
-  # ENVIRONMENT_MAP §2f). conda_env triggers the Leonardo sbatch to activate eval-qwen35
-  # + export the §2f load-bearing serve env (VLLM_USE_FLASHINFER_SAMPLER=0,
-  # VLLM_ATTENTION_BACKEND=FLASH_ATTN, LIBRARY_PATH stubs, conda libstdc++ on LD path).
-  # tmax is a VL arch shipping no preprocessor_config.json → serve text-only via
-  # --limit-mm-per-prompt image=0,video=0. TP=4 serve-smoke-verified for 9b (job 47715931);
-  # 27b is dense ~54GB bf16 → fits 4xA100-64GB at TP=4. Context 32k.
-  "allenai/tmax-9b":
-    conda_env: eval-qwen35
-    tensor_parallel_size: 4
-    max_model_len: 32768
-    swap_space: 32
-    # JSON object string — fork-vLLM json.loads() this. Routed via its own field
-    # (NOT extra_args) so the quotes survive shell word-splitting.
-    limit_mm_per_prompt: '{"image":0,"video":0}'
-    # tmax-9b is an allenai finetune ON Qwen3.5 (model_type qwen3_5) → inherits the
-    # Qwen3.5 HYBRID template, toggled by enable_thinking (HIGH conf on mechanism;
-    # the tmax-27b note below references "a 16k-token thinking gen"). Thinking ON.
-    agent_kwargs:
-      - 'extra_body={"chat_template_kwargs":{"enable_thinking":true}}'
-
-  # 27b ID-eval reconfigured TP=4 -> DATA-PARALLEL on the single 4-GPU A100-64GB
-  # node (2026-06-24): 2 replicas x 2-way TP = 4 GPUs. TP=4 made each of 32-128
-  # concurrent decode streams crawl (~10 tok/s) → a 16k-token thinking gen needed
-  # ~1,550s >> the 600s litellm timeout → ~2,900 timeouts + a summarization spiral
-  # (serve was NOT overloaded: KV 29-47%, empty queue, no preemption). DP2xTP2
-  # splits weights 2-way (~27GB/card → ~37GB free for KV at 32k) and ~2x's the
-  # per-stream speed. Pair with EVAL_N_CONCURRENT=16 (~16 concurrent keeps each
-  # stream fast). Do NOT use DP4/TP1 at 32k — 54GB weights on 64GB leaves only
-  # ~7-10GB KV (~27k tokens), KV-starved (fallback only if max_model_len drops).
-  "allenai/tmax-27b":
-    conda_env: eval-qwen35
-    tensor_parallel_size: 2
-    data_parallel_size: 2
-    max_model_len: 32768
-    swap_space: 32
-    limit_mm_per_prompt: '{"image":0,"video":0}'
-    # tmax-27b is an allenai finetune ON Qwen3.6 (qwen3_5) → Qwen3.6 hybrid template,
-    # enable_thinking toggle (see tmax-9b). Thinking ON.
-    agent_kwargs:
-      - 'extra_body={"chat_template_kwargs":{"enable_thinking":true}}'
-
-  # Qwen3.6-35B-A3B / Qwen3.5-35B-A3B — model_type: qwen3_5_moe
-  # (Qwen3_5MoeForConditionalGeneration). Verified from HF config.json (2026-06-25,
-  # both repos public + ungated): hybrid linear/full-attn MoE, text_config has
-  # 40 layers, hidden 2048, 16 attn / 2 KV heads (GQA group 8), head_dim 256,
-  # 256 experts top-8, native ctx 262144, vocab 248320, bf16. ~34.4B total /
-  # ~3.2B active. Both sizes are arch-identical for serving → same preset.
-  #
-  # conda_env: eval-qwen35 — MANDATORY. This is the ONLY env that can vLLM-serve
-  # model_type: qwen3_5 / qwen3_5_moe (fork-vLLM 0.20.x @ 76259c63a registers
-  # Qwen3_5MoeForConditionalGeneration + transformers 5.12.1 parses the hybrid
-  # GatedDeltaNet config; ENVIRONMENT_MAP §2f). The generic `(?i)qwen3\.5` pattern
-  # below routes to otagent2-fix (vLLM 0.17.1, NO qwen3_5 impl) — WRONG for these,
-  # so these EXACT-match entries override the pattern (cf. the 131k-fixthink note).
-  # The §2f load-bearing serve env (VLLM_USE_FLASHINFER_SAMPLER=0,
-  # VLLM_ATTENTION_BACKEND=FLASH_ATTN, conda libstdc++ on LD path, libcuda stub)
-  # is exported by the Leonardo sbatch when conda_env=eval-qwen35.
-  #
-  # TP=2 + DP=2 (2026-06-25): mirrors the PROVEN allenai/tmax-27b DP=2/TP=2 eval
-  # geometry on the same Leonardo 4×A100-64GB node (jobs 47773531/654/810 — DP=2/TP=2
-  # gave AgentTimeout=0 vs higher-TP problems). These are A3B MoE (~34.4B total /
-  # ~3.2B ACTIVE) — TP only needs to be big enough to FIT the weights; TP=4 just
-  # adds wasteful comms overhead on the tiny active-param compute. Geometry: weights
-  # ~69 GB bf16 → TP=2 ≈ 34.5 GB/GPU, fits 64 GB with KV headroom at 32k (the hybrid
-  # arch grows KV on only 10/40 layers so 32k is cheap). TP=2 divides 16 attn heads
-  # (8/GPU); 2 KV heads / TP=2 = 1 KV head/GPU (legal GQA, no replication); 256
-  # experts / TP=2 = 128/GPU. DP=2 runs 2 native vLLM replicas → 2× throughput.
-  # Total GPUs = TP×DP = 4 = one full Leonardo node (sbatch derives gres from TP×DP).
-  # data_parallel_size is read by the listener → EVAL_VLLM_DATA_PARALLEL_SIZE →
-  # vLLM --data-parallel-size, exactly like the tmax-27b entry above.
-  # max_model_len 32768: eval parity with every neighbor (native ctx is 262144
-  # but eval contexts cap at 32k; no YaRN/rope_scaling needed — 32768 << 262144).
-  # NO tool_call_parser / reasoning_parser: Pattern D for terminus-2 (it parses
-  # JSON client-side; parsers hijack that, like the Qwen3-30B-A3B-2507 neighbor).
-  # VL arch (carries vision_config) → serve TEXT-only via limit_mm_per_prompt
-  # image=0,video=0 (these DO ship preprocessor_config.json, but text-only avoids
-  # the multimodal path entirely; mirrors the tmax qwen3_5 entries).
-  "Qwen/Qwen3.6-35B-A3B":
-    conda_env: eval-qwen35
-    tensor_parallel_size: 2
-    data_parallel_size: 2
-    max_model_len: 32768
-    swap_space: 32
-    trust_remote_code: true
-    limit_mm_per_prompt: '{"image":0,"video":0}'
-    # Qwen3.5/3.6 35B-A3B are HYBRID thinking (thinking ON by default), toggled by
-    # the SAME chat_template_kwargs.enable_thinking key (Qwen3.5 dropped the
-    # /think soft-switch but keeps the enable_thinking chat-template kwarg).
-    agent_kwargs:
-      - 'extra_body={"chat_template_kwargs":{"enable_thinking":true}}'
-    extra_args: "--enable-prefix-caching"
-
-  "Qwen/Qwen3.5-35B-A3B":
-    conda_env: eval-qwen35
-    tensor_parallel_size: 2
-    data_parallel_size: 2
-    max_model_len: 32768
-    swap_space: 32
-    trust_remote_code: true
-    limit_mm_per_prompt: '{"image":0,"video":0}'
-    # Hybrid thinking 35B-A3B (see Qwen3.6 above). Thinking ON via enable_thinking.
-    agent_kwargs:
-      - 'extra_body={"chat_template_kwargs":{"enable_thinking":true}}'
-    extra_args: "--enable-prefix-caching"
-
-  # ethanlshen Qwen3-32B SERA reproductions — Pattern A paper-parity flags
-  # (mirror allenai/SERA-32B: hermes + enforce-eager + disable-cascade-attn + seed 42).
-  # Size ladder: 316, 1000, 3160 (converted from broken FSDP upload), 10000 rows.
-  "ethanlshen/Qwen3-32B-316_sera_46_47000":
-    tensor_parallel_size: 2
-    max_model_len: 32768
-    swap_space: 32
-    trust_remote_code: true
-    tool_call_parser: hermes
-    # Qwen3-32B SERA finetune → Qwen3 enable_thinking template. Thinking ON.
-    agent_kwargs:
-      - 'extra_body={"chat_template_kwargs":{"enable_thinking":true}}'
-    extra_args: "--enforce-eager --disable-cascade-attn --seed 42"
-
-  "ethanlshen/Qwen3-32B-1000_sera_46_47000":
-    tensor_parallel_size: 2
-    max_model_len: 32768
-    swap_space: 32
-    trust_remote_code: true
-    tool_call_parser: hermes
-    # Qwen3-32B SERA finetune → Qwen3 enable_thinking template. Thinking ON.
-    agent_kwargs:
-      - 'extra_body={"chat_template_kwargs":{"enable_thinking":true}}'
-    extra_args: "--enforce-eager --disable-cascade-attn --seed 42"
-
-  "ethanlshen/Qwen3-32B-3160_sera_46_47000-converted":
-    tensor_parallel_size: 2
-    max_model_len: 32768
-    swap_space: 32
-    trust_remote_code: true
-    tool_call_parser: hermes
-    # Qwen3-32B SERA finetune → Qwen3 enable_thinking template. Thinking ON.
-    agent_kwargs:
-      - 'extra_body={"chat_template_kwargs":{"enable_thinking":true}}'
-    extra_args: "--enforce-eager --disable-cascade-attn --seed 42"
-
-  "ethanlshen/Qwen3-32B-10000_sera_46_47000":
-    tensor_parallel_size: 2
-    max_model_len: 32768
-    swap_space: 32
-    trust_remote_code: true
-    tool_call_parser: hermes
-    # Qwen3-32B SERA finetune → Qwen3 enable_thinking template. Thinking ON.
-    agent_kwargs:
-      - 'extra_body={"chat_template_kwargs":{"enable_thinking":true}}'
-    extra_args: "--enforce-eager --disable-cascade-attn --seed 42"
-
-  "ethanlshen/Qwen3-32B-31600_sera_46_47000_converted":
-    tensor_parallel_size: 2
-    max_model_len: 32768
-    swap_space: 32
-    trust_remote_code: true
-    tool_call_parser: hermes
-    # Qwen3-32B SERA finetune → Qwen3 enable_thinking template. Thinking ON.
-    agent_kwargs:
-      - 'extra_body={"chat_template_kwargs":{"enable_thinking":true}}'
-    extra_args: "--enforce-eager --disable-cascade-attn --seed 42"
-
-  # ethanlshen Qwen3-32B-47000-46 — SERA Pattern A (mirror 31600/SERA-32B).
-  "ethanlshen/Qwen3-32B-47000-46":
-    tensor_parallel_size: 2
-    max_model_len: 32768
-    swap_space: 32
-    trust_remote_code: true
-    tool_call_parser: hermes
-    # Qwen3-32B SERA finetune → Qwen3 enable_thinking template. Thinking ON.
-    agent_kwargs:
-      - 'extra_body={"chat_template_kwargs":{"enable_thinking":true}}'
-    extra_args: "--enforce-eager --disable-cascade-attn --seed 42"
-
-  # GLM-4_7 swesmith 131k-fixthink 8B — model name contains "131k" which triggers
-  # the generic `131k|-lc$` pattern → yarn rope_scaling factor 4.0 = 131k context.
-  # User requested REGULAR 32k config (not 131k). Exact-match overrides the pattern.
-  "laion/GLM-4_7-swesmith-sandboxes-with_tests-oracle_verified_120s-maxeps-131k-fixthink":
-    tensor_parallel_size: 1
-    max_model_len: 32768
-    swap_space: 32
-    # GLM-4.7-swesmith SFT on a Qwen3-8B student (cf. the timeout-multiplier note
-    # "really a Qwen3-8B") → Qwen3 enable_thinking template; "fixthink" = a
-    # thinking variant. Thinking ON.
-    agent_kwargs:
-      - 'extra_body={"chat_template_kwargs":{"enable_thinking":true}}'
-    extra_args: "--enable-prefix-caching"
-
-  # SWE-bench/SWE-agent-LM-32B — trained for swe-agent scaffold, needs hermes parser.
-  "SWE-bench/SWE-agent-LM-32B":
-    tensor_parallel_size: 2
-    max_model_len: 32768
-    swap_space: 32
-    trust_remote_code: true
-    tool_call_parser: hermes
-    extra_args: "--enable-prefix-caching"
-
-  # SWE-bench/SWE-agent-LM-7B — trained for swe-agent scaffold (7B variant).
-  # Hermes parser for tool calls; no reasoning_parser (model doesn't emit <think>).
-  "SWE-bench/SWE-agent-LM-7B":
-    trust_remote_code: true
-    tool_call_parser: hermes
-    extra_args: "--enable-prefix-caching"
-
-  # zai-org/GLM-4.7-Flash — GLM architecture (likely MoE), otagent2-fix for safety.
-  # Pattern D for terminus-2 reg eval.
-  "zai-org/GLM-4.7-Flash":
-    tensor_parallel_size: 2
-    max_model_len: 32768
-    swap_space: 32
-    trust_remote_code: true
-    # GLM-4.5+ are hybrid reasoning models; vLLM toggles thinking via the SAME
-    # chat_template_kwargs.enable_thinking key (thinking ON by default in vLLM).
-    agent_kwargs:
-      - 'extra_body={"chat_template_kwargs":{"enable_thinking":true}}'
-    extra_args: "--enable-prefix-caching"
-
-  # QuantTrio/GLM-4.{6,7}-AWQ — 358B Glm4MoeForCausalLM AWQ INT4
-  # (~180 GB weights). Same arch family as zai-org/GLM-4.7-FP8 (see
-  # eval/.local_notes/GLM_4_7_FP8_PROCEDURE.md). Fits TP=4 on a single Jupiter
-  # GH200 node (4×96=384 GB). Pattern D for terminus-2 reg eval — NO
-  # tool_call_parser, NO reasoning_parser (both hijack the plain-JSON output
-  # the terminus-2 agent parses client-side; vendor glm47/glm45/deepseek_v3
-  # parsers are for native-tool / openhands scaffolds, not terminus-2).
-  # NB: vLLM 0.17.1 in otagent2-fix had a deterministic q_norm CUDA crash on
-  # swebench-length prompts for the FP8 variant (project_glm47_fp8_qnorm_crash);
-  # AWQ may inherit. Smoke v2 + tb2 before swebench.
-  # max_num_seqs sized to comfortably hold listener --n-concurrent 32 without
-  # waiting (52 for 4.7, 64 for 4.6 per vendor/guha1 spec).
-  "QuantTrio/GLM-4.6-AWQ":
     conda_env: otagent2-fix
     tensor_parallel_size: 4
-    max_model_len: 32768
     swap_space: 8
-    trust_remote_code: true
-    # GLM-4.6 hybrid reasoning → enable_thinking chat-template kwarg. Thinking ON.
     agent_kwargs:
-      - 'extra_body={"chat_template_kwargs":{"enable_thinking":true}}'
-    extra_args: "--enable-expert-parallel --enable-prefix-caching --enable-chunked-prefill --max-num-seqs 64 --max-num-batched-tokens 32768 --dtype bfloat16 --kv-cache-dtype fp8"
-
-  # NB: 504964 (fp16 KV) saturated at 32 concurrent trials (Waiting 1-7, KV
-  # 95-100%). Switching default to fp8 KV (matches 4.6 entry above) to halve
-  # per-token KV and roughly double effective cache. vLLM 0.17.1 requires
-  # --dtype bfloat16 when kv_cache_dtype=fp8 (FP16 activations + FP8 KV is an
-  # unsupported combination — 505124 died at engine init with this error).
-  "QuantTrio/GLM-4.7-AWQ":
+    - extra_body={"chat_template_kwargs":{"enable_thinking":true}}
+    extra_args: --enable-expert-parallel --enable-prefix-caching --enable-chunked-prefill
+      --max-num-seqs 64 --max-num-batched-tokens 32768 --dtype bfloat16 --kv-cache-dtype
+      fp8
+  QuantTrio/GLM-4.7-AWQ:
+    max_model_len: 32768
+    trust_remote_code: true
     conda_env: otagent2-fix
     tensor_parallel_size: 4
-    max_model_len: 32768
     swap_space: 4
-    trust_remote_code: true
-    # GLM-4.7 hybrid reasoning → enable_thinking chat-template kwarg. Thinking ON.
     agent_kwargs:
-      - 'extra_body={"chat_template_kwargs":{"enable_thinking":true}}'
-    extra_args: "--enable-expert-parallel --enable-prefix-caching --enable-chunked-prefill --max-num-seqs 52 --max-num-batched-tokens 32768 --dtype bfloat16 --kv-cache-dtype fp8"
-
-  # Lite-Coder/LiteCoder-Terminal-30b-a3b-sft — 30B MoE (3B active), SFT for
-  # terminus scaffold. Pattern D — do NOT add tool_call_parser or
-  # reasoning_parser; both hijack the JSON the terminus-2 agent parses
-  # client-side (verified A/B: hermes+qwen3 → 0% acc; no parsers → 23–32%).
-  "Lite-Coder/LiteCoder-Terminal-30b-a3b-sft":
+    - extra_body={"chat_template_kwargs":{"enable_thinking":true}}
+    extra_args: --enable-expert-parallel --enable-prefix-caching --enable-chunked-prefill
+      --max-num-seqs 52 --max-num-batched-tokens 32768 --dtype bfloat16 --kv-cache-dtype
+      fp8
+  Qwen/Qwen3-30B-A3B-Instruct-2507:
+    max_model_len: 32768
+    trust_remote_code: true
     tensor_parallel_size: 2
-    max_model_len: 32768
     swap_space: 32
-    trust_remote_code: true
-    # NON-THINKING (confirmed): SFT on Qwen3-30B-A3B-Instruct-2507, whose shipped
-    # template is the NON-thinking 2507 variant (no enable_thinking <think> block).
-    # Qwen3-MoE architecture but NON-thinking base → NO thinking kwarg. (This is the
-    # classic trap: classify by the shipped template, not the arch family.)
-    extra_args: "--enable-prefix-caching"
-
-  # Sera-4.5A-Full-T1-v2 Qwen3-8B finetunes — used with swe-agent SERA e2e config
-  # (native function_calling). Without tool_call_parser, vLLM 400s every request
-  # ("auto" tool choice requires --enable-auto-tool-choice and --tool-call-parser).
-  # tool_call_parser field auto-adds --enable-auto-tool-choice via build_vllm_cmd.sh.
-  "laion/Sera-4.5A-Full-T1-v2-316__Qwen3-8B":
-    trust_remote_code: true
-    tool_call_parser: hermes
-    reasoning_parser: qwen3
-    agent_kwargs:
-      - 'extra_body={"chat_template_kwargs":{"enable_thinking":true}}'
-    extra_args: "--enable-prefix-caching"
-
-  "laion/Sera-4.5A-Full-T1-v2-1000__Qwen3-8B":
-    trust_remote_code: true
-    tool_call_parser: hermes
-    reasoning_parser: qwen3
-    agent_kwargs:
-      - 'extra_body={"chat_template_kwargs":{"enable_thinking":true}}'
-    extra_args: "--enable-prefix-caching"
-
-  "laion/Sera-4.5A-Full-T1-v2-3160__Qwen3-8B":
-    trust_remote_code: true
-    tool_call_parser: hermes
-    reasoning_parser: qwen3
-    agent_kwargs:
-      - 'extra_body={"chat_template_kwargs":{"enable_thinking":true}}'
-    extra_args: "--enable-prefix-caching"
-
-  "laion/Sera-4.5A-Full-T1-v2-10000__Qwen3-8B":
-    trust_remote_code: true
-    tool_call_parser: hermes
-    reasoning_parser: qwen3
-    agent_kwargs:
-      - 'extra_body={"chat_template_kwargs":{"enable_thinking":true}}'
-
-  # Sera-4.5A-Full-T1-v3-axolotl Qwen3-8B finetunes — axolotl-retrained
-  # variants. Pattern A serving flags (enforce-eager, disable-cascade-attn,
-  # seed 42; no reasoning_parser, no prefix-caching) to mirror SERA-8B
-  # paper-parity behavior on the markdown-output / hermes-parser interaction.
-  "laion/Sera-4.5A-Full-T1-v3-316-axolotl__Qwen3-8B":
+    extra_args: --enable-prefix-caching
+  Qwen/Qwen3-30B-A3B-Thinking-2507@gh200:
     tensor_parallel_size: 1
     max_model_len: 32768
     swap_space: 32
     trust_remote_code: true
-    tool_call_parser: hermes
     agent_kwargs:
-      - 'extra_body={"chat_template_kwargs":{"enable_thinking":true}}'
-    extra_args: "--enforce-eager --disable-cascade-attn --seed 42"
-
-  "laion/Sera-4.5A-Full-T1-v3-1000-axolotl__Qwen3-8B":
-    tensor_parallel_size: 1
+    - extra_body={"chat_template_kwargs":{"enable_thinking":true}}
+    extra_args: --enable-prefix-caching --max-num-seqs 512
+  Qwen/Qwen3-32B:
     max_model_len: 32768
+    trust_remote_code: true
+    tool_call_parser: hermes
+    reasoning_parser: qwen3
+    tensor_parallel_size: 2
     swap_space: 32
-    trust_remote_code: true
-    tool_call_parser: hermes
     agent_kwargs:
-      - 'extra_body={"chat_template_kwargs":{"enable_thinking":true}}'
-    extra_args: "--enforce-eager --disable-cascade-attn --seed 42"
-
-  # Sera-4.6-Lite-T2-v4-axolotl Qwen3-8B finetunes — Pattern B (hermes
-  # tool-call parser + qwen3 reasoning parser + prefix-caching).
-  "laion/Sera-4.6-Lite-T2-v4-316-axolotl__Qwen3-8B":
-    trust_remote_code: true
-    tool_call_parser: hermes
-    reasoning_parser: qwen3
-    agent_kwargs:
-      - 'extra_body={"chat_template_kwargs":{"enable_thinking":true}}'
-    extra_args: "--enable-prefix-caching"
-
-  "laion/Sera-4.6-Lite-T2-v4-1000-axolotl__Qwen3-8B":
-    trust_remote_code: true
-    tool_call_parser: hermes
-    reasoning_parser: qwen3
-    agent_kwargs:
-      - 'extra_body={"chat_template_kwargs":{"enable_thinking":true}}'
-    extra_args: "--enable-prefix-caching"
-
-  # CoderForge-Preview-v2-10000 — hermes confirmed correct parser (9.4% vs 0% on
-  # qwen3_coder); kept here for potential future family fires.
-  "laion/CoderForge-Preview-v2-10000__Qwen3-8B":
-    tool_call_parser: hermes
-    agent_kwargs:
-      - 'extra_body={"chat_template_kwargs":{"enable_thinking":true}}'
-
-  # CoderForge-Preview-v3-axolotl Qwen3-8B finetunes — Pattern B (hermes
-  # tool-call parser + qwen3 reasoning parser + prefix-caching). Handles the
-  # `<think>` blocks emitted by Qwen3 finetunes when run under openhands
-  # native-tool scaffolds.
-  "laion/CoderForge-Preview-v3-316-axolotl__Qwen3-8B":
-    trust_remote_code: true
-    tool_call_parser: hermes
-    reasoning_parser: qwen3
-    agent_kwargs:
-      - 'extra_body={"chat_template_kwargs":{"enable_thinking":true}}'
-    extra_args: "--enable-prefix-caching"
-
-  "laion/CoderForge-Preview-v3-1000-axolotl__Qwen3-8B":
-    trust_remote_code: true
-    tool_call_parser: hermes
-    reasoning_parser: qwen3
-    agent_kwargs:
-      - 'extra_body={"chat_template_kwargs":{"enable_thinking":true}}'
-    extra_args: "--enable-prefix-caching"
-
-  # Qwen/Qwen3-8B (base instruct) — baseline control for 8B openhands native tools.
-  # hermes parser + qwen3 reasoning parser to mirror Qwen3-32B entry.
-  "Qwen/Qwen3-8B":
-    tool_call_parser: hermes
-    reasoning_parser: qwen3
-    trust_remote_code: true
-    agent_kwargs:
-      - 'extra_body={"chat_template_kwargs":{"enable_thinking":true}}'
-
-  # SWE-Lego/SWE-Lego-Qwen3-8B — mirror Qwen/Qwen3-8B for openhands native tools.
-  # SWE-Lego authors run plain vLLM (no tool_call_parser, no reasoning_parser)
-  # and rely on OpenHands' XML prompt-based function calling (text tools), NOT
-  # native tool calls. Authors use temp=0.0 — bake via override-generation-config
-  # to get greedy decoding (biggest within-32k tweak per subagent research, +3-7pp
-  # expected). Paper 42.2% at 163k; structural floor at 32k ~25-30%.
-  "SWE-Lego/SWE-Lego-Qwen3-8B":
-    trust_remote_code: true
-    agent_kwargs:
-      - 'extra_body={"chat_template_kwargs":{"enable_thinking":true}}'
-    extra_args: '--enable-prefix-caching --override-generation-config {"temperature":0.0,"top_p":1.0,"top_k":-1}'
-
-# Pattern-based configs: matched by regex when no exact/group match is found.
-# Checked in order; first match wins.
-# Every pattern sets: trust_remote_code=true + --enable-prefix-caching
-#   trust_remote_code: permission-only, no-op unless model ships custom code
-#   --enable-prefix-caching: pure-win for agent evals (shared system prompt)
-  # ============================================================================
-  # TACC Vista (hardware_profile: gh200 / gh200-65k) — STANDALONE @profile entries.
-  # Vista has ONE 96GB GH200/node, AND runs a different vLLM env + terminus-2
-  # Pattern-D scaffold than Leonardo/Jupiter, so these models diverge on INTRINSIC
-  # fields (no tool_call_parser/reasoning_parser; no eval-qwen35 conda_env — the
-  # otagent fork-vLLM resolves qwen3_5_moe natively; no DP). A variant can ADD/replace
-  # but not REMOVE a base key, so these are flat name@<profile> standalone entries
-  # (no inheritance) carrying the FULL Vista recipe VERBATIM from the retired forks
-  # eval/clusters/tacc_baseline_model_configs*.yaml. (Migration: model-config decoupling Stage 3.)
-  # --- @gh200 (32k) ---
-  "Qwen/Qwen3-32B@gh200":
+    - extra_body={"chat_template_kwargs":{"enable_thinking":true}}
+    extra_args: --enable-prefix-caching
+  Qwen/Qwen3-32B@gh200:
     tensor_parallel_size: 1
     max_model_len: 32768
     swap_space: 32
     trust_remote_code: true
     extra_args: --enable-prefix-caching
-
-  "Qwen/Qwen3-8B@gh200":
+  Qwen/Qwen3-32B@gh200-65k:
+    tensor_parallel_size: 1
+    max_model_len: 32768
+    swap_space: 32
+    trust_remote_code: true
+    extra_args: --enable-prefix-caching
+  Qwen/Qwen3-8B:
+    tool_call_parser: hermes
+    reasoning_parser: qwen3
+    trust_remote_code: true
+    agent_kwargs:
+    - extra_body={"chat_template_kwargs":{"enable_thinking":true}}
+  Qwen/Qwen3-8B@gh200:
     tensor_parallel_size: 1
     max_model_len: 32768
     trust_remote_code: true
     extra_args: --enable-prefix-caching
-
-  "allenai/tmax-9b@gh200":
+  Qwen/Qwen3-8B@gh200-65k:
     tensor_parallel_size: 1
+    max_model_len: 32768
+    trust_remote_code: true
+    extra_args: --enable-prefix-caching
+  Qwen/Qwen3-Coder-30B-A3B-Instruct:
+    max_model_len: 32768
+    trust_remote_code: true
+    tool_call_parser: qwen3_coder
+    tensor_parallel_size: 2
+    swap_space: 32
+    extra_args: --enable-prefix-caching --override-generation-config {"temperature":0.7,"top_p":0.8,"top_k":20,"repetition_penalty":1.05}
+  Qwen/Qwen3.5-35B-A3B:
     max_model_len: 32768
     trust_remote_code: true
     limit_mm_per_prompt: '{"image":0,"video":0}'
+    conda_env: eval-qwen35
+    tensor_parallel_size: 2
+    data_parallel_size: 2
+    swap_space: 32
+    agent_kwargs:
+    - extra_body={"chat_template_kwargs":{"enable_thinking":true}}
     extra_args: --enable-prefix-caching
-
-  "Qwen/Qwen3.6-35B-A3B@gh200":
+  Qwen/Qwen3.5-35B-A3B@gh200:
     tensor_parallel_size: 1
     max_model_len: 32768
     swap_space: 32
@@ -660,8 +136,18 @@ models:
     agent_kwargs:
     - extra_body={"chat_template_kwargs":{"enable_thinking":true}}
     extra_args: --enable-prefix-caching --max-num-seqs 512
-
-  "Qwen/Qwen3.5-35B-A3B@gh200":
+  Qwen/Qwen3.6-35B-A3B:
+    max_model_len: 32768
+    trust_remote_code: true
+    limit_mm_per_prompt: '{"image":0,"video":0}'
+    conda_env: eval-qwen35
+    tensor_parallel_size: 2
+    data_parallel_size: 2
+    swap_space: 32
+    agent_kwargs:
+    - extra_body={"chat_template_kwargs":{"enable_thinking":true}}
+    extra_args: --enable-prefix-caching
+  Qwen/Qwen3.6-35B-A3B@gh200:
     tensor_parallel_size: 1
     max_model_len: 32768
     swap_space: 32
@@ -670,116 +156,299 @@ models:
     agent_kwargs:
     - extra_body={"chat_template_kwargs":{"enable_thinking":true}}
     extra_args: --enable-prefix-caching --max-num-seqs 512
-
-  "Qwen/Qwen3-30B-A3B-Thinking-2507@gh200":
-    tensor_parallel_size: 1
+  R2E-Gym/R2EGym-32B-Agent:
     max_model_len: 32768
+    tensor_parallel_size: 2
     swap_space: 32
+    extra_args: --enable-prefix-caching
+  SWE-Lego/SWE-Lego-Qwen3-8B:
     trust_remote_code: true
     agent_kwargs:
     - extra_body={"chat_template_kwargs":{"enable_thinking":true}}
-    extra_args: --enable-prefix-caching --max-num-seqs 512
-
-  # --- @gh200-65k (tmax-9b pinned to 65536; Qwen3-32B/8B same as @gh200) ---
-  "allenai/tmax-9b@gh200-65k":
+    extra_args: --enable-prefix-caching --override-generation-config {"temperature":0.0,"top_p":1.0,"top_k":-1}
+  SWE-bench/SWE-agent-LM-32B:
+    max_model_len: 32768
+    trust_remote_code: true
+    tool_call_parser: hermes
+    tensor_parallel_size: 2
+    swap_space: 32
+    extra_args: --enable-prefix-caching
+  SWE-bench/SWE-agent-LM-7B:
+    trust_remote_code: true
+    tool_call_parser: hermes
+    extra_args: --enable-prefix-caching
+  Skywork/Skywork-SWE-32B:
+    max_model_len: 32768
+    tensor_parallel_size: 2
+    swap_space: 32
+    extra_args: --enable-prefix-caching
+  allenai/SERA-32B:
+    max_model_len: 32768
+    trust_remote_code: true
+    tool_call_parser: hermes
+    tensor_parallel_size: 2
+    swap_space: 32
+    agent_kwargs:
+    - extra_body={"chat_template_kwargs":{"enable_thinking":true}}
+    extra_args: --enforce-eager --disable-cascade-attn --seed 42
+  allenai/SERA-8B:
+    max_model_len: 32768
+    trust_remote_code: true
+    tool_call_parser: hermes
+    tensor_parallel_size: 1
+    swap_space: 32
+    agent_kwargs:
+    - extra_body={"chat_template_kwargs":{"enable_thinking":true}}
+    extra_args: --enforce-eager --disable-cascade-attn --seed 42
+  allenai/tmax-27b:
+    max_model_len: 32768
+    limit_mm_per_prompt: '{"image":0,"video":0}'
+    conda_env: eval-qwen35
+    tensor_parallel_size: 2
+    data_parallel_size: 2
+    swap_space: 32
+    agent_kwargs:
+    - extra_body={"chat_template_kwargs":{"enable_thinking":true}}
+  allenai/tmax-9b:
+    max_model_len: 32768
+    limit_mm_per_prompt: '{"image":0,"video":0}'
+    conda_env: eval-qwen35
+    tensor_parallel_size: 4
+    swap_space: 32
+    agent_kwargs:
+    - extra_body={"chat_template_kwargs":{"enable_thinking":true}}
+  allenai/tmax-9b@gh200:
+    tensor_parallel_size: 1
+    max_model_len: 32768
+    trust_remote_code: true
+    limit_mm_per_prompt: '{"image":0,"video":0}'
+    extra_args: --enable-prefix-caching
+  allenai/tmax-9b@gh200-65k:
     tensor_parallel_size: 1
     max_model_len: 65536
     trust_remote_code: true
     limit_mm_per_prompt: '{"image":0,"video":0}'
     extra_args: --enable-prefix-caching
-
-  "Qwen/Qwen3-32B@gh200-65k":
-    tensor_parallel_size: 1
+  ethanlshen/Qwen3-32B-10000_sera_46_47000:
     max_model_len: 32768
+    trust_remote_code: true
+    tool_call_parser: hermes
+    tensor_parallel_size: 2
     swap_space: 32
-    trust_remote_code: true
-    extra_args: --enable-prefix-caching
-
-  "Qwen/Qwen3-8B@gh200-65k":
-    tensor_parallel_size: 1
+    agent_kwargs:
+    - extra_body={"chat_template_kwargs":{"enable_thinking":true}}
+    extra_args: --enforce-eager --disable-cascade-attn --seed 42
+  ethanlshen/Qwen3-32B-1000_sera_46_47000:
     max_model_len: 32768
     trust_remote_code: true
+    tool_call_parser: hermes
+    tensor_parallel_size: 2
+    swap_space: 32
+    agent_kwargs:
+    - extra_body={"chat_template_kwargs":{"enable_thinking":true}}
+    extra_args: --enforce-eager --disable-cascade-attn --seed 42
+  ethanlshen/Qwen3-32B-31600_sera_46_47000_converted:
+    max_model_len: 32768
+    trust_remote_code: true
+    tool_call_parser: hermes
+    tensor_parallel_size: 2
+    swap_space: 32
+    agent_kwargs:
+    - extra_body={"chat_template_kwargs":{"enable_thinking":true}}
+    extra_args: --enforce-eager --disable-cascade-attn --seed 42
+  ethanlshen/Qwen3-32B-3160_sera_46_47000-converted:
+    max_model_len: 32768
+    trust_remote_code: true
+    tool_call_parser: hermes
+    tensor_parallel_size: 2
+    swap_space: 32
+    agent_kwargs:
+    - extra_body={"chat_template_kwargs":{"enable_thinking":true}}
+    extra_args: --enforce-eager --disable-cascade-attn --seed 42
+  ethanlshen/Qwen3-32B-316_sera_46_47000:
+    max_model_len: 32768
+    trust_remote_code: true
+    tool_call_parser: hermes
+    tensor_parallel_size: 2
+    swap_space: 32
+    agent_kwargs:
+    - extra_body={"chat_template_kwargs":{"enable_thinking":true}}
+    extra_args: --enforce-eager --disable-cascade-attn --seed 42
+  ethanlshen/Qwen3-32B-47000-46:
+    max_model_len: 32768
+    trust_remote_code: true
+    tool_call_parser: hermes
+    tensor_parallel_size: 2
+    swap_space: 32
+    agent_kwargs:
+    - extra_body={"chat_template_kwargs":{"enable_thinking":true}}
+    extra_args: --enforce-eager --disable-cascade-attn --seed 42
+  laion/CoderForge-Preview-v2-10000__Qwen3-8B:
+    tool_call_parser: hermes
+    agent_kwargs:
+    - extra_body={"chat_template_kwargs":{"enable_thinking":true}}
+  laion/CoderForge-Preview-v3-1000-axolotl__Qwen3-8B:
+    trust_remote_code: true
+    tool_call_parser: hermes
+    reasoning_parser: qwen3
+    agent_kwargs:
+    - extra_body={"chat_template_kwargs":{"enable_thinking":true}}
     extra_args: --enable-prefix-caching
-
-# Pattern fallbacks. Each carries an explicit `profiles:` filter (a pattern with NO `profiles`
-# would apply to ALL clusters). The DEFAULT set below (migrated from minimal.yaml, profiles:
-# [default]) is the Leonardo/Jupiter multi-GPU node-fill geometry (32B -> TP=4 etc.); the Vista
-# set further down (profiles: [gh200, gh200-65k]) is the single-GH200 TP=1 geometry. Scoping
-# keeps each cluster's HW-specific pattern fallbacks from leaking onto the others.
-patterns:
-  - match: "(?i)qwen3\\.5"
-    profiles: [default]
+  laion/CoderForge-Preview-v3-316-axolotl__Qwen3-8B:
+    trust_remote_code: true
+    tool_call_parser: hermes
+    reasoning_parser: qwen3
+    agent_kwargs:
+    - extra_body={"chat_template_kwargs":{"enable_thinking":true}}
+    extra_args: --enable-prefix-caching
+  laion/GLM-4_7-swesmith-sandboxes-with_tests-oracle_verified_120s-maxeps-131k-fixthink:
+    max_model_len: 32768
+    tensor_parallel_size: 1
+    swap_space: 32
+    agent_kwargs:
+    - extra_body={"chat_template_kwargs":{"enable_thinking":true}}
+    extra_args: --enable-prefix-caching
+  laion/Sera-4.5A-Full-T1-v2-10000__Qwen3-8B:
+    trust_remote_code: true
+    tool_call_parser: hermes
+    reasoning_parser: qwen3
+    agent_kwargs:
+    - extra_body={"chat_template_kwargs":{"enable_thinking":true}}
+  laion/Sera-4.5A-Full-T1-v2-1000__Qwen3-8B:
+    trust_remote_code: true
+    tool_call_parser: hermes
+    reasoning_parser: qwen3
+    agent_kwargs:
+    - extra_body={"chat_template_kwargs":{"enable_thinking":true}}
+    extra_args: --enable-prefix-caching
+  laion/Sera-4.5A-Full-T1-v2-3160__Qwen3-8B:
+    trust_remote_code: true
+    tool_call_parser: hermes
+    reasoning_parser: qwen3
+    agent_kwargs:
+    - extra_body={"chat_template_kwargs":{"enable_thinking":true}}
+    extra_args: --enable-prefix-caching
+  laion/Sera-4.5A-Full-T1-v2-316__Qwen3-8B:
+    trust_remote_code: true
+    tool_call_parser: hermes
+    reasoning_parser: qwen3
+    agent_kwargs:
+    - extra_body={"chat_template_kwargs":{"enable_thinking":true}}
+    extra_args: --enable-prefix-caching
+  laion/Sera-4.5A-Full-T1-v3-1000-axolotl__Qwen3-8B:
+    max_model_len: 32768
+    trust_remote_code: true
+    tool_call_parser: hermes
+    tensor_parallel_size: 1
+    swap_space: 32
+    agent_kwargs:
+    - extra_body={"chat_template_kwargs":{"enable_thinking":true}}
+    extra_args: --enforce-eager --disable-cascade-attn --seed 42
+  laion/Sera-4.5A-Full-T1-v3-316-axolotl__Qwen3-8B:
+    max_model_len: 32768
+    trust_remote_code: true
+    tool_call_parser: hermes
+    tensor_parallel_size: 1
+    swap_space: 32
+    agent_kwargs:
+    - extra_body={"chat_template_kwargs":{"enable_thinking":true}}
+    extra_args: --enforce-eager --disable-cascade-attn --seed 42
+  laion/Sera-4.6-Lite-T2-v4-1000-axolotl__Qwen3-8B:
+    trust_remote_code: true
+    tool_call_parser: hermes
+    reasoning_parser: qwen3
+    agent_kwargs:
+    - extra_body={"chat_template_kwargs":{"enable_thinking":true}}
+    extra_args: --enable-prefix-caching
+  laion/Sera-4.6-Lite-T2-v4-316-axolotl__Qwen3-8B:
+    trust_remote_code: true
+    tool_call_parser: hermes
+    reasoning_parser: qwen3
+    agent_kwargs:
+    - extra_body={"chat_template_kwargs":{"enable_thinking":true}}
+    extra_args: --enable-prefix-caching
+  mistralai/Devstral-Small-2-24B-Instruct-2512:
+    max_model_len: 32768
+    tool_call_parser: mistral
+    tensor_parallel_size: 2
+    swap_space: 32
+    extra_args: --enable-prefix-caching
+  mistralai/Devstral-Small-2507:
+    max_model_len: 32768
+    tool_call_parser: mistral
+    tensor_parallel_size: 2
+    swap_space: 32
+    extra_args: --tokenizer-mode mistral --config-format mistral --load-format mistral
+      --enable-prefix-caching
+  nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16:
+    max_model_len: 32768
+    trust_remote_code: true
+    tool_call_parser: qwen3_coder
+    reasoning_parser: nano_v3
     conda_env: otagent2-fix
-    trust_remote_code: true
-    max_model_len: 32768
+    tensor_parallel_size: 2
     swap_space: 32
-    extra_args: "--enable-prefix-caching"
-
-  - match: "(?i)(?:32b.*(131k|-lc)|(131k|-lc).*32b)"
-    profiles: [default]
+    agent_kwargs:
+    - extra_body={"chat_template_kwargs":{"enable_thinking":true}}
+    extra_args: --reasoning-parser-plugin ${DCFT}/eval/configs/nano_v3_reasoning_parser.py
+      --chat-template ${DCFT}/eval/configs/nemotron_chat_template.jinja --enable-prefix-caching
+      --override-generation-config {"temperature":0.6,"top_p":0.95}
+  zai-org/GLM-4.7-Flash:
+    max_model_len: 32768
     trust_remote_code: true
     tensor_parallel_size: 2
-    max_model_len: 131072
     swap_space: 32
-    hf_overrides: '{"rope_scaling":{"rope_type":"yarn","factor":4.0,"original_max_position_embeddings":32768}}'
-    extra_args: "--enable-prefix-caching"
-
-  # 32B serve geometry = TP=4 / DP=1 (was TP=2, which on a 4-GPU node the listener
-  # node-fills to TP=2/DP=2 → vLLM --data-parallel-size 2). The DP=2 path crashes
-  # deterministically at vLLM engine-core init on Leonardo's otagent vLLM build
-  # (DPLBAsyncMPClient → wait_for_engine_startup → "Engine core initialization
-  # failed. Failed core proc(s): {}"; confirmed jobs 48009185 / 48020392, and the
-  # earlier nemotron leg). It is NOT model-artifact-specific — it hits ANY 32B
-  # served at TP=2/DP=2 here. TP=4 fits a 32B on Leonardo's 4×A100-64GB node
-  # (~65GB bf16 / 4 = ~16GB/GPU, ample KV headroom at 32k; Qwen3-32B's 64 attn /
-  # 8 KV heads divide cleanly by 4) and, being the whole node, the listener sets
-  # dp = gpus_per_node // tp = 4 // 4 = 1 → NO --data-parallel-size, avoiding the
-  # broken DPLBAsyncMPClient path entirely. This unblocks the gptlong/tezos/fresh/
-  # gptlong_continue/nemotron Tier-1 32B family (all pattern-matched, no exact entry).
-  #
-  # --enforce-eager (added 2026-06-28): with TP=4 + gpu_mem_util 0.9 on the 64GB
-  # A100 node, vLLM's FULL_AND_PIECEWISE CUDA-graph capture (51 piecewise + 35 full
-  # graphs) OOMs at the tail of capture — engine-core init + weight load + KV alloc
-  # (39.8 GiB, 19.9x concurrency @ 32k) all SUCCEED, then `torch.AcceleratorError:
-  # CUDA error: out of memory` in capture_model() kills a worker (jobs 48022043/etc,
-  # all 16 relaunched legs, identical). enforce-eager skips graph capture entirely,
-  # eliminating the capture-time OOM (mirrors the SERA-32B paper-parity entries,
-  # which already serve eager). Decode is slightly slower but the 32B 16x timeout
-  # multiplier absorbs it; correctness > a few % serve throughput.
-  #
-  # 2026-07-01: broadened 32[Bb] -> 3[02][Bb] to also cover the Qwen3-Coder-30B-A3B
-  # MoE (~60GB bf16, qwen3_moe/48L): same failure mode (TP=2 -> DP=2 DPLBAsyncMPClient
-  # crash on the 4-GPU node); TP=4 (whole node, DP=1) avoids it. gh200 profile below
-  # is unaffected (its .* catch-all already serves the 30B at TP=1 on a single GH200).
-  - match: "(?i)3[02][Bb]"
-    profiles: [default]
-    trust_remote_code: true
-    tensor_parallel_size: 4
-    max_model_len: 32768
-    swap_space: 32
-    extra_args: "--enable-prefix-caching --enforce-eager"
-
-  - match: "131k|-lc$"
-    profiles: [default]
-    trust_remote_code: true
-    max_model_len: 131072
-    swap_space: 32
-    hf_overrides: '{"rope_scaling":{"rope_type":"yarn","factor":4.0,"original_max_position_embeddings":32768}}'
-    extra_args: "--enable-prefix-caching"
-
-  # --- TACC Vista pattern fallbacks (hardware_profile gh200 / gh200-65k ONLY) ---
-  # Force TP=1 (single GH200/node; size-default would pick TP=2 for >14B) + prefix-cache.
-  # Profile-scoped so they do NOT leak onto Leonardo/Jupiter (which use the patterns above).
-  - match: "(?i)32[Bb]"
-    profiles: [gh200, gh200-65k]
-    trust_remote_code: true
-    tensor_parallel_size: 1
-    max_model_len: 32768
-    swap_space: 32
+    agent_kwargs:
+    - extra_body={"chat_template_kwargs":{"enable_thinking":true}}
     extra_args: --enable-prefix-caching
-  - match: ".*"
-    profiles: [gh200, gh200-65k]
-    trust_remote_code: true
-    tensor_parallel_size: 1
-    max_model_len: 32768
-    extra_args: --enable-prefix-caching
+patterns:
+- match: (?i)qwen3\.5
+  profiles:
+  - default
+  conda_env: otagent2-fix
+  trust_remote_code: true
+  max_model_len: 32768
+  swap_space: 32
+  extra_args: --enable-prefix-caching
+- match: (?i)(?:32b.*(131k|-lc)|(131k|-lc).*32b)
+  profiles:
+  - default
+  trust_remote_code: true
+  tensor_parallel_size: 2
+  max_model_len: 131072
+  swap_space: 32
+  hf_overrides: '{"rope_scaling":{"rope_type":"yarn","factor":4.0,"original_max_position_embeddings":32768}}'
+  extra_args: --enable-prefix-caching
+- match: (?i)3[02][Bb]
+  profiles:
+  - default
+  trust_remote_code: true
+  tensor_parallel_size: 4
+  max_model_len: 32768
+  swap_space: 32
+  extra_args: --enable-prefix-caching --enforce-eager
+- match: 131k|-lc$
+  profiles:
+  - default
+  trust_remote_code: true
+  max_model_len: 131072
+  swap_space: 32
+  hf_overrides: '{"rope_scaling":{"rope_type":"yarn","factor":4.0,"original_max_position_embeddings":32768}}'
+  extra_args: --enable-prefix-caching
+- match: (?i)32[Bb]
+  profiles:
+  - gh200
+  - gh200-65k
+  trust_remote_code: true
+  tensor_parallel_size: 1
+  max_model_len: 32768
+  swap_space: 32
+  extra_args: --enable-prefix-caching
+- match: .*
+  profiles:
+  - gh200
+  - gh200-65k
+  trust_remote_code: true
+  tensor_parallel_size: 1
+  max_model_len: 32768
+  extra_args: --enable-prefix-caching

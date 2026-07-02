@@ -83,13 +83,20 @@ def migrate(dry_run: bool = False) -> None:
         base, eval_sub = _split_entry(model_id, entry)
 
         # Attach hardware variants from @profile standalones.
+        # IMPORTANT: @profile entries in the mono-file are WHOLESALE REPLACES in
+        # load_model_registry (not a merge over the bare entry). They are self-contained
+        # and can carry intrinsic fields the bare lacks (or omit intrinsic fields the bare
+        # has). So we store the FULL @profile entry verbatim as the variant — do NOT
+        # split it into intrinsic/non-intrinsic (that would lose the per-profile
+        # independence and break resolution parity).
         profiles = profile_entries.get(model_id, {})
         if profiles:
             variants = {}
             for prof, prof_entry in profiles.items():
-                _, prof_sub = _split_entry(model_id, prof_entry)
-                if prof_sub:
-                    variants[prof] = prof_sub
+                # Store the full entry minus the 'model' key (structural).
+                variant_full = {k: v for k, v in prof_entry.items() if k != "model"}
+                if variant_full:
+                    variants[prof] = variant_full
             if variants:
                 eval_sub["variants"] = variants
 
@@ -107,23 +114,22 @@ def migrate(dry_run: bool = False) -> None:
             print(f"wrote {out_path.relative_to(REPO)}")
         written += 1
 
-    # @profile standalones whose base model has NO bare entry -> standalone file.
+    # @profile standalones whose base model has NO bare entry -> standalone file with
+    # ONLY variants (no base/eval fields), so the generator emits @profile entries but
+    # NOT a spurious bare entry.
     for base_name, profiles in profile_entries.items():
         if base_name in base_entries:
             continue  # already merged above
-        # Synthesize from the first profile entry (rare; all profiles share intrinsic).
-        first_prof, first_entry = next(iter(profiles.items()))
-        base, eval_sub = _split_entry(base_name, first_entry)
+        # No bare entry existed — store the full @profile entries verbatim as variants
+        # under a minimal file (model id + variants only).
         variants = {}
         for prof, prof_entry in profiles.items():
-            _, prof_sub = _split_entry(base_name, prof_entry)
-            if prof_sub:
-                variants[prof] = prof_sub
+            variant_full = {k: v for k, v in prof_entry.items() if k != "model"}
+            if variant_full:
+                variants[prof] = variant_full
+        file_data = {"model": base_name}
         if variants:
-            eval_sub["variants"] = variants
-        file_data = base
-        if eval_sub:
-            file_data["subsystems"] = {"eval": {k: v for k, v in eval_sub.items() if k != "model"}}
+            file_data["subsystems"] = {"eval": {"variants": variants}}
         org, slug = _slugify(base_name)
         out_path = DST / org / f"{slug}.yaml"
         if dry_run:
@@ -133,19 +139,16 @@ def migrate(dry_run: bool = False) -> None:
             print(f"wrote (profile-only) {out_path.relative_to(REPO)}")
         written += 1
 
-    # Patterns -> _patterns.yaml (rename `profiles` -> `subsystems` defaulting to ["eval"]).
+    # Patterns -> _patterns.yaml (preserve `profiles` verbatim — the legacy scoping
+    # mechanism; the resolver checks it directly). Strip only `match` (re-added first).
     pat_out = []
     for pat in patterns:
         regex = pat.get("match", "")
-        # eval registry used `profiles` for hardware-profile targeting. In the unified
-        # schema these are subsystem-scoped; map the old "default" profile -> "eval"
-        # and the old hardware profiles (gh200, gh200-65k) -> kept as-is under `subsystems`
-        # meaning "applies when subsystem matches" — for back-compat we keep the hardware
-        # targeting in a separate `hardware` list.
-        old_profiles = pat.pop("profiles", None) or ["default"]
-        pat.pop("match", None)
-        entry = {"match": regex, "subsystems": ["eval"]}
-        entry.update(pat)
+        entry = {"match": regex}
+        for k, v in pat.items():
+            if k == "match":
+                continue
+            entry[k] = v  # keep `profiles`, `subsystems`, and all config fields verbatim
         pat_out.append(entry)
     pat_path = DST / "_patterns.yaml"
     if dry_run:

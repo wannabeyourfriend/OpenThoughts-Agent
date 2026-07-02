@@ -62,16 +62,26 @@ cfg = resolve_model_config("QuantTrio/GLM-4.7-AWQ", subsystem="eval",
 
 ## Migration status
 
-- ✅ **Eval registry** (`eval/configs/model_configs.yaml`, 52 entries) → migrated to 44
-  per-model files + `_patterns.yaml` (lossless; the mono-file is retained as the listener's
-  input until the listener is wired to the resolver — a careful follow-up that needs the
-  old profile-exclusion semantics handled).
+- ✅ **`model_config/` is the sole editable source.** `eval/configs/model_configs.yaml`
+  is now a **GENERATED build artifact** — produced by
+  `scripts/generate_eval_registry.py` from the per-model files. Do NOT hand-edit the
+  mono-file; edit the per-model files and re-run the generator. `--check` mode is the
+  CI drift gate (`python scripts/generate_eval_registry.py --check` exits nonzero if
+  the committed mono-file is stale). Verified: generated mono-file is parsed-data-
+  identical to the original (52 models, 6 patterns, zero mismatches); the listener's
+  `load_model_registry` is unchanged.
 - ⏳ **Datagen YAMLs** (`hpc/datagen_yaml/`, 167 files) → not yet migrated; stale files
   to be retired first. Later stage.
 - ⏳ **Iris wiring** → `resolve_model_config` available; Iris integration is the next step.
-- ⏳ **Listener wiring** → reads the mono-file for now; migrating to the resolver directly
-  is a follow-up (the resolver's "always-apply intrinsics" behavior is an improvement over
-  the old registry's profile-exclusion quirk, but it's a behavioral change to gate carefully).
+- ⏳ **Listener direct wiring (next step #2)** → the listener still reads the GENERATED
+  mono-file (zero risk). Wiring it directly to `resolve_model_config` removes the
+  generation step entirely and gives the listener the resolver's "always-apply
+  intrinsics" improvement (vs the old registry's profile-exclusion quirk). This is a
+  behavioral change to gate carefully — the resolver currently does NOT replicate the
+  old `_included_on_profile` exclusion (bare entries excluded on non-default hardware
+  profiles). Either (a) add that exclusion to the resolver for parity, or (b) accept
+  the improved behavior and regenerate the serve-parity golden. Tracked as the
+  follow-up after this merge.
 
 ## Adding a new model
 

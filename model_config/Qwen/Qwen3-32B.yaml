@@ -13,9 +13,13 @@ subsystems:
     variants:
       gh200:
         tensor_parallel_size: 1
+        max_model_len: 32768
         swap_space: 32
+        trust_remote_code: true
         extra_args: --enable-prefix-caching
       gh200-65k:
         tensor_parallel_size: 1
+        max_model_len: 32768
         swap_space: 32
+        trust_remote_code: true
         extra_args: --enable-prefix-caching

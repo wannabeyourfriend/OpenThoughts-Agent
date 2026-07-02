@@ -81,23 +81,27 @@ def _resolve_patterns(model: str, subsystem: str, hardware: Optional[str]) -> di
     """Regex-fallback resolution from model_config/_patterns.yaml (size-inference defaults).
 
     Patterns are evaluated in order; first match wins (mirrors the eval registry's
-    precedence). A pattern applies when its ``subsystems`` list (default ["eval"])
-    contains the requested subsystem. The hardware-variant cascade is NOT applied
-    here (patterns are coarse fallbacks).
+    precedence). A pattern applies when its ``profiles`` list (default ``["default"]``)
+    contains the hardware profile name (``"default"`` when hardware is None) OR the
+    subsystem. The hardware-variant cascade is NOT applied here (patterns are coarse).
     """
     patterns_path = MODEL_CONFIG_DIR / "_patterns.yaml"
     if not patterns_path.is_file():
         return {}
     data = _load_yaml(patterns_path)
+    # The "active profile" for matching: hardware name if set, else "default".
+    active_profile = hardware or "default"
     for pat in data.get("patterns", []):
         regex = pat.get("match")
         if not regex:
             continue
-        subs = pat.get("subsystems") or ["eval"]
-        if subsystem not in subs:
+        profiles = pat.get("profiles") or ["default"]
+        if active_profile not in profiles:
             continue
         if re.search(regex, model):
-            return _strip_internal_keys({k: v for k, v in pat.items() if k not in ("match", "subsystems")})
+            return _strip_internal_keys(
+                {k: v for k, v in pat.items() if k not in ("match", "profiles", "subsystems")}
+            )
     return {}
 
 

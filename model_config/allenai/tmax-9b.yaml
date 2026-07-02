@@ -11,7 +11,13 @@ subsystems:
     variants:
       gh200:
         tensor_parallel_size: 1
+        max_model_len: 32768
+        trust_remote_code: true
+        limit_mm_per_prompt: '{"image":0,"video":0}'
         extra_args: --enable-prefix-caching
       gh200-65k:
         tensor_parallel_size: 1
+        max_model_len: 65536
+        trust_remote_code: true
+        limit_mm_per_prompt: '{"image":0,"video":0}'
         extra_args: --enable-prefix-caching
