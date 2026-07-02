@@ -408,7 +408,6 @@ patterns:
   conda_env: otagent2-fix
   trust_remote_code: true
   max_model_len: 32768
-  swap_space: 32
   extra_args: --enable-prefix-caching
 - match: (?i)(?:32b.*(131k|-lc)|(131k|-lc).*32b)
   profiles:
