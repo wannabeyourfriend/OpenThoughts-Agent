@@ -345,7 +345,19 @@ def configure_sft_reporting(base_config: dict, exp_args: dict, model_path: str) 
         base_config["report_to"] = "wandb"
         base_config["push_to_hub"] = push_to_hub
     else:
-        base_config.pop("report_to", None)
+        # No-internet node: default reporting OFF. Popping report_to is NOT enough
+        # — HF transformers defaults an unset report_to to "all", which re-activates
+        # WandbCallback -> wandb.init(). Even with WANDB_MODE=offline (set per-cluster
+        # in hpc.py), wandb 0.28.x still spins up a service and connects over a unix
+        # socket, which fails on compute nodes ("FileNotFoundError: [Errno 2]" from
+        # service_token.connect), crashing LF trainer init. "none" is what the pop
+        # was trying to express; trainer_state.json (the loss series) is written
+        # regardless of report_to. Default to "none" only when unset, so a cluster
+        # whose offline wandb DOES work can still opt back in via an explicit
+        # report_to in the YAML/CLI (no code change, no silent loss of offline logs
+        # on clusters that relied on them).
+        if not base_config.get("report_to"):
+            base_config["report_to"] = "none"
         base_config["push_to_hub"] = push_to_hub
         base_config["model_name_or_path"] = model_path
         # Use a dedicated arrow cache dir alongside HF_HUB_CACHE (not inside it) to avoid
