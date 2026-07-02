@@ -7,7 +7,7 @@
 #
 # Usage:
 #   python -m hpc.launch \
-#       --job_type eval \
+#       --job_type eval_listener \
 #       --vllm_serve_config hpc/datagen_yaml/qwen3_coder_480b_vllm_serve_32k.yaml \
 #       --harbor_yaml hpc/harbor_yaml/eval_apptainer_16concurrency_ctx32k.yaml \
 #       ...

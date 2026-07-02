@@ -1363,11 +1363,41 @@ _CLUSTER_CONFIG_REQUIRED_PATHS = ["eval_jobs_dir", "sbatch_script"]
 _CLUSTER_CONFIG: Optional[Dict[str, Any]] = None
 
 
+def _resolve_cluster_view_by_name(name: str) -> Optional[Dict[str, Any]]:
+    """Resolve an eval cluster-config dict from the HPC cluster object (Stage 4).
+
+    If `name` matches a cluster in `hpc.hpc.clusters` and that cluster has an
+    `eval_cluster_view` populated, return `cluster.to_eval_cluster_view()`.
+    Returns None if hpc.hpc isn't importable, the name is unknown, or the cluster
+    has no eval view (so the caller falls back to the YAML-path resolution).
+    """
+    try:
+        from hpc.hpc import clusters as _hpc_clusters
+    except Exception:
+        return None
+    for c in _hpc_clusters:
+        if c.name.lower() == name.lower() and c.eval_cluster_view:
+            return c.to_eval_cluster_view()
+    return None
+
+
 def load_cluster_config(path: str) -> Dict[str, Any]:
     """Load and validate a cluster config YAML.
 
     Returns the parsed config dict.  Raises SystemExit on validation failure.
+
+    As of Stage 4, `path` may also be a bare cluster NAME (e.g. "leonardo") —
+    when it carries no `.yaml` suffix, the config is resolved from the matching
+    `hpc.hpc` cluster object's `eval_cluster_view` (the single source of truth).
+    Falls back to the YAML-file path otherwise (back-compat).
     """
+    # Stage 4: cluster-name resolution from the HPC object (no .yaml suffix).
+    if not path.endswith((".yaml", ".yml")):
+        view = _resolve_cluster_view_by_name(path.strip())
+        if view is not None:
+            return view
+        # Fall through to the file-path error below if no HPC match.
+
     path = os.path.expanduser(path)
     if not os.path.isfile(path):
         print(f"ERROR: Cluster config not found: {path}")

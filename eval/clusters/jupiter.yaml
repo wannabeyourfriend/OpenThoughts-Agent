@@ -1,6 +1,12 @@
 # Jupiter (JSC GH200) cluster configuration for the eval listener.
 #
-#   python eval/unified_eval_listener.py --cluster-config eval/clusters/jupiter.yaml ...
+# DEPRECATED (Stage 4 of the eval-listener-unification plan): the canonical source
+# of truth for this config is now the `eval_cluster_view` field on the `jupiter` HPC
+# object in `hpc/hpc.py`. This YAML is retained as a compat shim — the listener still
+# loads it when given the file path, but prefer the cluster-name form:
+#   python eval/unified_eval_listener.py --cluster-config jupiter ...
+# (or `python -m hpc.launch --job_type eval_listener --cluster-config jupiter ...`).
+# The HPC view and this YAML are kept byte-identical; edits must go in hpc/hpc.py.
 #
 # Sourced by scratch user zhuang1. Other users on Jupiter should copy this
 # file and patch the user-scoped paths (project_root, eval_jobs_dir,

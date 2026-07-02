@@ -42,11 +42,16 @@ from hpc.datagen_config_utils import parse_datagen_config
 from hpc.launch_utils import PROJECT_ROOT
 from eval.presets import load_presets
 
-# Preset fields with no Iris analog (SLURM orchestrator / vLLM-serve only).
-# Listed explicitly so the applied/ignored split is transparent and a newly
-# added preset field fails loudly here rather than being silently dropped.
+# Preset fields with no Iris analog (SLURM orchestrator / vLLM-serve only, or fields
+# Iris forces via a different channel). Listed explicitly so the applied/ignored split
+# is transparent and a newly added preset field fails loudly here rather than being
+# silently dropped. Kept in sync with the listener's `build_config` preset-reading
+# surface (eval/unified_eval_listener.py:4347+) so Iris cannot silently drift.
 _PRESET_IGNORED_FIELDS = frozenset({
+    # --- SLURM / vLLM-serve only (no Iris equivalent) ---
     "slurm_time",
+    "slurm_partition",
+    "slurm_account",
     "vllm_max_retries",
     "gpu_memory_util",
     "sbatch_script",
@@ -56,6 +61,15 @@ _PRESET_IGNORED_FIELDS = frozenset({
     "config_yaml",
     "agent_envs",
     "auto_snapshot",
+    # --- Iris forces these via a different channel (not preset-driven) ---
+    # harbor_config: Iris REQUIRES --harbor_config on the CLI (the listener may pick
+    #   it up from cluster-config / size-selection; Iris does not).
+    # agent_name: Iris infers the agent from the harbor config's agents[0].name
+    #   (the listener has a --agent-name fallback).
+    # tp_size: Iris derives --gpus from the TPU chip count (no tensor-parallel concept).
+    "harbor_config",
+    "agent_name",
+    "tp_size",
 })
 
 
@@ -162,6 +176,17 @@ class EvalIrisLauncher(IrisLauncher):
                 applied["n_concurrent"] = preset["n_concurrent"]
             else:
                 ignored["n_concurrent"] = preset["n_concurrent"]
+
+        # --n_attempts (standard-error repeat count), only if not explicitly passed.
+        # The listener applies this from preset (build_config n_attempts); Iris must
+        # too so a preset that tunes it (e.g. a high-variance benchmark wanting n=5)
+        # actually takes effect rather than silently defaulting to 3.
+        if "n_attempts" in preset:
+            if not _cli_has("--n_attempts", "--n-attempts"):
+                args.n_attempts = preset["n_attempts"]
+                applied["n_attempts"] = preset["n_attempts"]
+            else:
+                ignored["n_attempts"] = preset["n_attempts"]
 
         # Result-affecting agent kwargs → harbor --agent-kwarg, replicating how
         # eval/jupiter/eval_harbor.sbatch maps them (parser=<v>, plus the preset's

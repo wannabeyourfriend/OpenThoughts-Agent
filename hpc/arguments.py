@@ -13,6 +13,7 @@ class JobType(str, Enum):
     PRETOKENIZE = "pretokenize"
     DATAGEN = "datagen"
     EVAL = "eval"
+    EVAL_LISTENER = "eval_listener"
     CONSOLIDATE = "consolidate"
     RL = "rl"
 

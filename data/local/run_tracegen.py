@@ -99,9 +99,9 @@ class TracegenRunner(LocalHarborRunner):
           the parquet into a local directory tree via
           ``convert_parquet_to_tasks``.
 
-        Mirrors the dispatch pattern used by ``hpc.eval_launch_utils``
-        (lines 95–110) so eval and tracegen share the same "task
-        extraction" convention.
+        Mirrors the convert_parquet_to_tasks convention shared across
+        the datagen/tracegen launch paths so eval and tracegen share the
+        same "task extraction" convention.
         """
         from hpc.hf_utils import resolve_dataset_path, is_raw_tasks_directory
         from hpc.launch_utils import convert_parquet_to_tasks

@@ -182,7 +182,7 @@ class TracegenIrisLauncher(IrisLauncher):
                 resolved_tasks = resolve_dataset_path(args.tasks_input_path, verbose=True)
                 # HF datasets ship a single tasks.parquet; explode into task
                 # directories so snapshot_manager can hash the environments.
-                # hpc/launch.py:232 + hpc/eval_launch_utils.py:108 do this.
+                # hpc/launch.py:232 + hpc/datagen_launch_utils.py do this.
                 if not is_raw_tasks_directory(resolved_tasks):
                     resolved_tasks = convert_parquet_to_tasks(
                         snapshot_dir=resolved_tasks,

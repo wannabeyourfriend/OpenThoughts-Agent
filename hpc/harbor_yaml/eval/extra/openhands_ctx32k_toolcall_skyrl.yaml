@@ -9,7 +9,7 @@
 #
 # Usage:
 #   python -m hpc.launch \
-#       --job_type eval \
+#       --job_type eval_listener \
 #       --vllm_serve_config hpc/datagen_yaml/nemotron_nano_30b_vllm_serve_32k_toolcall.yaml \
 #       --harbor_yaml hpc/harbor_yaml/trace_16concurrency_openhands_eval_ctx32k_toolcall_skyrl.yaml \
 #       ...

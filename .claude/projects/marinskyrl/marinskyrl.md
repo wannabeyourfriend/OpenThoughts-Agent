@@ -173,6 +173,33 @@ Branch `feuer/fsdp2-cp`, HEAD `18c2606`. Stages 0–2 done.
 
 ---
 
+## Saturating vLLM engines in agentic fully_async RL — scale `n_concurrent_trials` AND `num_parallel_generation_workers` TOGETHER
+
+**(User / system-author guidance, 2026-07-02 — validated ground truth; overrides any "duty-cycle-bound" inference.)**
+For agentic RL (terminal_bench / Harbor rollouts) under **fully-async** training, the vLLM inference engines saturate
+only when the TWO offered-concurrency levers scale up **together, in proportion** — they are INDEPENDENT knobs (distinct
+from vLLM serving config):
+
+1. **`terminal_bench_config.harbor.n_concurrent_trials`** — # concurrent agentic episodes (= Daytona sandboxes in flight).
+   The PRIMARY offered-load lever; **scale this FIRST** to feed the engines. Engine idleness is driven first and foremost
+   by this.
+2. **`trainer.fully_async.num_parallel_generation_workers`** — # concurrent `generate()` calls in flight (the LLM-call
+   concurrency; `skyrl_train/examples/terminal_bench/rollout_coordinator.py`, bounded in `fully_async_trainer.py`). **Must
+   scale WITH `n_concurrent_trials`, in proportion** — it is the SkyRL-side cap on concurrent generation. Raising
+   `n_concurrent_trials` alone with the worker pool fixed does NOT lift concurrency; both go up together, THEN the engines
+   saturate. (Assert: `mini_batch_size ≤ num_parallel_generation_workers`.)
+
+**Tuned reference — Jupiter `hpc/skyrl_yaml/jupiter/56GPU_seqnorm_tis.yaml`:** `n_concurrent_trials: 675` +
+`num_parallel_generation_workers: 338` (**~2:1**, workers ≈ n/2), co-tuned ("450→338 −25%, paired with
+n_concurrent_trials 900→675").
+
+**⚠ MISDIAGNOSIS to avoid:** engine idleness (`Waiting=0`, low KV, `Running ≪ per-engine ceiling`) is **NOT** an intrinsic
+"agentic duty-cycle" ceiling — it is an **offered-concurrency SUPPLY** shortfall. A timid `n_concurrent_trials` (e.g.
+96–192) with an un-scaled worker pool *looks* starved/duty-cycle-bound but is simply under-offered. To saturate: raise
+`n_concurrent_trials` toward the tuned reference (hundreds) **with `num_parallel_generation_workers` scaled proportionally
+(~n/2)**, THEN measure Running/Waiting/KV. (This corrects the 2026-07-02 moe-grid Stage-0 "duty-cycle-bound" reading —
+that was measured at n=96/192 without scaling the worker pool; see `experiments/active/moe_sharding_grid_131k`.)
+
 ## GDN + Context-Parallel (CP>1) HARD-CRASHES the 35B GatedDeltaNet MoE at forward
 
 The **Qwen3.6-35B-A3B** MoE has 30 GatedDeltaNet (GDN) linear-attn layers with **no CP-aware kernel** → running it

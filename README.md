@@ -289,47 +289,19 @@ Everything you need to evaluate models lives under `eval/`. Pick the mode that f
 
 1. **Cluster-scale Harbor eval (unified listener).** The canonical surface is the root `eval/unified_eval_listener.py` driven by `--cluster-config eval/clusters/<cluster>.yaml`. It serves the model with vLLM inside SLURM, runs trials through Harbor + Daytona, and uploads to Supabase + HuggingFace. See [`docs/EVAL_GUIDE.md`](docs/EVAL_GUIDE.md) for the full fire templates, the five firing categories, the failure-mode catalog, and recovery procedures; [`eval/README.md`](eval/README.md) for the quickstart. To target a new cluster, copy `eval/clusters/example.yaml`.
 
-2. **Launcher-driven evals.** Prefer `python -m hpc.launch --job_type eval ...` whenever you want the same CLI ergonomics as SFT/datagen jobs. Key flags:
-   - `--datagen_config hpc/datagen_yaml/<model>.yaml` (required). This is the same engine file you would pass to `--job_type datagen` and determines how the vLLM/Ray controller boots. `--trace_model` optionally overrides both `engine.model` and `vllm_server.model_path` so a single YAML can serve multiple finetunes.
-   - `--trace_harbor_config hpc/harbor_yaml/<cluster>_eval_*.yaml` (filename must include `_eval_`)
-   - Either `--trace_input_path /path/to/tasks` *or* `--harbor_dataset terminal-bench@2.0` (mutually exclusive)
-   - `--eval_benchmark_repo <org/dataset>` so Supabase rows can track the benchmark
-   - Agent knobs now default to the Harbor YAML: `--trace_agent_name`, `--trace_env`, and `--trace_n_concurrent` are optional overrides when you need to deviate.
-   - `--trace_agent_kwargs '{"temperature":0.2,"max_tokens":2048}'` overlays JSON on top of the Harbor + datagen defaults. When the datagen config uses `vllm_local`, the launcher injects the computed `api_base`/`metrics_endpoint` from `vllm_endpoint.json` automatically unless you explicitly provide them.
+2. **Launcher-driven evals.** The unified listener (§1 above) is also reachable through the HPC launcher: `python -m hpc.launch --job_type eval_listener ...` runs the `hpc.launch` preamble (auto-detects the cluster, sources `hpc/dotenv/<cluster>.env`, sets up Supabase + hosted-vLLM keys) and then forwards your flags verbatim to `eval/unified_eval_listener.py`. Use the SAME listener flags as §1 (`--cluster-config`, `--preset`, `--priority-file`, `--require-priority-list`, `--dry-run`, `--once`, …) — the launcher adds the dotenv preamble for you and otherwise stays out of the way. `--job_type eval` is kept as a deprecated alias for `--job_type eval_listener`.
 
-   When a `vllm_local` engine is selected, the eval launcher reuses the datagen hosting flow: it spins up the Ray/vLLM server, waits for the generated endpoint JSON to pass health checks, feeds the derived OpenAI-compatible URL to Harbor, and tears the server down once the eval finishes. No ad-hoc `--trace_eval_only` hacks are needed—the vLLM bootstrap, Supabase bookkeeping, and HF uploads all run in one job.
-
-   Example (local dataset path):
+   Example (ID-eval one-shot, dry-run):
    ```bash
-   python -m hpc.launch \
-     --job_type eval \
-     --job_name qwen2-eval \
-     --datagen_config hpc/datagen_yaml/qwen3_coder_30b_a3b_vllm_serve.yaml \
-     --trace_harbor_config hpc/harbor_yaml/eval/eval_ctx32k.yaml \
-     --trace_input_path $SCRATCH/dev_set_71_tasks \
-     --eval_benchmark_repo mlfoundations-dev/dev_set_71_tasks \
-     --trace_model hosted_vllm/qwen2.5-7b-instruct \
-     --trace_agent_name terminus-2 \
-     --trace_agent_kwargs '{"api_base":"http://127.0.0.1:8000/v1","key":"fake_key"}' \
-     --trace_n_concurrent 128
+   python -m hpc.launch --job_type eval_listener \
+     --cluster-config eval/clusters/leonardo.yaml \
+     --preset tb2 \
+     --priority-file eval/lists/models_8b_tb2.txt \
+     --require-priority-list \
+     --dry-run --once
    ```
 
-   Example (Harbor registry dataset slug):
-   ```bash
-   python -m hpc.launch \
-     --job_type eval \
-     --job_name tb2-claude-eval \
-     --datagen_config hpc/datagen_yaml/qwen3_coder_30b_a3b_vllm_serve.yaml \
-     --trace_harbor_config hpc/harbor_yaml/eval/eval_ctx32k.yaml \
-     --harbor_dataset terminal-bench@2.0 \
-     --eval_benchmark_repo DCAgent/dev_set_71_tasks \
-     --trace_model anthropic/claude-opus-4-1 \
-     --trace_agent_name claude-code \
-     --trace_env daytona \
-     --trace_n_concurrent 64
-   ```
-
-   Valid `--harbor_dataset` slugs come from the upstream registry (`../harbor/registry.json`). Popular options include `terminal-bench@2.0`, `terminal-bench-pro@head`, and `hello-world@head`; run `harbor datasets list` for the rest. The launcher validates slugs against the registry when it is available locally.
+   The single-shot `--job_type eval` engine path (`--datagen_config` / `--trace_harbor_config` / `--harbor_dataset`) was removed — it was strictly subsumed by the listener and had no live consumers.
 
 Regardless of the path you choose, make sure `DC_AGENT_SECRET_ENV` or the cluster-specific `secret.env` is exported so Harbor can read HF, Daytona, and database credentials. Use `--dry-run`/small `--n-concurrent` first to validate that Harbor, the sandbox provider, and your model endpoint all respond as expected.
 

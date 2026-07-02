@@ -1189,8 +1189,8 @@ def _materialize_planned_config(exp_args: Dict[str, Any]) -> Optional[Dict[str, 
         from hpc.launch_utils import hosted_vllm_alias, generate_served_model_id
         # Seed with the BARE job_name (not the ``_traces``-suffixed chunk
         # name) to match the launcher's own call at
-        # ``hpc/datagen_launch_utils.py:_prepare_datagen_configuration``
-        # and ``hpc/eval_launch_utils.py``. The launcher generates a
+        # ``hpc/datagen_launch_utils.py:_prepare_datagen_configuration``.
+        # The launcher generates a
         # single synthetic per launch and reuses it across chunks; we
         # mirror that here so resume_manager's planned config matches
         # the YAML at the model_name field.
