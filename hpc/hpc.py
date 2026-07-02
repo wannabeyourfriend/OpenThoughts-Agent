@@ -3,7 +3,7 @@ import os
 import re
 import shlex
 import socket
-from typing import Dict, List
+from typing import Any, Dict, List
 from pydantic import BaseModel, computed_field
 
 
@@ -127,12 +127,56 @@ class HPC(BaseModel):
     # JSC clusters use $SCRATCH/ray due to /tmp limitations on compute nodes
     ray_tmpdir_base: str = "/tmp/ray"
 
+    # Eval-listener cluster config (Stage 4 of the eval-listener-unification plan).
+    # When set, this cluster object is the SINGLE SOURCE OF TRUTH for the eval
+    # listener's cluster config — the verbatim content of eval/clusters/<name>.yaml,
+    # in the dict shape `eval/unified_eval_listener.load_cluster_config()` returns.
+    # `to_eval_cluster_view()` returns it (env-expanded) so the listener can resolve
+    # `--cluster-config <name>` from the HPC object instead of a YAML file path.
+    # The eval/clusters/*.yaml files remain as deprecated compat shims. NOTE: the
+    # user-scoped paths here mirror the corresponding eval/clusters/<name>.yaml
+    # (which are themselves user-specific, e.g. bfeuer00 on leonardo); parameterizing
+    # them via the dotenv is a documented follow-up.
+    eval_cluster_view: Dict[str, Any] | None = None
+
     def model_post_init(self, __context) -> None:
         # Derive a default CPU-per-GPU ratio when not explicitly provided.
         if not self.cpus_per_gpu:
             gpus = max(self.gpus_per_node, 1)
             if self.cpus_per_node:
                 self.cpus_per_gpu = math.ceil(self.cpus_per_node / gpus)
+
+    def to_eval_cluster_view(self) -> Dict[str, Any]:
+        """Return the eval-listener cluster-config dict for this cluster.
+
+        Mirrors the dict shape `eval/unified_eval_listener.load_cluster_config()`
+        returns from `eval/clusters/<name>.yaml`, so the listener can resolve
+        `--cluster-config <cluster_name>` from the HPC object instead of a YAML
+        path. Returns `{}` when no eval view is configured (non-eval clusters +
+        backward-compat for clusters not yet populated). Applies the same
+        `$USER`/`~` env expansion `load_cluster_config` does, so paths resolve
+        per-user at call time.
+        """
+        if not self.eval_cluster_view:
+            return {}
+        view = self.eval_cluster_view
+
+        def _expand(obj: Any) -> Any:
+            if isinstance(obj, str):
+                return os.path.expandvars(os.path.expanduser(obj))
+            if isinstance(obj, dict):
+                return {k: _expand(v) for k, v in obj.items()}
+            if isinstance(obj, list):
+                return [_expand(v) for v in obj]
+            return obj
+        expanded = _expand(view)
+        # load_cluster_config sets DCFT from paths.project_root as a side effect;
+        # mirror that so baseline-yaml extra_args ('${DCFT}/...') expand against
+        # the cluster's checkout root, exactly as the YAML path does.
+        proj = (expanded.get("paths") or {}).get("project_root")
+        if proj:
+            os.environ["DCFT"] = proj
+        return expanded
 
     def get_max_time_limit(self, num_nodes: int) -> str:
         """Get the maximum allowed time limit for a given number of nodes.
@@ -944,6 +988,46 @@ jupiter = HPC(
     # jpbo-074-40 added 2026-05-20: SSH tunnel to login jpbl-s01-01 "No route to host" — proxychains setup fails at job start (exit 127 in 29s, job 475717)
     # 2026-05-22: briefly excluded jpbo-063-40 + jpbo-063-36 after GLM-4.7 v6 (493343) shm_broadcast cascade was heavily attributed to those nodes. Rolled back after MiniMax (493421) on disjoint nodes jpbo-001-[23,32] hit the same hang at a comparable serving-time mark (~55min) with jpbo-001-32 as the primary offender (5/7 warnings). Two disjoint node sets, two distinct configs, same failure mode → the issue is a wheel-level cross-node sustained-load bug, not a per-node interconnect flake. Don't add per-incident -063 / -001 exclusions to mask it.
     node_exclusion_list="jpbo-031-[01-48],jpbo-011-[01-48],jpbo-038-38,jpbo-004-46,jpbo-065-17,jpbo-074-22,jpbo-074-40,jpbo-048-41,jpbo-091-05,jpbo-044-0[1-5]",
+    # Stage 4: eval-listener cluster config (single source of truth — was eval/clusters/jupiter.yaml).
+    # User-scoped paths mirror that yaml (zhuang1's); parameterizing via dotenv is a follow-up.
+    eval_cluster_view={
+        "cluster_name": "jupiter_eval",
+        "use_model_registry": True,
+        "model_registry": "eval/configs/model_configs.yaml",
+        "hardware_profile": "default",
+        "slurm_partition": "booster",
+        "slurm_account": "reformo",
+        "slurm_time": "12:00:00",
+        "conda_envs": {
+            "otagent-fix": "/e/scratch/jureap59/zhuang1/conda/envs/otagent-fix",
+            "otagent2-fix": "/e/scratch/jureap59/zhuang1/conda/envs/otagent2-fix",
+            "otagent2": "/e/scratch/jureap59/zhuang1/conda/envs/otagent2",
+        },
+        "paths": {
+            "project_root": "/e/scratch/jureap59/zhuang1/OpenThoughts-Agent-Latest",
+            "hf_cache": "/e/data1/datasets/playground/ot/hf_hub",
+            "eval_jobs_dir": "/e/data1/datasets/playground/mmlaion/shared/zhuang1_eval_jobs",
+            "eval_logs_dir": "eval/logs",
+            "listener_logs_dir": "experiments/listener_logs",
+            "sbatch_script": "eval/jupiter/eval_harbor.sbatch",
+            "dp_sbatch_script": "eval/jupiter/eval_harbor.sbatch",
+            "harbor_src": "/e/scratch/jureap59/zhuang1/harbor-fix/src",
+            "datasets_dirs": ["/e/data1/datasets/playground/ot/hf_hub"],
+            "secrets_file": "~/secrets.env",
+        },
+        "proxy": {
+            "enabled": True,
+            "login_node": "jpbl-s01-02",
+            "proxychains_bin": "/e/scratch/jureap59/feuer1/proxychains-ng-aarch64/bin/proxychains4",
+        },
+        "hardware": {
+            "gpus_per_node": 4,
+            "cpus_per_node": 72,
+            "mem_per_node_mb": 480000,
+            "arch": "aarch64",
+            "cuda_home": "/usr/local/cuda-13",
+        },
+    },
 )
 
 juwels = HPC(
@@ -1020,6 +1104,42 @@ leonardo = HPC(
     proxychains_binary="/leonardo_work/AIFAC_5C0_290/bfeuer00/proxychains/bin/proxychains4",
     conda_activate="source /leonardo_work/AIFAC_5C0_290/bfeuer00/miniforge3/etc/profile.d/conda.sh && conda activate otagent",
     # Note: PBS Pro is NOT used here — Leonardo uses SLURM
+    # Stage 4: eval-listener cluster config (single source of truth — was eval/clusters/leonardo.yaml).
+    # User-scoped paths mirror that yaml (bfeuer00's); parameterizing via dotenv is a follow-up.
+    eval_cluster_view={
+        "cluster_name": "leonardo",
+        "baseline_model_configs": "eval/configs/baseline_model_configs_minimal.yaml",
+        "use_model_registry": True,
+        "model_registry": "eval/configs/model_configs.yaml",
+        "hardware_profile": "default",
+        "slurm_partition": "boost_usr_prod",
+        "slurm_account": "AIFAC_5C0_290",
+        "slurm_time": "23:59:00",
+        "conda_envs": {
+            "otagent": "/leonardo_work/AIFAC_5C0_290/bfeuer00/miniforge3/envs/otagent",
+            "eval-qwen35": "/leonardo_work/AIFAC_5C0_290/bfeuer00/miniforge3/envs/eval-qwen35",
+        },
+        "paths": {
+            "project_root": "/leonardo_work/AIFAC_5C0_290/bfeuer00/code/OpenThoughts-Agent",
+            "hf_cache": "/leonardo_work/AIFAC_5C0_290/bfeuer00/data/hub",
+            "eval_jobs_dir": "/leonardo_work/AIFAC_5C0_290/bfeuer00/eval_jobs",
+            "eval_logs_dir": "eval/leonardo/logs",
+            "listener_logs_dir": "experiments/listener_logs",
+            "sbatch_script": "eval/leonardo/eval_harbor.sbatch",
+            "dp_sbatch_script": "eval/leonardo/eval_harbor.sbatch",
+            "harbor_src": "/leonardo_work/AIFAC_5C0_290/bfeuer00/code/harbor/src",
+            "datasets_dirs": ["/leonardo_work/AIFAC_5C0_290/bfeuer00/data/hub"],
+            "secrets_file": "~/secrets.env",
+        },
+        "proxy": {"enabled": False},
+        "hardware": {
+            "gpus_per_node": 4,
+            "cpus_per_node": 32,
+            "mem_per_node_mb": 490000,
+            "arch": "x86_64",
+            "cuda_home": "/leonardo_work/AIFAC_5C0_290/bfeuer00/miniforge3/envs/otagent",
+        },
+    },
 )
 
 capella = HPC(

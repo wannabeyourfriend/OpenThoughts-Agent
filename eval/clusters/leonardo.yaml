@@ -1,6 +1,12 @@
 # CINECA Leonardo (A100-64GB, x86_64) cluster configuration for the eval listener.
 #
-#   python eval/unified_eval_listener.py --cluster-config eval/clusters/leonardo.yaml ...
+# DEPRECATED (Stage 4 of the eval-listener-unification plan): the canonical source
+# of truth for this config is now the `eval_cluster_view` field on the `leonardo` HPC
+# object in `hpc/hpc.py`. This YAML is retained as a compat shim — the listener still
+# loads it when given the file path, but prefer the cluster-name form:
+#   python eval/unified_eval_listener.py --cluster-config leonardo ...
+# (or `python -m hpc.launch --job_type eval_listener --cluster-config leonardo ...`).
+# The HPC view and this YAML are kept byte-identical; edits must go in hpc/hpc.py.
 #
 # Why a cluster config (vs the bare --sbatch-script path): without it the
 # listener falls back to Jupiter-shaped hardware defaults (gpus_per_node 8,
