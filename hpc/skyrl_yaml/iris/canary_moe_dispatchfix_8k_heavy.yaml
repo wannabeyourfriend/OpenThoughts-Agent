@@ -1,3 +1,5 @@
+# HEAVY-PARAMS REPRO (2026-06-30): n_samples 2->8 + batch 32->64 = 512 episodes/step (matches the
+# wedged 131k effective_batch) at 8k ctx -> reproduces the forward-DISPATCH wedge in ~45min. Tests fix 6cfee800.
 # =============================================================================
 # CANARY — MoE-RL async-dispatch DRAIN fix validation (NOT a science run)
 # =============================================================================
@@ -175,9 +177,9 @@ trainer:
   # micro_train(1), (c) train_batch_size % policy_mini_batch_size == 0. train==mini==32
   # -> per-gpu-mini = 32x2/32 = 2. Clears ALL checks. Smallest valid batch that still
   # reaches step-1 fwd with a tiny (32 prompt x 2 sample = 64 episode) rollout.
-  train_batch_size: 32
-  policy_mini_batch_size: 32
-  eval_batch_size: 32
+  train_batch_size: 64
+  policy_mini_batch_size: 64
+  eval_batch_size: 64
 
   micro_forward_batch_size_per_gpu: 1
   micro_train_batch_size_per_gpu: 1
@@ -275,8 +277,8 @@ generator:
 
   inference_engine_mp_backend: false
 
-  n_samples_per_prompt: 2
-  eval_n_samples_per_prompt: 2
+  n_samples_per_prompt: 8
+  eval_n_samples_per_prompt: 8
 
   gpu_memory_utilization: 0.80
 

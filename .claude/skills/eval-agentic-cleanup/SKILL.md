@@ -74,6 +74,12 @@ source of truth, the remediations below are the only side-effecting parts and yo
 > `VerificationNotCompletedError`, `DaytonaError`/`DaytonaValidationError`/`DaytonaRateLimitError`, and other no-reward
 > infra/verifier failures DO count. **error-fraction = `invalidErrorCount / total_attempted`; a row is an incomplete
 > partial (→ de-register + resume) iff error-fraction > 10%.** (The leaderboard badges the raw count at `>10`.)
+> **🚩 HARD GATE (2026-06-29 user directive) — the 10% line is NOT a fuzzy barrier.** There is NO "borderline" /
+> "just over" / "close enough" discretion: error-fraction 10.1% fails exactly like 30%. A >10% eval **does not
+> belong in the database** — (a) if you are HARVESTING it, do NOT register/finalize until a resume brings
+> error-fraction ≤ 10%; (b) if the auto-pipeline ALREADY registered it, **DE-REGISTER it** (FK-safe, your own
+> row) — do NOT "flag the partial and leave it because it's already finalized," which is exactly the miss to
+> avoid. The only exception is an explicit, logged user grandfather of a specific already-pushed row.
 > ⚠️ **Do NOT re-derive this as a naive "no-reward / valid-reward<90%" count** — that wrongly folds in the benign
 > passthroughs (AgentTimeout etc., which ARE scored 0/1) and massively over-flags near-complete evals as partial. One
 > 2026-06-29 audit: 13 of my rows tripped the raw `>10` *count* but only **4** exceeded the `>10%` *fraction* (the other 9

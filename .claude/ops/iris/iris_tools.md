@@ -52,6 +52,11 @@ progress per cycle (from harbor GCS output), **§3** serving throughput (full + 
 - **CLI:** `analyze_job_history.py <job_id> --output <report.md> [--refresh] [--warmup-seconds 180]
   [--cluster …] [--iris-bin …] [--gsutil-sample …]`. Auto-resolves the cw-capable iris binary
   (`resolve_iris_bin()`: `$IRIS_BIN` → PATH → otagent env → marin `.venv` last).
+- **⚠ CoreWeave (`--cluster cw-us-east-02a`) needs R2 archive creds.** The archive half reads
+  `s3://marin-na/finelog/cw-us-east-02a` (R2) — the Mac lacks the creds, so the run crashes
+  `FileNotFoundError: The specified bucket does not exist` unless you first source them from the `iris`-ns
+  secret. **Full procedure: `.claude/ops/iris/finelog_r2_archive_creds.md`.** (The live half on cw uses a
+  k8s tunnel, NOT IAP — so the `analyze-job-history-iris` skill's `marin-login` step is marin/TPU-only.)
 
 ### `peek_rl_rollouts.sh` — inspect / capture a running RL job's Harbor rollout artifacts
 Reaches the **rank-0 pod** of a running agentic-RL job and reads its `trace_jobs` (per-trial

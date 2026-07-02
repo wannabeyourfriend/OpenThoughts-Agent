@@ -108,17 +108,20 @@ LEONARDO CAMPAIGN DRIVER (the priority — drive it every sweep):
   (2) REFILL the next still-`⏳ pending` **Section A** rows (Section A before B) until the **in-flight target the
   tracker records for this series** — read it from the tracker's "🚦 CAMPAIGN DRIVER" / latest-sweep "Target =" line.
   The count is a **property of the experiment series, NOT this skill — do NOT hardcode a number here**; look it up
-  each sweep (it is raised/lowered by directive in the tracker). **⚠️ DAYTONA-CAP GUARD (HARD):** the ORG2
+  each sweep (it is raised/lowered by directive in the tracker). **The refill CLUSTER is likewise read from the
+  tracker, NOT hardcoded** — its top-of-file directive names the cluster (e.g. as of 2026-06-29 = TACC while
+  Leonardo is in MDC maintenance, registry default-on there); do NOT assume Leonardo. **⚠️ DAYTONA-CAP GUARD (HARD):** the ORG2
   (`DAYTONA_API_KEY`) snapshot cap is **60 — never raise it**. Snapshots DON'T scale with leg count (legs reuse
   `harbor__*` snapshots); the binding limit is concurrent **SANDBOXES** (~target legs × ~32 trials). Clean stale sandboxes (`utils-cleanup-stale-sandboxes` /
   `scripts/daytona/cleanup_stale_sandboxes.py --delete`) for headroom before/while refilling; if 32 won't fit,
   launch as many as fit and report the binding limit. Classify every live leg against the tracker + affected list FIRST — KEEP valid in-flight affected
   re-evals, CANCEL only confirmed duplicates of already-✅ rows or off-campaign (not-in-affected) legs; do NOT
   `--force-reeval` an already-✅ row (the duplicate trap). Launch via the canonical `eval-agentic-launch` listener
-  (after the `ops/leonardo` preamble, in tmux, ONE listener per preset, ~40s stagger):
+  (after THAT cluster's ops preamble — leonardo OR tacc per the tracker, NOT assumed Leonardo — in tmux, ONE
+  listener per preset, ~40s stagger):
     export PYTHONPATH="$PWD:${PYTHONPATH:-}"   # repo root — the listener imports first-party top-level packages
-    python eval/unified_eval_listener.py --cluster-config eval/clusters/leonardo.yaml --preset <tb2|swebench|v2|...> \
-      --baseline-model-configs eval/configs/baseline_model_configs_minimal.yaml \
+    python eval/unified_eval_listener.py --cluster-config eval/clusters/<cluster>.yaml --preset <tb2|swebench|v2|...> \
+      [--baseline-model-configs eval/configs/baseline_model_configs_minimal.yaml] \
       --require-priority-list --priority-file <list>.txt \
       --config-yaml dcagent_eval_config_no_override.yaml --force-reeval --once --verbose
   (thinking is per-model authoritative — sourced from the baseline model config
@@ -127,9 +130,10 @@ LEONARDO CAMPAIGN DRIVER (the priority — drive it every sweep):
   `--config-yaml dcagent_eval_config_no_override.yaml` resolves from `hpc/harbor_yaml/eval/configs/`; the cluster
   sbatch is `eval/leonardo/eval_harbor.sbatch`. `--force-reeval` is REQUIRED — every campaign row has a prior
   Finished/deflated DB row; the "Failed to create Pending DB entry: Job already finished" warning is benign.)
-  `--baseline-model-configs` is LOAD-BEARING — omitting it SILENTLY drops every per-model serve override (the
-  qwen3_5_moe legs then fall back to the otagent env and FAIL `model type … not recognized`); the listener resolves
-  it CLI > cluster-config > None. `--require-priority-list` is LOAD-BEARING too — without it the listener floods the
+  `--baseline-model-configs` is LOAD-BEARING **on a cluster that is NOT registry-default-on** (e.g. Leonardo) —
+  omitting it there SILENTLY drops every per-model serve override (the qwen3_5_moe legs then fall back to the
+  otagent env and FAIL `model type … not recognized`); the listener resolves it CLI > cluster-config > None. On a
+  **registry-default-on cluster (TACC, per the tracker) OMIT it** (and OMIT `--pre-download` — TACC login-node OOM). `--require-priority-list` is LOAD-BEARING too — without it the listener floods the
   queue with every unevaled model in the lookback window. To refill, create/extend the priority list with the legs
   to (re)run and point `--priority-file` at it; use the SINGLE multi-model listener (1s internal submission_delay),
   do NOT fire one `&`-backgrounded listener per leg (the login-side conda-plugin circular-import race) — if multiple

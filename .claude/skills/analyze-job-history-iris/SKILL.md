@@ -57,7 +57,11 @@ datagen job. So:
   + `missing_windows` and proceeds); use ONLY when you knowingly accept a fragment.
 - **Cluster.** Default **marin/TPU**. For CoreWeave pass `--cluster cw-us-east-02a` (the finelog config name
   == the cluster name; it resolves `cw-us-east-02a` automatically). Still run under the **marin venv** python.
-  **But:** GPU-RL jobs have **no harbor trial sidecars**, so §2 is empty and most of the value is gone — for
+  **⚠ CoreWeave needs R2 archive creds, NOT IAP.** On cw the live half uses a k8s tunnel (no `marin-login`),
+  but the archive half reads `s3://marin-na/finelog/cw-us-east-02a` (R2) — creds the Mac lacks, so the run
+  crashes `FileNotFoundError: The specified bucket does not exist` unless you first source them from the
+  `iris`-ns secret. **Procedure: `.claude/ops/iris/finelog_r2_archive_creds.md`.**
+  **Also:** GPU-RL jobs have **no harbor trial sidecars**, so §2 is empty and most of the value is gone — for
   GPU-RL use **rl-job-health-deep-dive** instead. This analyzer is for **harbor-shaped jobs (datagen / agentic eval)**.
 - **Completeness sanity:** the run prints `[enumerate] N attempt(s)`, `[merge] live=… + gcs=… -> deduped=…`,
   and `[coverage] COMPLETE` (or `INCOMPLETE` + the gaps). Confirm `logs_complete: true` in the sidecar before

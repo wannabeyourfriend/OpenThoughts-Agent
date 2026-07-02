@@ -109,7 +109,13 @@ terminal_bench:
     auto_snapshot: true
 
     # Verifier settings
-    verifier_override_timeout_sec: 120
+    # 120 -> 300 (2026-06-29): on cw the Daytona verifier-artifact pull
+    # (environment.py:download_dir -> _sdk_download_dir) clusters at 122-136s, just
+    # over the old 120s cap -> ~95% VerifierTimeoutError -> trajectories miss
+    # logprobs -> "batch cannot be used for TIS" -> global_step stuck at 0. The
+    # pulls COMPLETE at ~130s, so a 300s cap lets them finish and yield usable TIS
+    # batches. (dense8b-32k-survive5 deep-dive, rl-job-health-deep-dive.)
+    verifier_override_timeout_sec: 300
 
     # Retry settings
     max_retries: 3
